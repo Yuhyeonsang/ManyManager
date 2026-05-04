@@ -4,6 +4,8 @@ import re
 import requests
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
+from dotenv import load_dotenv
+load_dotenv()
 
 
 class GeminiClient:
