@@ -1,0 +1,38 @@
+# Caddy 설정 — 도메인 한 줄만 본인 것으로 바꾸면 됨
+# Caddy 가 자동으로:
+#   • Let's Encrypt 무료 HTTPS 인증서 발급
+#   • 자동 갱신
+#   • HTTP → HTTPS 리다이렉트
+#   • localhost:8000 으로 리버스 프록시
+#
+# 사용법:
+#   sudo cp Caddyfile.example /etc/caddy/Caddyfile
+#   # 그 후 도메인을 본인 것으로 수정
+#   sudo systemctl reload caddy
+
+myfund.duckdns.org {
+    # FastAPI 백엔드로 프록시
+    reverse_proxy 127.0.0.1:8000
+
+    # 압축 (모바일 데이터 절약)
+    encode gzip zstd
+
+    # CORS — 모바일 앱 (Expo) 에서 호출하므로 허용
+    header {
+        Access-Control-Allow-Origin "*"
+        Access-Control-Allow-Methods "GET, POST, OPTIONS"
+        Access-Control-Allow-Headers "*"
+        # 보안 헤더
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+    }
+
+    # 액세스 로그
+    log {
+        output file /var/log/caddy/access.log {
+            roll_size 10MB
+            roll_keep 5
+        }
+        format json
+    }
+}

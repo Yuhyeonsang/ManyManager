@@ -1,0 +1,32 @@
+{
+  "cli": {
+    "version": ">= 5.9.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "preview": {
+      "android": {
+        "buildType": "apk"
+      },
+      "channel": "preview",
+      "distribution": "internal"
+    },
+    "production": {
+      "android": {
+        "buildType": "apk"
+      },
+      "channel": "production",
+      "autoIncrement": true
+    },
+    "development": {
+      "developmentClient": true,
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      }
+    }
+  },
+  "submit": {
+    "production": {}
+  }
+}

@@ -1,0 +1,27 @@
+# Render.com 인프라 설정 (Infrastructure as Code)
+# 이 파일을 GitHub 저장소 루트에 두면, Render 가 자동으로 읽어서 서비스 생성.
+# 수동으로 Render 대시보드에서 설정해도 무방함.
+
+services:
+  - type: web
+    name: fund-manager-api
+    runtime: python
+    plan: free                   # 무료 티어 (15분 idle 후 sleep, 첫 요청 ~30초 wake)
+    region: singapore            # 한국에서 가장 가까운 무료 리전
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.0"
+      # 아래 4개는 Render 대시보드의 "Environment" 탭에서 직접 입력하세요
+      # (보안상 이 파일에 적으면 안 됨)
+      - key: GEMINI_API_KEY
+        sync: false
+      - key: NAVER_CLIENT_ID
+        sync: false
+      - key: NAVER_CLIENT_SECRET
+        sync: false
+      - key: DART_API_KEY
+        sync: false
+      - key: FUND_DB
+        value: /tmp/fund_manager.db   # Render 무료 티어는 디스크 영구 저장 안 됨 → /tmp 사용

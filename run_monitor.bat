@@ -1,0 +1,29 @@
+@echo off
+REM ============================================================
+REM 모니터링 루프 실행 (15분마다 자동 분석 + DB 저장)
+REM ============================================================
+chcp 949 > nul
+cd /d "%~dp0"
+
+if not exist ".venv\Scripts\activate.bat" (
+    echo [X] .venv 가 없습니다. 먼저 setup.bat 을 실행하세요.
+    pause
+    exit /b 1
+)
+
+if not exist ".env" (
+    echo [!] .env 파일이 없습니다.
+    pause
+    exit /b 1
+)
+
+echo.
+echo ===============================================
+echo   모니터링 루프 시작 (Ctrl+C 로 종료)
+echo ===============================================
+echo.
+
+call .venv\Scripts\activate.bat
+python monitor_loop.py
+
+pause

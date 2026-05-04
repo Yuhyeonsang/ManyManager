@@ -1,0 +1,280 @@
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  View,
+  Text,
+  ScrollView,
+  StyleSheet,
+  Pressable,
+  ActivityIndicator,
+  Alert,
+} from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
+import GradeBadge from '../components/GradeBadge';
+import { fetchStockReport, fetchClipboardText } from '../services/api';
+import { cacheReport, getCachedReport } from '../services/database';
+import {
+  copyToClipboard,
+  formatReportForClipboard,
+} from '../utils/clipboard';
+
+export default function DetailScreen({ route }) {
+  const { ticker } = route.params;
+  const [report, setReport] = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [offline, setOffline] = useState(false);
+  const [copying, setCopying] = useState(false);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await fetchStockReport(ticker);
+      setReport(data);
+      setOffline(false);
+      cacheReport(data).catch((e) => console.warn('cache 실패', e));
+    } catch (e) {
+      console.warn('상세 리포트 서버 통신 실패, 캐시 사용', e?.message);
+      const cached = await getCachedReport(ticker);
+      if (cached) {
+        setReport(cached);
+        setOffline(true);
+      } else {
+        Alert.alert(
+          '오프라인',
+          '서버에 연결할 수 없고, 이 종목의 저장된 리포트도 없습니다.'
+        );
+      }
+    } finally {
+      setLoading(false);
+    }
+  }, [ticker]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleCopy = async () => {
+    if (!report) return;
+    setCopying(true);
+    try {
+      // 1순위: 서버가 정리해 둔 텍스트 사용 (있으면 가장 깔끔)
+      let text;
+      try {
+        text = await fetchClipboardText(ticker);
+      } catch {
+        // 서버 엔드포인트가 없거나 오프라인이면 클라이언트에서 직접 포맷팅
+        text = formatReportForClipboard(report);
+      }
+      await copyToClipboard(text);
+      Alert.alert(
+        '복사 완료',
+        'Claude 웹버전에 붙여넣고 추가 분석을 받아보세요!'
+      );
+    } catch (e) {
+      Alert.alert('복사 실패', e?.message ?? '알 수 없는 오류');
+    } finally {
+      setCopying(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <SafeAreaView style={styles.center}>
+        <ActivityIndicator size="large" color="#0F172A" />
+        <Text style={styles.loadingText}>리포트를 불러오는 중…</Text>
+      </SafeAreaView>
+    );
+  }
+
+  if (!report) {
+    return (
+      <SafeAreaView style={styles.center}>
+        <Text style={styles.empty}>리포트를 불러올 수 없습니다.</Text>
+      </SafeAreaView>
+    );
+  }
+
+  const f = report.financials || {};
+
+  return (
+    <SafeAreaView style={styles.container} edges={['left', 'right']}>
+      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+        {offline && (
+          <View style={styles.offlineBanner}>
+            <Text style={styles.offlineText}>
+              ⚠ 오프라인 — 마지막에 저장된 리포트입니다
+            </Text>
+          </View>
+        )}
+
+        <View style={styles.header}>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.name}>{report.name}</Text>
+            <Text style={styles.ticker}>{report.ticker}</Text>
+          </View>
+          <GradeBadge grade={report.grade} />
+        </View>
+
+        <View style={styles.scoreBox}>
+          <Text style={styles.scoreLabel}>AI 종합 점수</Text>
+          <Text style={styles.scoreValue}>
+            {report.score ?? '-'}
+            <Text style={styles.scoreMax}> / 100</Text>
+          </Text>
+        </View>
+
+        <Section title="📰 AI 뉴스 요약">
+          <Text style={styles.body}>
+            {report.news_summary?.trim() || '(요약된 뉴스가 없습니다)'}
+          </Text>
+        </Section>
+
+        <Section title="📊 주요 재무 수치">
+          <FinancialRow label="PER" value={f.per} suffix="배" />
+          <FinancialRow label="PBR" value={f.pbr} suffix="배" />
+          <FinancialRow label="ROE" value={f.roe} suffix="%" />
+          <FinancialRow
+            label="매출 성장률"
+            value={f.revenue_growth}
+            suffix="%"
+          />
+          <FinancialRow
+            label="영업이익률"
+            value={f.operating_margin}
+            suffix="%"
+          />
+          <FinancialRow label="부채비율" value={f.debt_ratio} suffix="%" />
+        </Section>
+
+        {report.updated_at && (
+          <Text style={styles.updatedAt}>
+            데이터 기준: {report.updated_at}
+          </Text>
+        )}
+      </ScrollView>
+
+      <View style={styles.footer}>
+        <Pressable
+          onPress={handleCopy}
+          disabled={copying}
+          style={({ pressed }) => [
+            styles.copyBtn,
+            pressed && { opacity: 0.85 },
+            copying && { opacity: 0.6 },
+          ]}
+        >
+          {copying ? (
+            <ActivityIndicator color="#FFFFFF" />
+          ) : (
+            <Text style={styles.copyBtnText}>
+              📋 텍스트 리포트 복사 (Claude 웹에 붙여넣기)
+            </Text>
+          )}
+        </Pressable>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+function Section({ title, children }) {
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>{title}</Text>
+      <View style={styles.sectionBody}>{children}</View>
+    </View>
+  );
+}
+
+function FinancialRow({ label, value, suffix }) {
+  const display =
+    value === null || value === undefined ? '-' : `${value}${suffix ?? ''}`;
+  return (
+    <View style={styles.finRow}>
+      <Text style={styles.finLabel}>{label}</Text>
+      <Text style={styles.finValue}>{display}</Text>
+    </View>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#F1F5F9' },
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  loadingText: { marginTop: 12, color: '#475569' },
+  empty: { color: '#64748B' },
+  offlineBanner: {
+    backgroundColor: '#FEF3C7',
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  offlineText: { color: '#92400E', fontSize: 12, fontWeight: '600' },
+  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+  name: { fontSize: 22, fontWeight: '800', color: '#0F172A' },
+  ticker: { color: '#64748B', marginTop: 2 },
+  scoreBox: {
+    backgroundColor: '#0F172A',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+  },
+  scoreLabel: { color: '#94A3B8', fontSize: 12 },
+  scoreValue: {
+    color: '#F8FAFC',
+    fontSize: 36,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  scoreMax: { fontSize: 16, fontWeight: '500', color: '#94A3B8' },
+  section: { marginBottom: 16 },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 8,
+  },
+  sectionBody: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 14,
+  },
+  body: { color: '#1E293B', fontSize: 14, lineHeight: 21 },
+  finRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E2E8F0',
+  },
+  finLabel: { color: '#64748B' },
+  finValue: { color: '#0F172A', fontWeight: '600' },
+  updatedAt: {
+    color: '#94A3B8',
+    fontSize: 11,
+    textAlign: 'right',
+    marginTop: 8,
+  },
+  footer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: 16,
+    backgroundColor: 'rgba(241,245,249,0.95)',
+  },
+  copyBtn: {
+    backgroundColor: '#0F172A',
+    borderRadius: 12,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  copyBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+});

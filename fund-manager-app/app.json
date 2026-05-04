@@ -1,0 +1,25 @@
+{
+  "expo": {
+    "name": "FundManager",
+    "slug": "fund-manager-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": false,
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0F172A"
+    },
+    "assetBundlePatterns": ["**/*"],
+    "ios": {
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.fundmanager.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#0F172A"
+      }
+    },
+    "plugins": ["expo-sqlite"]
+  }
+}

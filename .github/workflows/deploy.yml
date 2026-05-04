@@ -1,0 +1,44 @@
+name: Deploy to Oracle Cloud
+
+# main 브랜치에 푸시하거나 GitHub UI 에서 수동 실행 시 동작
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: SSH → git pull → systemctl restart
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.ORACLE_HOST }}        # 예: 132.226.45.67  또는  myfund.duckdns.org
+          username: ${{ secrets.ORACLE_USER }}    # 예: ubuntu
+          key: ${{ secrets.ORACLE_SSH_KEY }}      # PEM 형식 개인키 (BEGIN OPENSSH PRIVATE KEY ~ END)
+          port: ${{ secrets.ORACLE_PORT || 22 }}
+          script_stop: true
+          script: |
+            set -e
+            echo "▶ 배포 시작 $(date '+%F %T')"
+            cd /opt/fund-manager
+
+            echo "▶ git pull"
+            git fetch origin main
+            git reset --hard origin/main
+
+            echo "▶ requirements.txt 업데이트 확인"
+            source .venv/bin/activate
+            pip install -r requirements.txt --quiet --upgrade
+
+            echo "▶ systemd 재시작"
+            sudo systemctl restart fund-manager
+
+            sleep 2
+            echo "▶ 헬스체크"
+            curl -sS -o /dev/null -w "HTTP %{http_code} (%{time_total}s)\n" http://localhost:8000/
+
+            echo "✔ 배포 완료"

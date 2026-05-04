@@ -1,0 +1,21 @@
+# ==========================================
+# 펀드매니저 백엔드 - Python 의존성
+# ==========================================
+# 설치 명령:  pip install -r requirements.txt
+# ==========================================
+
+# --- 데이터 수집 ---
+yfinance>=0.2.40        # 주가 데이터 (data_collector.py)
+pandas>=2.0.0           # 데이터프레임
+requests>=2.31.0        # HTTP 요청 (네이버, DART, Gemini)
+
+# --- FastAPI 서버 (main.py) ---
+fastapi>=0.110.0        # REST API 프레임워크
+uvicorn[standard]>=0.27.0  # ASGI 서버 (--host 0.0.0.0)
+python-multipart>=0.0.9 # form 데이터 파싱
+
+# --- 환경변수 로드 (.env) ---
+python-dotenv>=1.0.0    # .env 자동 로드
+
+# --- 표준 라이브러리 (참고용, 설치 불필요) ---
+# sqlite3, signal, hashlib, logging, json, os, sys, time, re
