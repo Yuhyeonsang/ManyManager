@@ -32,7 +32,7 @@ jobs:
           script: |
             set -e
             echo "▶ 배포 시작 $(date '+%F %T')"
-            cd /opt/fund-manager
+            cd /home/ubuntu/ManyManager
 
             echo "▶ git pull"
             git fetch origin main
@@ -42,10 +42,19 @@ jobs:
             source .venv/bin/activate
             pip install -r requirements.txt --quiet --upgrade
 
-            echo "▶ systemd 재시작"
-            sudo systemctl restart fund-manager
+            echo "▶ FastAPI 재시작 (systemd 또는 nohup)"
+            if systemctl list-unit-files | grep -q fund-manager.service; then
+                sudo systemctl restart fund-manager
+            else
+                # systemd 미등록 상태 — 기존 nohup 프로세스 죽이고 다시 띄움
+                pkill -f "uvicorn main:app" || true
+                sleep 1
+                nohup .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 \
+                    > /home/ubuntu/fastapi.log 2>&1 &
+                disown
+            fi
 
-            sleep 2
+            sleep 3
             echo "▶ 헬스체크"
             curl -sS -o /dev/null -w "HTTP %{http_code} (%{time_total}s)\n" http://localhost:8000/
 
