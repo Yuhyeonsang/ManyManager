@@ -24,9 +24,9 @@ jobs:
       - name: Deploy via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.ORACLE_HOST }}        # 예: 132.226.45.67  또는  myfund.duckdns.org
-          username: ${{ secrets.ORACLE_USER }}    # 예: ubuntu
-          key: ${{ secrets.ORACLE_SSH_KEY }}      # PEM 형식 개인키 (BEGIN OPENSSH PRIVATE KEY ~ END)
+          host: ${{ secrets.ORACLE_HOST }}
+          username: ${{ secrets.ORACLE_USER }}
+          key: ${{ secrets.ORACLE_SSH_KEY }}
           port: ${{ secrets.ORACLE_PORT || 22 }}
           script_stop: true
           script: |
@@ -43,21 +43,13 @@ jobs:
             pip install -r requirements.txt --quiet --upgrade
 
             echo "▶ FastAPI 재시작 (systemd 또는 nohup)"
-          if systemctl list-unit-files | grep -q fund-manager.service; then
-              sudo systemctl restart fund-manager
-          else
-              # systemd 미등록 상태 — 기존 nohup 프로세스 죽이고 다시 띄움
-              pkill -f "uvicorn main:app" || true
-              sleep 2
-              nohup .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 > /home/ubuntu/fastapi.log 2>&1 &
-          fi
+            if systemctl list-unit-files | grep -q fund-manager.service; then
+                sudo systemctl restart fund-manager
             else
                 # systemd 미등록 상태 — 기존 nohup 프로세스 죽이고 다시 띄움
                 pkill -f "uvicorn main:app" || true
-                sleep 1
-                nohup .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 \
-                    > /home/ubuntu/fastapi.log 2>&1 &
-                disown
+                sleep 2
+                nohup .venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000 > /home/ubuntu/fastapi.log 2>&1 &
             fi
 
             sleep 3
