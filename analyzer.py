@@ -4,21 +4,18 @@ import re
 import requests
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
-from dotenv import load_dotenv
-load_dotenv()
-
-
+ 
 class GeminiClient:
     """Gemini 1.5 Flash 호출 공통 베이스. 토큰 절약 + JSON 강제."""
-
+ 
     ENDPOINT = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
         "gemini-1.5-flash:generateContent"
     )
-
+ 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-
+ 
     def call_json(self, prompt: str, temperature: float = 0.2) -> Dict:
         if not self.api_key:
             return {"error": "missing GEMINI_API_KEY"}
@@ -38,15 +35,16 @@ class GeminiClient:
             )
             r.raise_for_status()
             text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S)
+            text = re.sub(r"^```(?:json)?\s*|\s*
+```$", "", text, flags=re.S)
             return json.loads(text)
         except Exception as e:
             return {"error": f"gemini call failed: {e}"}
-
-
+ 
+ 
 class GeminiNewsFilter(GeminiClient):
     """핵심 뉴스 N개 선별 + 감성 점수화."""
-
+ 
     def filter_news(self, news_items: List[Dict], top_k: int = 3) -> List[Dict]:
         if not news_items:
             return []
@@ -69,7 +67,7 @@ class GeminiNewsFilter(GeminiClient):
         data = self.call_json(prompt)
         if data.get("error"):
             return [{"error": data["error"]}]
-
+ 
         picks = data.get("picks", [])
         out: List[Dict] = []
         for p in picks[:top_k]:
@@ -86,7 +84,7 @@ class GeminiNewsFilter(GeminiClient):
                     }
                 )
         return out
-
+ 
     @staticmethod
     def sentiment_score(picks: List[Dict]) -> Tuple[float, Dict[str, int]]:
         """긍정 +1, 부정 -1, 중립 0 → 평균 점수."""
@@ -102,11 +100,11 @@ class GeminiNewsFilter(GeminiClient):
                 score += {"긍정": 1, "부정": -1, "중립": 0}[imp]
                 n += 1
         return (round(score / n, 2) if n else 0.0), counts
-
-
+ 
+ 
 class RelatedStockInferer(GeminiClient):
     """뉴스 본문에 종목명이 없어도 밸류체인/산업 키워드로 관련 상장사 후보군을 뽑는다."""
-
+ 
     def infer_related_stocks(
         self,
         news_items: List[Dict],
@@ -160,47 +158,38 @@ class RelatedStockInferer(GeminiClient):
                 }
             )
         return cleaned
-
-
+ 
+ 
 class SemanticLayer:
     """숫자 계산은 전부 파이썬이 직접. AI한테 안 맡긴다."""
-
+ 
     @staticmethod
     def analyze_price(price: Dict) -> Dict:
         if not price or price.get("error"):
             return {"error": (price or {}).get("error", "no price")}
-
+ 
         cp = price["current_price"]
         ma = price.get("moving_averages", {}) or {}
         ma5, ma20, ma60, ma120 = (
             ma.get("MA5"), ma.get("MA20"), ma.get("MA60"), ma.get("MA120")
         )
-
+ 
         signals: List[str] = []
         if ma5 and ma20:
             signals.append(
-                "단기 정배열(MA5>MA20)" if ma5 > ma20 else "단기 역배열(MA5<MA20)"
-            )
-        if ma20 and ma60:
-            signals.append(
-                "중기 정배열(MA20>MA60)" if ma20 > ma60 else "중기 역배열(MA20<MA60)"
-            )
-        if ma20 and cp:
-            diff = (cp - ma20) / ma20 * 100
-            signals.append(
-                f"20일선 상향 돌파(+{diff:.1f}%)" if diff > 0
+                "단기 정배열(MA5>MA20)" if ma5 > ma20 else "단기 역배열(MA5<MA20)" ) if ma20 and ma60: signals.append( "중기 정배열(MA20>MA60)" if ma20 > ma60 else "중기 역배열(MA20<MA60)" ) if ma20 and cp: diff - ma20) / * 100 signals.append( f"20일선 상향 돌파(+{diff:.1f}%)"> 0
                 else f"20일선 하향 이탈({diff:.1f}%)"
             )
-
+ 
         hi, lo = price.get("high_52w"), price.get("low_52w")
         position_52w = round((cp - lo) / (hi - lo) * 100, 1) if hi and lo and hi > lo else None
-
+ 
         recent = price.get("recent_10d") or []
         momentum_10d = None
         if len(recent) >= 2:
             first, last = recent[0]["close"], recent[-1]["close"]
             momentum_10d = round((last - first) / first * 100, 2)
-
+ 
         return {
             "current_price": cp,
             "change_pct": price.get("change_pct"),
@@ -209,29 +198,29 @@ class SemanticLayer:
             "position_52w_pct": position_52w,
             "momentum_10d_pct": momentum_10d,
         }
-
+ 
     @staticmethod
     def analyze_financials(fin: Dict) -> Dict:
         if not fin or fin.get("error"):
             return {"error": (fin or {}).get("error", "no financials")}
-
+ 
         ind = fin.get("indicators", {}) or {}
-
+ 
         def yoy(key: str) -> Optional[float]:
             cur = ind.get(key, {}).get("current")
             prev = ind.get(key, {}).get("previous")
             if cur and prev:
                 return round((cur - prev) / abs(prev) * 100, 2)
             return None
-
+ 
         rev_yoy = yoy("revenue")
         op_yoy = yoy("operating_income")
         ni_yoy = yoy("net_income")
-
+ 
         equity = ind.get("total_equity", {}).get("current")
         liab = ind.get("total_liabilities", {}).get("current")
         debt_ratio = round(liab / equity * 100, 2) if equity and liab else None
-
+ 
         return {
             "year": fin.get("year"),
             "margins": fin.get("margins", {}),
@@ -243,15 +232,15 @@ class SemanticLayer:
             "debt_to_equity_pct": debt_ratio,
             "raw_current": {k: v.get("current") for k, v in ind.items()},
         }
-
-
+ 
+ 
 class InvestmentGrader:
     """[주가 추세 + 재무 건전성 + 뉴스 감성] → 투자 등급 1차 판정.
-
+ 
     각 축을 -2 ~ +2로 점수화 → 합계 → 등급.
     환각 방지를 위해 모든 분기 조건은 파이썬에서만 평가.
     """
-
+ 
     GRADE_TABLE = [
         (4, "적극 매수"),
         (2, "매수"),
@@ -259,7 +248,7 @@ class InvestmentGrader:
         (-2, "관망"),
         (-99, "비중 축소"),
     ]
-
+ 
     @staticmethod
     def _score_price(price_an: Dict) -> Tuple[int, List[str]]:
         if price_an.get("error"):
@@ -290,7 +279,7 @@ class InvestmentGrader:
             elif pos <= 20:
                 s -= 1; reasons.append(f"52주 저점권({pos}%, -1)")
         return max(-2, min(2, s)), reasons
-
+ 
     @staticmethod
     def _score_financials(fin_an: Dict) -> Tuple[int, List[str]]:
         if fin_an.get("error"):
@@ -323,7 +312,7 @@ class InvestmentGrader:
             elif debt <= 80:
                 s += 1; reasons.append(f"부채비율 양호 {debt}%(+1)")
         return max(-2, min(2, s)), reasons
-
+ 
     @staticmethod
     def _score_sentiment(sent_score: float, counts: Dict[str, int]) -> Tuple[int, List[str]]:
         s = 0
@@ -343,7 +332,7 @@ class InvestmentGrader:
             f"부정 {counts.get('부정',0)} / 중립 {counts.get('중립',0)}"
         )
         return s, reasons
-
+ 
     def grade(
         self,
         price_an: Dict,
@@ -362,11 +351,11 @@ class InvestmentGrader:
             "axis_scores": {"price": ps, "financials": fs, "sentiment": ss},
             "rationale": {"price": pr, "financials": fr, "sentiment": sr},
         }
-
-
+ 
+ 
 class ReportBuilder:
     """선별 뉴스 + 계산 수치 + 추론 관련주 + 투자 등급 → 클로드 웹 붙여넣기 텍스트."""
-
+ 
     def __init__(
         self,
         gemini_filter: Optional[GeminiNewsFilter] = None,
@@ -377,7 +366,7 @@ class ReportBuilder:
         self.related = related_inferer or RelatedStockInferer()
         self.grader = grader or InvestmentGrader()
         self.sem = SemanticLayer()
-
+ 
     def build(
         self,
         ticker: str,
@@ -390,20 +379,20 @@ class ReportBuilder:
         news = bundle.get("news") or {}
         fin = bundle.get("financials") or {}
         items = news.get("items", []) if news else []
-
+ 
         price_an = self.sem.analyze_price(price)
         fin_an = self.sem.analyze_financials(fin)
         picks = self.gemini.filter_news(items, top_k=top_k_news) if items else []
         sent_score, sent_counts = self.gemini.sentiment_score(picks)
         related = self.related.infer_related_stocks(items, max_candidates=max_related) if items else []
         verdict = self.grader.grade(price_an, fin_an, sent_score, sent_counts)
-
+ 
         L: List[str] = []
         L.append("=" * 60)
         L.append(f"📊 일일 종목 리포트  |  {company_name or ticker} ({ticker})")
         L.append(f"생성: {datetime.now():%Y-%m-%d %H:%M}")
         L.append("=" * 60)
-
+ 
         # [1] 시세
         L.append("\n[1] 시세 & 기술적 시그널")
         if price_an.get("error"):
@@ -418,7 +407,7 @@ class ReportBuilder:
                 L.append(f"  - 10일 모멘텀: {price_an['momentum_10d_pct']:+.2f}%")
             for s in price_an["signals"]:
                 L.append(f"  - 시그널: {s}")
-
+ 
         # [2] 재무
         L.append("\n[2] 재무 핵심 지표 (파이썬 계산)")
         if fin_an.get("error"):
@@ -437,7 +426,7 @@ class ReportBuilder:
             )
             if fin_an.get("debt_to_equity_pct") is not None:
                 L.append(f"  - 부채비율: {fin_an['debt_to_equity_pct']}%")
-
+ 
         # [3] 뉴스
         L.append("\n[3] 핵심 뉴스 (Gemini 선별)")
         if not picks:
@@ -454,7 +443,7 @@ class ReportBuilder:
                 f"  - 감성 스코어: {sent_score} "
                 f"(긍 {sent_counts['긍정']} / 부 {sent_counts['부정']} / 중 {sent_counts['중립']})"
             )
-
+ 
         # [4] 관련주 추론
         L.append("\n[4] 추론된 관련주 후보 (Gemini 밸류체인 분석)")
         if not related:
@@ -469,7 +458,7 @@ class ReportBuilder:
                     f"[{c['value_chain']}/{c['expected_impact']}/신뢰도 {c['confidence']}]"
                 )
                 L.append(f"     근거: {c['reason']}")
-
+ 
         # [5] 투자 등급 자동 산출
         L.append("\n[5] 투자 등급 (파이썬 1차 판정)")
         ax = verdict["axis_scores"]
@@ -487,7 +476,7 @@ class ReportBuilder:
         L.append("  - 근거(감성):")
         for r in verdict["rationale"]["sentiment"]:
             L.append(f"     · {r}")
-
+ 
         # [6] 클로드 웹 정밀 분석 요청
         L.append("\n[6] 클로드 웹 정밀 분석 요청 템플릿")
         L.append(
@@ -499,16 +488,16 @@ class ReportBuilder:
         )
         L.append("=" * 60)
         return "\n".join(L)
-
+ 
     def save(self, report: str, path: str) -> str:
         with open(path, "w", encoding="utf-8") as f:
             f.write(report)
         return path
-
-
+ 
+ 
 if __name__ == "__main__":
     from data_collector import StockDataCollector
-
+ 
     collector = StockDataCollector()
     bundle = collector.collect_all(
         ticker="005930.KS",
