@@ -1,0 +1,100 @@
+@echo off
+chcp 65001 > nul
+setlocal enableextensions
+cd /d "%~dp0fund-manager-app" || (
+    echo [ERROR] fund-manager-app folder not found.
+    pause
+    exit /b 1
+)
+
+echo.
+echo ===============================================
+echo   FundManager .apk Cloud Build (EAS Build)
+echo ===============================================
+echo.
+echo [Before you start]
+echo   1) Make sure src\services\api.js BASE_URL is correct.
+echo      (LAN IP works only on home WiFi. Use Oracle/DuckDNS URL
+echo       for use anywhere. You can also set it later from the
+echo       Settings screen inside the app.)
+echo.
+echo   2) Expo account required. Sign up free at
+echo      https://expo.dev/signup
+echo.
+echo   Press any key to continue, or close window to cancel.
+pause > nul
+
+REM 1) EAS CLI
+where eas >nul 2>&1
+if errorlevel 1 (
+    echo [+] Installing EAS CLI...
+    call npm install -g eas-cli
+    if errorlevel 1 (
+        echo [ERROR] EAS CLI install failed. Is Node.js installed?
+        pause
+        exit /b 1
+    )
+)
+
+REM 2) Login check
+call eas whoami >nul 2>&1
+if errorlevel 1 (
+    echo [+] Expo login required...
+    call eas login
+    if errorlevel 1 (
+        echo [ERROR] Login failed.
+        pause
+        exit /b 1
+    )
+)
+
+REM 3) node_modules
+if not exist "node_modules" (
+    echo [+] Running npm install...
+    call npm install
+)
+
+REM 4) expo-build-properties (required for HTTP)
+if not exist "node_modules\expo-build-properties" (
+    echo [+] Installing expo-build-properties...
+    call npx expo install expo-build-properties
+)
+
+REM 5) expo-updates (required for OTA — push code without rebuild)
+if not exist "node_modules\expo-updates" (
+    echo [+] Installing expo-updates...
+    call npx expo install expo-updates
+)
+
+REM 6) EAS project init (only first time)
+findstr /c:"\"projectId\"" app.json >nul 2>&1
+if errorlevel 1 (
+    echo [+] Initializing EAS project...
+    call eas init --non-interactive
+)
+
+REM 7) EAS Update configuration (only first time)
+findstr /c:"u.expo.dev" app.json >nul 2>&1
+if errorlevel 1 (
+    echo [+] Configuring EAS Update (OTA support)...
+    call eas update:configure --non-interactive
+)
+
+echo.
+echo ===============================================
+echo   Starting cloud build (10-15 min)...
+echo ===============================================
+echo.
+
+call eas build --platform android --profile preview
+
+echo.
+echo ===============================================
+echo   When build finishes, the .apk download URL
+echo   is printed above. You can also see it at:
+echo     https://expo.dev/accounts/[your]/projects
+echo.
+echo   Send the URL to your phone (KakaoTalk to self,
+echo   email, etc), tap, allow unknown sources, install.
+echo ===============================================
+pause

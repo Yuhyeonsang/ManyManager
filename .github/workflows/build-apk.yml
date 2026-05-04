@@ -1,0 +1,65 @@
+name: Build Android APK
+
+# 트리거:
+#   1) GitHub 웹사이트 Actions 탭의 "Run workflow" 버튼 (수동) — 평소엔 이거만 사용
+#   2) 네이티브 변경 (app.json, package.json, eas.json, plugins) 푸시 시 자동
+#
+# 일반 코드 수정은 eas-update.yml 이 처리 (10초 OTA). 이 워크플로우는 .apk 자체를
+# 다시 만들어야 할 때만 (예: 새 expo 패키지, 아이콘 변경, SDK 업그레이드).
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'fund-manager-app/app.json'
+      - 'fund-manager-app/package.json'
+      - 'fund-manager-app/package-lock.json'
+      - 'fund-manager-app/eas.json'
+      - '.github/workflows/build-apk.yml'
+
+jobs:
+  build:
+    name: EAS Build (Android APK)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    defaults:
+      run:
+        working-directory: ./fund-manager-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: fund-manager-app/package-lock.json
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Ensure expo-build-properties (cleartext HTTP)
+        run: |
+          if [ ! -d node_modules/expo-build-properties ]; then
+            npx expo install expo-build-properties
+          fi
+
+      - name: Trigger EAS build (preview profile, .apk)
+        run: eas build --platform android --profile preview --non-interactive --no-wait
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Build queued
+        run: |
+          echo "::notice::빌드가 Expo 클라우드에 큐잉되었습니다."
+          echo "::notice::진행상황: https://expo.dev/accounts/$EXPO_USERNAME/projects/fund-manager-app/builds"
+          echo "::notice::완료 시 등록된 이메일로 .apk 다운로드 링크 발송"

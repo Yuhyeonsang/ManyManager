@@ -1,0 +1,59 @@
+name: Push App Update (OTA)
+
+# 트리거: 앱의 JS/TS 코드가 main 으로 푸시될 때 자동 OTA 업데이트
+# (네이티브 변경 — app.json/package.json/eas.json — 은 .apk 재빌드가 필요하므로 제외)
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'fund-manager-app/src/**'
+      - 'fund-manager-app/App.js'
+      - 'fund-manager-app/index.js'
+      - 'fund-manager-app/assets/**'
+      - '.github/workflows/eas-update.yml'
+  workflow_dispatch:
+
+jobs:
+  update:
+    name: EAS Update → preview channel
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    defaults:
+      run:
+        working-directory: ./fund-manager-app
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: fund-manager-app/package-lock.json
+
+      - name: Setup EAS CLI
+        uses: expo/expo-github-action@v8
+        with:
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Push OTA update
+        run: |
+          eas update \
+            --branch preview \
+            --message "${{ github.event.head_commit.message || 'manual update' }}" \
+            --non-interactive
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+
+      - name: Summary
+        run: |
+          echo "::notice::✔ OTA 업데이트가 'preview' 채널로 발행되었습니다."
+          echo "::notice::가족들이 앱을 다시 켜면 자동으로 새 코드를 받습니다."
+          echo "::notice::빌드 대시보드: https://expo.dev/accounts/$EXPO_USERNAME/projects/fund-manager-app/updates"

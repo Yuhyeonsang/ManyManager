@@ -1,9 +1,17 @@
 name: Deploy to Oracle Cloud
 
-# main 브랜치에 푸시하거나 GitHub UI 에서 수동 실행 시 동작
+# 서버 코드 (Python 파일, requirements.txt 등) 변경 시만 자동 배포.
+# 앱 코드 (fund-manager-app/) 변경은 eas-update.yml / build-apk.yml 이 처리.
 on:
   push:
     branches: [main]
+    paths:
+      - '*.py'
+      - 'requirements.txt'
+      - 'runtime.txt'
+      - 'render.yaml'
+      - 'deploy/**'
+      - '.github/workflows/deploy.yml'
   workflow_dispatch:
 
 jobs:

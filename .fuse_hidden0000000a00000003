@@ -1,0 +1,91 @@
+@echo off
+title APK Build (debug)
+cls
+
+echo ==================================================
+echo  build_apk.bat - DEBUG MODE
+echo  This script pauses at every step so you can see
+echo  exactly where it fails (if any).
+echo ==================================================
+echo.
+echo Script dir: %~dp0
+echo Current   : %CD%
+echo.
+
+REM Move to app folder (no chcp - keeps native code page for paths)
+if not exist "%~dp0fund-manager-app\app.json" (
+    echo [ERROR] Cannot find fund-manager-app\app.json under:
+    echo         %~dp0
+    echo Make sure this .bat is in the same folder as fund-manager-app.
+    goto :END
+)
+cd /d "%~dp0fund-manager-app"
+echo [OK] Moved to: %CD%
+echo.
+pause
+
+echo --------------------------------------------------
+echo Step 0  /  Node.js
+echo --------------------------------------------------
+where node
+if errorlevel 1 (
+    echo [ERROR] Node.js not in PATH. Install LTS from
+    echo         https://nodejs.org and reopen cmd.
+    goto :END
+)
+call node --version
+echo.
+pause
+
+echo --------------------------------------------------
+echo Step 1  /  EAS CLI
+echo --------------------------------------------------
+where eas
+if errorlevel 1 (
+    echo [INFO] EAS CLI not found. Installing globally...
+    call npm install -g eas-cli
+)
+call eas --version
+echo.
+pause
+
+echo --------------------------------------------------
+echo Step 2  /  Expo login
+echo --------------------------------------------------
+call eas whoami
+if errorlevel 1 (
+    echo [INFO] Not logged in. Sign up free at https://expo.dev/signup
+    echo        Then enter your email and password below.
+    call eas login
+    call eas whoami
+)
+echo.
+pause
+
+echo --------------------------------------------------
+echo Step 3  /  Dependencies
+echo --------------------------------------------------
+if not exist "node_modules" (
+    echo [INFO] Running npm install...
+    call npm install
+) else (
+    echo [OK] node_modules already exists.
+)
+echo.
+pause
+
+echo --------------------------------------------------
+echo Step 4  /  Cloud build (10-15 minutes)
+echo --------------------------------------------------
+echo Running:
+echo   eas build --platform android --profile preview
+echo.
+call eas build --platform android --profile preview
+echo.
+
+:END
+echo.
+echo ==================================================
+echo  Script ended. Press any key to close.
+echo ==================================================
+pause >nul

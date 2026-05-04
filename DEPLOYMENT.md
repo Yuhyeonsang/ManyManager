@@ -228,12 +228,79 @@ export const BASE_URL = 'https://myfund.duckdns.org';
        ↓
 git add . && git commit -m "..." && git push
        ↓
-(GitHub Actions 가 자동으로 배포)
+GitHub Actions 가 변경 종류를 자동 감지:
+   ├─ 서버 코드(*.py)        → SSH로 Oracle 에 pull + systemctl restart   (1~2분)
+   ├─ 앱 JS 코드(src/, App.js) → EAS Update OTA 발행                       (10~30초)
+   └─ 앱 네이티브(app.json 등) → 수동 .apk 재빌드 필요 (Actions 탭에서 클릭)
        ↓
-1~2분 후 가족 핸드폰에 자동 반영
+가족 핸드폰: 앱을 다시 켤 때 자동으로 새 코드 적용
 ```
 
 새벽 3시에 코드 고쳐도, 출장 중이어도, 가족이 자고 있을 때도 자동.
+
+---
+
+## 🔁 3개 워크플로우 매핑표
+
+| 너가 바꾼 것 | 어떤 워크플로우가 도나? | 가족 폰에 반영되는 데 걸리는 시간 |
+|---|---|---|
+| `main.py`, `analyzer.py`, `data_collector.py` | **deploy.yml** (Oracle 자동 배포) | 1~2분 |
+| `fund-manager-app/src/**`, `App.js` | **eas-update.yml** (OTA 자동 발행) | 30초 ~ 1분 (앱 재실행 시 적용) |
+| `fund-manager-app/app.json`, `package.json` | **build-apk.yml** (자동, 새 .apk 생성) | 10~15분, 핸드폰 재설치 필요 |
+| `fund-manager-app/eas.json` | **build-apk.yml** | 동일 |
+| `requirements.txt` | **deploy.yml** | 1~2분 |
+| `DEPLOYMENT.md`, `README.md` 등 문서 | (워크플로우 안 돔) | — |
+
+---
+
+## 🛠 EAS Update — 1회 셋업
+
+OTA 업데이트가 작동하려면 .apk 가 `expo-updates` 를 포함하고 있어야 함. **`build_apk.bat` 이 자동으로** `expo-updates` 설치 + `eas update:configure` 까지 다 해주니까, 첫 .apk 빌드만 정상적으로 받으면 그 이후로는 평생 자동.
+
+### 한 번만 GitHub Secrets 에 등록
+
+`EXPO_TOKEN` 이 GitHub Actions 에 필요해:
+
+1. https://expo.dev/settings/access-tokens → **Create token** → 복사
+2. GitHub 저장소 → **Settings** → **Secrets and variables** → **Actions**
+3. **New repository secret**
+   - Name: `EXPO_TOKEN`
+   - Value: 위에서 복사한 토큰
+4. **Add secret**
+
+이게 끝. 다음에 `git push` 할 때부터 자동 OTA.
+
+### 첫 .apk 빌드는 1번만
+
+```
+build_apk.bat 더블클릭
+```
+첫 실행에서 `eas login` 1회 + `eas build` 1회. 결과 .apk 를 갤럭시 S24 에 설치.
+
+이 .apk 는 OTA 지원이 박혀있어서, 이후로는 절대 다시 빌드/재설치 안 해도 됨 — `git push` 만 하면 자동 갱신.
+
+### 코드 수정 시 (평소 워크플로우)
+
+```bash
+# Cowork 에서 코드 수정
+git add .
+git commit -m "디자인 개선"
+git push
+```
+
+→ 30초 후 GitHub Actions 가 OTA 발행
+→ 앱 다시 켜면 새 코드 자동 적용
+
+---
+
+## 📲 앱이 OTA 업데이트 받는 방식
+
+설치된 .apk 안의 `expo-updates` 가 **앱 시작 시마다 Expo 서버에 "새 버전 있어?"** 라고 물어봄.
+
+- **있으면**: 백그라운드에서 다운로드 → 다음 실행 시 적용 (또는 즉시 재시작)
+- **없으면**: 그냥 캐시된 코드로 실행
+
+가족이 앱을 종료했다 다시 켜면 새 코드 자동 적용. 따로 뭘 누를 필요 없음.
 
 ---
 

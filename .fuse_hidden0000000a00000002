@@ -1,0 +1,109 @@
+@echo off
+chcp 65001 > nul
+title FundManager APK Builder
+
+REM ==============================================================
+REM  This script ALWAYS reaches the final pause, even on errors,
+REM  so you can read what happened. No silent close.
+REM ==============================================================
+
+cd /d "%~dp0fund-manager-app"
+if not exist "app.json" (
+    echo.
+    echo [ERROR] fund-manager-app folder not found:
+    echo   %~dp0fund-manager-app
+    goto :END
+)
+
+echo.
+echo =================================================
+echo  FundManager APK Builder
+echo =================================================
+echo  Working dir: %CD%
+echo.
+
+echo [Step 0] Check Node.js
+where node >nul 2>nul
+if errorlevel 1 (
+    echo   ERROR: Node.js not found.
+    echo   Install LTS from https://nodejs.org then restart cmd.
+    goto :END
+)
+call node --version
+echo.
+
+echo [Step 1] Check EAS CLI
+where eas >nul 2>nul
+if errorlevel 1 (
+    echo   Installing EAS CLI globally...
+    call npm install -g eas-cli
+)
+call eas --version
+echo.
+
+echo [Step 2] Check Expo login
+call eas whoami >nul 2>nul
+if errorlevel 1 (
+    echo   You need to sign in to Expo.
+    echo   No account?  https://expo.dev/signup
+    echo.
+    call eas login
+)
+call eas whoami
+echo.
+
+echo [Step 3] Dependencies
+if not exist "node_modules" (
+    echo   Running npm install...
+    call npm install
+)
+echo.
+
+echo [Step 4] Ensure expo-build-properties
+if not exist "node_modules\expo-build-properties" (
+    call npx expo install expo-build-properties
+)
+echo.
+
+echo [Step 5] Ensure expo-updates
+if not exist "node_modules\expo-updates" (
+    call npx expo install expo-updates
+)
+echo.
+
+echo [Step 6] Ensure EAS project init
+findstr /c:"\"projectId\"" app.json >nul 2>nul
+if errorlevel 1 (
+    echo   Initializing EAS project (will prompt once)...
+    call eas init
+)
+echo.
+
+echo [Step 7] Ensure EAS Update is configured
+findstr /c:"u.expo.dev" app.json >nul 2>nul
+if errorlevel 1 (
+    echo   Configuring EAS Update (OTA)...
+    call eas update:configure
+)
+echo.
+
+echo =================================================
+echo  Starting cloud build (10-15 min)
+echo =================================================
+echo.
+
+call eas build --platform android --profile preview
+
+echo.
+echo =================================================
+echo  Build command finished.
+echo  If a URL was printed above, send it to your phone
+echo  (KakaoTalk to self), open it, allow unknown
+echo  sources, then install.
+echo  Dashboard: https://expo.dev
+echo =================================================
+
+:END
+echo.
+echo Press any key to close this window...
+pause >nul
