@@ -59,7 +59,8 @@ async function getClient() {
   _clientUrl = url;
   _client = axios.create({
     baseURL: url,
-    timeout: 15000,
+    // 60초 — hot-stocks 첫 호출은 yfinance + 네이버 + Gemini 동시 호출이라 30~60초 걸림
+    timeout: 60000,
     headers: {
       'Content-Type': 'application/json',
       // Cloudflare/ngrok 무료 터널의 경고 페이지 우회용
