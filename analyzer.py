@@ -35,8 +35,7 @@ class GeminiClient:
             )
             r.raise_for_status()
             text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            text = re.sub(r"^```(?:json)?\s*|\s*
-```$", "", text, flags=re.S)
+            text = re.sub(r"^```(?:json)?\s*|\s*```\s*$", "", text, flags=re.S)
             return json.loads(text)
         except Exception as e:
             return {"error": f"gemini call failed: {e}"}
@@ -177,7 +176,16 @@ class SemanticLayer:
         signals: List[str] = []
         if ma5 and ma20:
             signals.append(
-                "단기 정배열(MA5>MA20)" if ma5 > ma20 else "단기 역배열(MA5<MA20)" ) if ma20 and ma60: signals.append( "중기 정배열(MA20>MA60)" if ma20 > ma60 else "중기 역배열(MA20<MA60)" ) if ma20 and cp: diff - ma20) / * 100 signals.append( f"20일선 상향 돌파(+{diff:.1f}%)"> 0
+                "단기 정배열(MA5>MA20)" if ma5 > ma20 else "단기 역배열(MA5<MA20)"
+            )
+        if ma20 and ma60:
+            signals.append(
+                "중기 정배열(MA20>MA60)" if ma20 > ma60 else "중기 역배열(MA20<MA60)"
+            )
+        if ma20 and cp:
+            diff = (cp - ma20) / ma20 * 100
+            signals.append(
+                f"20일선 상향 돌파(+{diff:.1f}%)" if diff > 0
                 else f"20일선 하향 이탈({diff:.1f}%)"
             )
  
