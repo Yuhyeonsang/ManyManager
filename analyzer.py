@@ -4,17 +4,29 @@ import re
 import requests
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
- 
+
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+
+
 class GeminiClient:
-    """Gemini 1.5 Flash 호출 공통 베이스. 토큰 절약 + JSON 강제."""
- 
-    ENDPOINT = (
-        "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-1.5-flash:generateContent"
-    )
- 
-    def __init__(self, api_key: Optional[str] = None):
+    """Gemini 호출 공통 베이스. 토큰 절약 + JSON 강제."""
+
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY")
+        self.model = model or DEFAULT_GEMINI_MODEL
+
+    @property
+    def ENDPOINT(self) -> str:
+        return (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self.model}:generateContent"
+        )
  
     def call_json(self, prompt: str, temperature: float = 0.2) -> Dict:
         if not self.api_key:
@@ -211,27 +223,36 @@ class SemanticLayer:
     def analyze_financials(fin: Dict) -> Dict:
         if not fin or fin.get("error"):
             return {"error": (fin or {}).get("error", "no financials")}
- 
+
         ind = fin.get("indicators", {}) or {}
- 
+        # 신규 data_collector는 ratios/growth 를 미리 계산해서 넣어줌. 폴백도 유지.
+        ratios = fin.get("ratios") or fin.get("margins") or {}
+        growth = fin.get("growth") or {}
+
         def yoy(key: str) -> Optional[float]:
             cur = ind.get(key, {}).get("current")
             prev = ind.get(key, {}).get("previous")
             if cur and prev:
                 return round((cur - prev) / abs(prev) * 100, 2)
             return None
- 
-        rev_yoy = yoy("revenue")
+
+        rev_yoy = growth.get("revenue_yoy_pct") if growth.get("revenue_yoy_pct") is not None else yoy("revenue")
+        ni_yoy = growth.get("net_income_yoy_pct") if growth.get("net_income_yoy_pct") is not None else yoy("net_income")
         op_yoy = yoy("operating_income")
-        ni_yoy = yoy("net_income")
- 
-        equity = ind.get("total_equity", {}).get("current")
-        liab = ind.get("total_liabilities", {}).get("current")
-        debt_ratio = round(liab / equity * 100, 2) if equity and liab else None
- 
+
+        debt_ratio = ratios.get("debt_to_equity_pct")
+        if debt_ratio is None:
+            equity = ind.get("total_equity", {}).get("current")
+            liab = ind.get("total_liabilities", {}).get("current")
+            debt_ratio = round(liab / equity * 100, 2) if equity and liab else None
+
         return {
             "year": fin.get("year"),
-            "margins": fin.get("margins", {}),
+            "margins": {
+                "operating_margin_pct": ratios.get("operating_margin_pct"),
+                "net_margin_pct": ratios.get("net_margin_pct"),
+            },
+            "ratios": ratios,
             "yoy_growth_pct": {
                 "revenue": rev_yoy,
                 "operating_income": op_yoy,
@@ -503,24 +524,210 @@ class ReportBuilder:
         return path
  
  
+# ─────────────────────────────────────────────
+# 모드 1: HybridAnalyzer
+#   ReportBuilder 결과 + Gemini 자동 종합 판정
+#   importance >= threshold 면 ManualClaudeAnalyzer 프롬프트 자동 첨부
+# ─────────────────────────────────────────────
+class HybridAnalyzer:
+    def __init__(
+        self,
+        builder: Optional[ReportBuilder] = None,
+        gemini: Optional[GeminiClient] = None,
+        claude_threshold: float = 7.0,
+    ):
+        self.builder = builder or ReportBuilder()
+        self.gemini = gemini or GeminiClient()
+        self.claude_threshold = claude_threshold
+
+    def analyze(
+        self,
+        ticker: str,
+        bundle: Dict,
+        company_name: Optional[str] = None,
+    ) -> Dict:
+        report_text = self.builder.build(
+            ticker=ticker, bundle=bundle, company_name=company_name,
+        )
+        prompt = (
+            "아래 종목 리포트를 분석해 한국어 JSON 객체만 출력해. 다른 텍스트/마크다운 금지.\n\n"
+            "JSON 스키마:\n"
+            "{\n"
+            '  "importance": 0~10 정수,\n'
+            '  "sentiment": "bullish"|"bearish"|"neutral",\n'
+            '  "action": "BUY"|"HOLD"|"WATCH"|"AVOID",\n'
+            '  "confidence": 0~10 정수,\n'
+            '  "key_drivers": ["3개, 각 30자 이내"],\n'
+            '  "risk_factors": ["2~3개, 각 30자 이내"],\n'
+            '  "short_term": "1주~1개월 전망 (60자 이내)",\n'
+            '  "mid_term": "3~6개월 전망 (60자 이내)",\n'
+            '  "comment": "종합 코멘트 (200자 이내)"\n'
+            "}\n\n"
+            f"[리포트]\n{report_text}"
+        )
+        verdict = self.gemini.call_json(prompt, temperature=0.3)
+        verdict["mode"] = "hybrid_gemini"
+        verdict["model"] = self.gemini.model
+        verdict["ticker"] = ticker
+        verdict["name"] = company_name
+        verdict["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        verdict["report_text"] = report_text
+
+        try:
+            importance = float(verdict.get("importance", 0))
+        except (TypeError, ValueError):
+            importance = 0.0
+
+        if importance >= self.claude_threshold:
+            verdict["needs_claude_review"] = True
+            verdict["claude_prompt"] = ManualClaudeAnalyzer.build_prompt(
+                report_text=report_text,
+                ticker=ticker,
+                company_name=company_name,
+                extra_context=(
+                    "[Gemini 1차 자동 판정 — 너가 검증·심화할 베이스]\n"
+                    + json.dumps(
+                        {k: v for k, v in verdict.items()
+                         if k not in ("claude_prompt", "report_text")},
+                        ensure_ascii=False, indent=2, default=str,
+                    )
+                ),
+            )
+        else:
+            verdict["needs_claude_review"] = False
+        return verdict
+
+
+# ─────────────────────────────────────────────
+# 모드 2: ManualClaudeAnalyzer
+#   Gemini 종합 판정 호출 안 함. 클로드용 프롬프트만 만들어줌.
+#   (ReportBuilder 가 이미 호출하는 GeminiNewsFilter/RelatedStockInferer 는 그대로 사용 — 무료 한도 안에서 1차 가공만)
+# ─────────────────────────────────────────────
+class ManualClaudeAnalyzer:
+    def __init__(self, builder: Optional[ReportBuilder] = None):
+        self.builder = builder or ReportBuilder()
+
+    def make_paste(
+        self,
+        ticker: str,
+        bundle: Dict,
+        company_name: Optional[str] = None,
+    ) -> Dict:
+        report_text = self.builder.build(
+            ticker=ticker, bundle=bundle, company_name=company_name,
+        )
+        prompt = self.build_prompt(report_text, ticker, company_name)
+        return {
+            "mode": "manual_claude",
+            "ticker": ticker,
+            "name": company_name,
+            "claude_prompt": prompt,
+            "report_text": report_text,
+            "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    @staticmethod
+    def build_prompt(
+        report_text: str,
+        ticker: str = "",
+        company_name: Optional[str] = None,
+        extra_context: str = "",
+    ) -> str:
+        head = f"너는 한국/미국 주식 펀드매니저야. 아래 종목 리포트를 정밀 분석해 JSON 객체만 출력해.\n\n"
+        head += f"[종목] {company_name or ''} ({ticker})\n\n"
+        head += f"[리포트]\n{report_text}\n"
+        if extra_context:
+            head += f"\n{extra_context}\n"
+        head += (
+            "\n[출력 — JSON 객체 하나만, 마크다운 코드펜스 금지]\n"
+            "{\n"
+            '  "importance": 0~10 정수,\n'
+            '  "sentiment": "bullish"|"bearish"|"neutral",\n'
+            '  "key_drivers": ["핵심 동인 3개, 각 30자 이내"],\n'
+            '  "risk_factors": ["리스크 2~3개, 각 30자 이내"],\n'
+            '  "valuation_judgment": "현재 밸류에이션 판단 (60자 이내)",\n'
+            '  "fundamental_view": "펀더멘털 종합 의견 (100자 이내)",\n'
+            '  "short_term": "1주~1개월 전망 (80자 이내)",\n'
+            '  "mid_term": "3~6개월 전망 (80자 이내)",\n'
+            '  "action": "BUY"|"HOLD"|"WATCH"|"AVOID",\n'
+            '  "target_buy_zone": "예: 70000~73000",\n'
+            '  "stop_loss": "손절 라인 가격",\n'
+            '  "confidence": 0~10 정수,\n'
+            '  "reasoning": "결론 도출 근거 (200자 이내)"\n'
+            "}\n"
+        )
+        return head
+
+    @staticmethod
+    def parse_response(claude_response: str) -> Dict:
+        text = (claude_response or "").strip()
+        if "```" in text:
+            for p in text.split("```"):
+                p = p.strip()
+                if p.startswith("json"):
+                    p = p[4:].strip()
+                if p.startswith("{"):
+                    text = p
+                    break
+        s, e = text.find("{"), text.rfind("}")
+        if s >= 0 and e > s:
+            text = text[s:e + 1]
+        try:
+            result = json.loads(text)
+        except json.JSONDecodeError as ex:
+            return {"error": f"json parse failed: {ex}", "raw": text[:500]}
+        result["mode"] = "manual_claude"
+        result["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        return result
+
+
+# ─────────────────────────────────────────────
+# CLI 데모
+#   python analyzer.py hybrid 005930.KS 삼성전자 005930
+#   python analyzer.py manual 005930.KS 삼성전자 005930
+# ─────────────────────────────────────────────
 if __name__ == "__main__":
+    import sys
     from data_collector import StockDataCollector
- 
+
+    mode = sys.argv[1] if len(sys.argv) > 1 else "manual"
+    ticker = sys.argv[2] if len(sys.argv) > 2 else "005930.KS"
+    name = sys.argv[3] if len(sys.argv) > 3 else "삼성전자"
+    code = sys.argv[4] if len(sys.argv) > 4 else "005930"
+
+    print(f"[데이터 수집] {ticker} / {name} / {code}")
     collector = StockDataCollector()
-    bundle = collector.collect_all(
-        ticker="005930.KS",
-        news_query="삼성전자",
-        stock_code="005930",
-    )
-    builder = ReportBuilder()
-    report = builder.build(
-        ticker="005930.KS",
-        bundle=bundle,
-        company_name="삼성전자",
-        top_k_news=3,
-        max_related=8,
-    )
-    print(report)
-    out_path = os.path.join(os.path.dirname(__file__), "report_sample.txt")
-    builder.save(report, out_path)
-    print(f"\n저장됨: {out_path}")
+    bundle = collector.collect_all(ticker=ticker, news_query=name, stock_code=code)
+
+    if mode == "hybrid":
+        print("\n[모드 1: Hybrid — Gemini 자동 종합]")
+        result = HybridAnalyzer().analyze(ticker=ticker, bundle=bundle, company_name=name)
+        compact = {k: v for k, v in result.items() if k not in ("claude_prompt", "report_text")}
+        print(json.dumps(compact, ensure_ascii=False, indent=2, default=str))
+        if result.get("needs_claude_review"):
+            print("\n" + "=" * 70)
+            print(f"⚠️  importance={result.get('importance')} → 아래를 클로드창에 붙여넣어 정밀 분석:")
+            print("=" * 70)
+            print(result["claude_prompt"])
+        out = os.path.join(os.path.dirname(__file__), "report_sample.txt")
+        with open(out, "w", encoding="utf-8") as f:
+            f.write(result["report_text"])
+        print(f"\n[저장] {out}")
+
+    elif mode == "manual":
+        print("\n[모드 2: Manual Claude — 프롬프트 생성]")
+        out = ManualClaudeAnalyzer().make_paste(ticker=ticker, bundle=bundle, company_name=name)
+        print("\n" + "=" * 70)
+        print("아래를 통째로 복사해 클로드창에 붙여넣으세요:")
+        print("=" * 70)
+        print(out["claude_prompt"])
+        path = os.path.join(os.path.dirname(__file__), "claude_prompt.txt")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(out["claude_prompt"])
+        print(f"\n[저장] {path}  ← 파일로도 저장됨 (메모장에서 바로 열어 복사 가능)")
+        print("\n클로드 답변 받으면:")
+        print("  >>> from analyzer import ManualClaudeAnalyzer")
+        print("  >>> ManualClaudeAnalyzer.parse_response(클로드답변문자열)")
+
+    else:
+        print(f"[ERROR] mode는 hybrid 또는 manual 만 가능 (입력: {mode})")
