@@ -136,12 +136,17 @@ report_builder = ReportBuilder(gemini_filter, related_inferer, grader)
 
 # ─────────────────────────────────────────────
 # 백그라운드 캐시 워머 — 사용자 첫 요청을 항상 즉시 응답되게
+#   안전장치:
+#   - 기본 비활성화 (수동 활성화 시에만 동작)
+#   - 워커 수 제한 (메모리 폭주 방지)
+#   - 워머 자체 인스턴스 1개만 (중복 실행 방지)
 # ─────────────────────────────────────────────
 import threading
 import time as _time
 
-CACHE_WARM_INTERVAL_SEC = int(os.getenv("CACHE_WARM_INTERVAL_SEC", "240"))   # 4분
-CACHE_WARM_ENABLED = os.getenv("CACHE_WARM_ENABLED", "1") not in ("0", "false", "False")
+CACHE_WARM_INTERVAL_SEC = int(os.getenv("CACHE_WARM_INTERVAL_SEC", "300"))   # 5분
+CACHE_WARM_ENABLED = os.getenv("CACHE_WARM_ENABLED", "0") in ("1", "true", "True")
+CACHE_WARM_PARALLEL = int(os.getenv("CACHE_WARM_PARALLEL", "3"))             # 워머는 3개만 (서버 부담 ↓)
 
 
 def _warm_hot_stocks_cache():
@@ -163,7 +168,8 @@ def _warm_hot_stocks_cache():
                 log.error(f"warmer failed for {w['ticker']}: {e}")
                 return None
 
-        with _TPE(max_workers=HOT_STOCKS_PARALLEL) as ex:
+        # 워머는 더 적은 워커로 (서버 부담 최소화)
+        with _TPE(max_workers=CACHE_WARM_PARALLEL) as ex:
             futs = {ex.submit(_job, w): w for w in watchlist}
             for f in _ac(futs):
                 d = f.result()

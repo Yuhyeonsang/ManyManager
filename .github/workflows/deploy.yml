@@ -46,6 +46,7 @@ jobs:
             NAVER_CLIENT_SECRET=${NAVER_CLIENT_SECRET}
             DART_API_KEY=${DART_API_KEY}
             GEMINI_MODEL=gemini-2.5-flash
+            CACHE_WARM_ENABLED=0
             EOF
             chmod 600 .env
 
