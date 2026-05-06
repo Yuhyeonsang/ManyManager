@@ -5,6 +5,12 @@ import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
+
 
 class StockDataCollector:
     def __init__(
@@ -212,9 +218,23 @@ class StockDataCollector:
             rev = result.get("revenue", {}).get("current")
             op = result.get("operating_income", {}).get("current")
             ni = result.get("net_income", {}).get("current")
-            margins = {
+            eq = result.get("total_equity", {}).get("current")
+            li = result.get("total_liabilities", {}).get("current")
+            assets = result.get("total_assets", {}).get("current")
+
+            ratios = {
                 "operating_margin_pct": round(op / rev * 100, 2) if rev and op else None,
                 "net_margin_pct": round(ni / rev * 100, 2) if rev and ni else None,
+                "roe_pct": round(ni / eq * 100, 2) if ni and eq else None,
+                "roa_pct": round(ni / assets * 100, 2) if ni and assets else None,
+                "debt_to_equity_pct": round(li / eq * 100, 2) if li and eq else None,
+            }
+
+            ni_prev = result.get("net_income", {}).get("previous")
+            rev_prev = result.get("revenue", {}).get("previous")
+            growth = {
+                "revenue_yoy_pct": round((rev - rev_prev) / rev_prev * 100, 2) if rev and rev_prev else None,
+                "net_income_yoy_pct": round((ni - ni_prev) / ni_prev * 100, 2) if ni and ni_prev else None,
             }
 
             return {
@@ -224,7 +244,8 @@ class StockDataCollector:
                 "report_code": report_code,
                 "currency": "KRW",
                 "indicators": result,
-                "margins": margins,
+                "ratios": ratios,
+                "growth": growth,
             }
         except Exception as e:
             return {"stock_code": stock_code, "error": str(e)}
@@ -284,12 +305,32 @@ class StockDataCollector:
         stock_code: Optional[str] = None,
         year: Optional[int] = None,
     ) -> Dict:
+        price = self.get_price_data(ticker)
+        news = self.get_news_data(news_query) if news_query else None
+        fin = self.get_financial_statements(stock_code, year) if stock_code else None
+        mm = self.get_market_metrics(ticker)
+
+        if fin and "ratios" in fin and isinstance(mm, dict):
+            r = fin["ratios"]
+            if mm.get("roe_pct") is None and r.get("roe_pct") is not None:
+                mm["roe_pct"] = r["roe_pct"]
+                mm["roe_source"] = "dart_calc"
+            mc = mm.get("market_cap")
+            ni = fin["indicators"].get("net_income", {}).get("current")
+            eq = fin["indicators"].get("total_equity", {}).get("current")
+            if mm.get("per") is None and mc and ni and ni > 0:
+                mm["per"] = round(mc / ni, 2)
+                mm["per_source"] = "dart_calc"
+            if mm.get("pbr") is None and mc and eq and eq > 0:
+                mm["pbr"] = round(mc / eq, 2)
+                mm["pbr_source"] = "dart_calc"
+
         return {
             "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "price": self.get_price_data(ticker),
-            "news": self.get_news_data(news_query) if news_query else None,
-            "financials": self.get_financial_statements(stock_code, year) if stock_code else None,
-            "market_metrics": self.get_market_metrics(ticker),
+            "price": price,
+            "news": news,
+            "financials": fin,
+            "market_metrics": mm,
         }
 
 
