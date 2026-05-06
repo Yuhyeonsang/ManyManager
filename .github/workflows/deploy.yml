@@ -27,6 +27,8 @@ jobs:
           username: ${{ secrets.ORACLE_USER }}
           key: ${{ secrets.ORACLE_SSH_KEY }}
           port: ${{ secrets.ORACLE_PORT || 22 }}
+          # GitHub Secrets 를 SSH 환경변수로 주입 → 스크립트 안에서 .env 생성에 사용
+          envs: GEMINI_API_KEY,NAVER_CLIENT_ID,NAVER_CLIENT_SECRET,DART_API_KEY
           script_stop: true
           script: |
             set -e
@@ -37,19 +39,32 @@ jobs:
             git fetch origin main
             git reset --hard origin/main
 
+            echo "▶ .env 동기화 (GitHub Secrets → 서버)"
+            cat > .env <<EOF
+            GEMINI_API_KEY=${GEMINI_API_KEY}
+            NAVER_CLIENT_ID=${NAVER_CLIENT_ID}
+            NAVER_CLIENT_SECRET=${NAVER_CLIENT_SECRET}
+            DART_API_KEY=${DART_API_KEY}
+            GEMINI_MODEL=gemini-2.5-flash
+            EOF
+            chmod 600 .env
+
             echo "▶ requirements.txt 업데이트 확인"
             source .venv/bin/activate
             pip install -r requirements.txt --quiet --upgrade
 
             echo "▶ FastAPI 재시작"
-            # -f 빼고 프로세스 이름으로만 매칭 (bash 스크립트는 안 죽음)
             pkill -9 -x uvicorn 2>/dev/null || true
             sleep 1
 
-            # setsid -f : double fork → 완전 분리 데몬화 (& 불필요)
             setsid -f /home/ubuntu/ManyManager/.venv/bin/uvicorn main:app \
               --host 0.0.0.0 --port 8000 \
               </dev/null >/home/ubuntu/fastapi.log 2>&1
 
             echo "✔ 배포 완료 (uvicorn 백그라운드 기동)"
             exit 0
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          NAVER_CLIENT_ID: ${{ secrets.NAVER_CLIENT_ID }}
+          NAVER_CLIENT_SECRET: ${{ secrets.NAVER_CLIENT_SECRET }}
+          DART_API_KEY: ${{ secrets.DART_API_KEY }}

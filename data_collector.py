@@ -250,6 +250,67 @@ class StockDataCollector:
         except Exception as e:
             return {"stock_code": stock_code, "error": str(e)}
 
+    def get_kr_market_cap(self, stock_code: str) -> Optional[Dict]:
+        """KRX 직통 API 에서 KR 종목의 시총·발행주식수·BPS·PER·PBR 가져옴.
+        yfinance 가 못 채워주는 코스닥 소형주 폴백."""
+        if not stock_code or not stock_code.isdigit() or len(stock_code) != 6:
+            return None
+        try:
+            url = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+            today = datetime.now().strftime("%Y%m%d")
+            for delta in range(0, 7):
+                trd = (datetime.now() - timedelta(days=delta)).strftime("%Y%m%d")
+                params = {
+                    "bld": "dbms/MDC/STAT/standard/MDCSTAT03501",
+                    "tboxisuCd_finder_stkisu0_0": f"{stock_code}/",
+                    "isuCd": f"KR7{stock_code}000",
+                    "isuCd2": f"KR7{stock_code}000",
+                    "codeNmisuCd_finder_stkisu0_0": "",
+                    "param1isuCd_finder_stkisu0_0": "ALL",
+                    "strtDd": trd,
+                    "endDd": trd,
+                    "share": "1",
+                    "money": "1",
+                    "csvxls_isNo": "false",
+                }
+                r = requests.post(
+                    url,
+                    data=params,
+                    headers={
+                        "Referer": "http://data.krx.co.kr/contents/MDC/MDI/mdiLoader/index.cmd",
+                        "User-Agent": "Mozilla/5.0",
+                    },
+                    timeout=10,
+                )
+                rows = r.json().get("output", []) if r.ok else []
+                if rows:
+                    row = rows[0]
+                    def _i(k):
+                        try:
+                            return int(str(row.get(k, "")).replace(",", ""))
+                        except Exception:
+                            return None
+                    def _f(k):
+                        try:
+                            v = str(row.get(k, "")).replace(",", "")
+                            return float(v) if v not in ("", "-") else None
+                        except Exception:
+                            return None
+                    return {
+                        "stock_code": stock_code,
+                        "trade_date": trd,
+                        "close": _i("TDD_CLSPRC"),
+                        "market_cap": _i("MKTCAP"),
+                        "shares_outstanding": _i("LIST_SHRS"),
+                        "per": _f("PER"),
+                        "pbr": _f("PBR"),
+                        "eps": _i("EPS"),
+                        "bps": _i("BPS"),
+                    }
+            return None
+        except Exception:
+            return None
+
     def get_market_metrics(self, ticker: str) -> Dict:
         """yfinance.info 에서 PER / PBR / ROE / 시가총액 등 시장 지표를 가져온다.
         DART 만으로는 안 잡히는 PER·PBR 을 채우기 위한 보조 소스.
@@ -309,6 +370,29 @@ class StockDataCollector:
         news = self.get_news_data(news_query) if news_query else None
         fin = self.get_financial_statements(stock_code, year) if stock_code else None
         mm = self.get_market_metrics(ticker)
+
+        # KR 종목이고 yfinance 가 PER/PBR/시총을 못 채웠으면 KRX 직통 폴백
+        if stock_code and isinstance(mm, dict):
+            need_krx = (
+                mm.get("market_cap") is None
+                or mm.get("per") is None
+                or mm.get("pbr") is None
+            )
+            if need_krx:
+                krx = self.get_kr_market_cap(stock_code)
+                if krx:
+                    if mm.get("market_cap") is None and krx.get("market_cap"):
+                        mm["market_cap"] = krx["market_cap"]
+                        mm["market_cap_source"] = "krx"
+                    if mm.get("per") is None and krx.get("per") is not None:
+                        mm["per"] = krx["per"]
+                        mm["per_source"] = "krx"
+                    if mm.get("pbr") is None and krx.get("pbr") is not None:
+                        mm["pbr"] = krx["pbr"]
+                        mm["pbr_source"] = "krx"
+                    mm["eps"] = krx.get("eps")
+                    mm["bps"] = krx.get("bps")
+                    mm["shares_outstanding"] = krx.get("shares_outstanding")
 
         if fin and "ratios" in fin and isinstance(mm, dict):
             r = fin["ratios"]
