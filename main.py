@@ -135,6 +135,71 @@ report_builder = ReportBuilder(gemini_filter, related_inferer, grader)
 
 
 # ─────────────────────────────────────────────
+# 백그라운드 캐시 워머 — 사용자 첫 요청을 항상 즉시 응답되게
+# ─────────────────────────────────────────────
+import threading
+import time as _time
+
+CACHE_WARM_INTERVAL_SEC = int(os.getenv("CACHE_WARM_INTERVAL_SEC", "240"))   # 4분
+CACHE_WARM_ENABLED = os.getenv("CACHE_WARM_ENABLED", "1") not in ("0", "false", "False")
+
+
+def _warm_hot_stocks_cache():
+    """hot_stocks 엔드포인트를 직접 호출해서 캐시 채우기."""
+    try:
+        from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
+        watchlist = build_watchlist()
+        results: Dict[str, Dict] = {}
+
+        def _job(w):
+            try:
+                r = analyze_one(w["ticker"], w["code"], w["name"])
+                return {
+                    "ticker": r["ticker"], "name": r["name"], "price": r["price"],
+                    "change_pct": r["change_pct"], "grade": r["grade"],
+                    "score": r["score"], "summary": r["summary"],
+                }
+            except Exception as e:
+                log.error(f"warmer failed for {w['ticker']}: {e}")
+                return None
+
+        with _TPE(max_workers=HOT_STOCKS_PARALLEL) as ex:
+            futs = {ex.submit(_job, w): w for w in watchlist}
+            for f in _ac(futs):
+                d = f.result()
+                if d:
+                    results[d["ticker"]] = d
+
+        out = []
+        for w in watchlist:
+            tk = to_yf_ticker(w["code"]) if w.get("code", "").isdigit() and len(w["code"]) == 6 else w["code"]
+            d = results.get(tk) or results.get(w["code"])
+            if d:
+                out.append(d)
+        if out:
+            cache_set(HOT_STOCKS_CACHE_KEY, out)
+            log.info(f"[warmer] hot_stocks 캐시 갱신 완료 — {len(out)}건")
+    except Exception as e:
+        log.exception(f"[warmer] 실패: {e}")
+
+
+def _warmer_loop():
+    _time.sleep(8)   # 서버 부팅 직후 잠깐 대기
+    while True:
+        try:
+            _warm_hot_stocks_cache()
+        except Exception as e:
+            log.error(f"[warmer] loop error: {e}")
+        _time.sleep(CACHE_WARM_INTERVAL_SEC)
+
+
+if CACHE_WARM_ENABLED:
+    threading.Thread(target=_warmer_loop, daemon=True, name="cache-warmer").start()
+    # 위 import 시점엔 HOT_STOCKS_PARALLEL/HOT_STOCKS_CACHE_KEY 가 아직 정의 안 됐을 수 있어
+    # 실제 실행은 sleep 8 초 후 시작되므로 그때까진 모두 정의됨
+
+
+# ─────────────────────────────────────────────
 # 등급 매핑 (한글 → 앱이 쓰는 영문)
 # ─────────────────────────────────────────────
 GRADE_MAP = {
