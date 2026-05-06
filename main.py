@@ -11,10 +11,12 @@ FastAPI 서버 - 모바일 앱(fund-manager-app)이 호출하는 REST API
 """
 
 import os
+import json
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -310,9 +312,181 @@ def health():
     }
 
 
+# ─────────────────────────────────────────────
+# 캐시 헬퍼 (report_cache 테이블 활용)
+# ─────────────────────────────────────────────
+HOT_STOCKS_CACHE_KEY = "__hot_stocks__"
+HOT_STOCKS_CACHE_TTL_SEC = int(os.getenv("HOT_STOCKS_TTL_SEC", "300"))     # 5분
+REPORT_CACHE_TTL_SEC = int(os.getenv("REPORT_CACHE_TTL_SEC", "600"))       # 10분
+HOT_STOCKS_PARALLEL = int(os.getenv("HOT_STOCKS_PARALLEL", "8"))           # 동시 처리 워커 수
+
+
+def cache_get(key: str, ttl_sec: int) -> Optional[Dict]:
+    try:
+        with db_conn() as conn:
+            row = conn.execute(
+                "SELECT payload, updated_at FROM report_cache WHERE ticker = ?",
+                (key,),
+            ).fetchone()
+        if not row:
+            return None
+        updated = datetime.fromisoformat(row["updated_at"])
+        if (datetime.now() - updated).total_seconds() > ttl_sec:
+            return None
+        return json.loads(row["payload"])
+    except Exception as e:
+        log.warning(f"cache_get({key}) failed: {e}")
+        return None
+
+
+def cache_set(key: str, payload: Dict) -> None:
+    try:
+        with db_conn() as conn:
+            conn.execute(
+                "INSERT OR REPLACE INTO report_cache(ticker, payload, updated_at) VALUES (?, ?, ?)",
+                (key, json.dumps(payload, ensure_ascii=False, default=str), datetime.now().isoformat()),
+            )
+            conn.commit()
+    except Exception as e:
+        log.warning(f"cache_set({key}) failed: {e}")
+
+
+# ─────────────────────────────────────────────
+# 진단 엔드포인트 — 서버 .env / API 키 상태 확인
+# ─────────────────────────────────────────────
+@app.get("/api/diagnostics")
+def diagnostics():
+    """서버에 .env 가 잘 박혔는지, 외부 API 가 다 살아있는지 한 방에 확인."""
+    import requests
+
+    def mask(s: Optional[str], keep: int = 4) -> str:
+        if not s:
+            return "(없음)"
+        return s[:keep] + "***" + (s[-keep:] if len(s) > keep * 2 else "")
+
+    gem = os.getenv("GEMINI_API_KEY")
+    nv_id = os.getenv("NAVER_CLIENT_ID")
+    nv_sec = os.getenv("NAVER_CLIENT_SECRET")
+    dart = os.getenv("DART_API_KEY")
+
+    results = {
+        "env_loaded": {
+            "GEMINI_API_KEY": mask(gem),
+            "NAVER_CLIENT_ID": mask(nv_id),
+            "NAVER_CLIENT_SECRET": mask(nv_sec),
+            "DART_API_KEY": mask(dart),
+            "GEMINI_MODEL": os.getenv("GEMINI_MODEL", "(default: gemini-2.5-flash)"),
+        },
+        "api_health": {},
+    }
+
+    # Gemini ping
+    try:
+        if gem:
+            r = requests.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={gem}",
+                timeout=8,
+            )
+            results["api_health"]["gemini"] = "OK" if r.status_code == 200 else f"FAIL ({r.status_code})"
+        else:
+            results["api_health"]["gemini"] = "NO KEY"
+    except Exception as e:
+        results["api_health"]["gemini"] = f"ERROR: {e}"
+
+    # Naver ping
+    try:
+        if nv_id and nv_sec:
+            r = requests.get(
+                "https://openapi.naver.com/v1/search/news.json",
+                headers={"X-Naver-Client-Id": nv_id, "X-Naver-Client-Secret": nv_sec},
+                params={"query": "삼성전자", "display": 1},
+                timeout=8,
+            )
+            results["api_health"]["naver"] = "OK" if r.status_code == 200 else f"FAIL ({r.status_code})"
+        else:
+            results["api_health"]["naver"] = "NO KEY"
+    except Exception as e:
+        results["api_health"]["naver"] = f"ERROR: {e}"
+
+    # DART ping
+    try:
+        if dart:
+            r = requests.get(
+                "https://opendart.fss.or.kr/api/list.json",
+                params={"crtfc_key": dart, "corp_code": "00126380",
+                        "bgn_de": "20250101", "end_de": "20250131", "page_count": "1"},
+                timeout=8,
+            )
+            st = r.json().get("status")
+            results["api_health"]["dart"] = "OK" if st in ("000", "013") else f"FAIL ({st})"
+        else:
+            results["api_health"]["dart"] = "NO KEY"
+    except Exception as e:
+        results["api_health"]["dart"] = f"ERROR: {e}"
+
+    results["cache_settings"] = {
+        "hot_stocks_ttl_sec": HOT_STOCKS_CACHE_TTL_SEC,
+        "report_ttl_sec": REPORT_CACHE_TTL_SEC,
+        "parallel_workers": HOT_STOCKS_PARALLEL,
+    }
+    return results
+
+
 @app.get("/api/hot-stocks", response_model=List[HotStock])
-def hot_stocks():
-    """대시보드용 - 매일 동적으로 핫 종목 리스트를 만들어서 분석."""
+def hot_stocks(refresh: bool = False):
+    """대시보드용 - 캐시 5분 + 병렬 8개 워커로 분석."""
+    # 캐시 확인 (refresh=True 면 강제 새로고침)
+    if not refresh:
+        cached = cache_get(HOT_STOCKS_CACHE_KEY, HOT_STOCKS_CACHE_TTL_SEC)
+        if cached:
+            log.info("hot-stocks: cache HIT")
+            return [HotStock(**h) for h in cached]
+
+    log.info("hot-stocks: cache MISS → 병렬 분석 시작")
+    watchlist = build_watchlist()
+
+    out: List[HotStock] = []
+    out_dicts: List[Dict] = []
+
+    def _job(w):
+        try:
+            r = analyze_one(w["ticker"], w["code"], w["name"])
+            return {
+                "ticker": r["ticker"], "name": r["name"], "price": r["price"],
+                "change_pct": r["change_pct"], "grade": r["grade"],
+                "score": r["score"], "summary": r["summary"],
+            }
+        except Exception as e:
+            log.error(f"hot-stocks failed for {w['ticker']}: {e}")
+            return {
+                "ticker": w["code"], "name": w["name"], "price": 0.0,
+                "change_pct": 0.0, "grade": "WATCH", "score": 50,
+                "summary": f"분석 실패: {str(e)[:60]}",
+            }
+
+    with ThreadPoolExecutor(max_workers=HOT_STOCKS_PARALLEL) as ex:
+        futures = {ex.submit(_job, w): w for w in watchlist}
+        results_by_ticker: Dict[str, Dict] = {}
+        for f in as_completed(futures):
+            res = f.result()
+            results_by_ticker[res["ticker"]] = res
+
+    # 원래 순서 유지
+    for w in watchlist:
+        key_ticker = to_yf_ticker(w["code"]) if w.get("code", "").isdigit() and len(w["code"]) == 6 else w["code"]
+        d = results_by_ticker.get(key_ticker) or results_by_ticker.get(w["code"])
+        if d:
+            out_dicts.append(d)
+            out.append(HotStock(**d))
+
+    if out_dicts:
+        cache_set(HOT_STOCKS_CACHE_KEY, out_dicts)
+    log.info(f"hot-stocks: 분석 완료 {len(out)}건, 캐시 저장됨")
+    return out
+
+
+# === 아래는 사용 안 함 (위에서 새 hot_stocks 가 대체) ===
+def _legacy_hot_stocks():
     watchlist = build_watchlist()
     out: List[HotStock] = []
     for w in watchlist:
@@ -361,11 +535,17 @@ def api_search(q: str, limit: int = 20):
 
 
 @app.get("/api/stocks/{ticker}/report", response_model=StockReport)
-def stock_report(ticker: str):
-    """상세 페이지용 - 종목 1개의 풀 리포트."""
+def stock_report(ticker: str, refresh: bool = False):
+    """상세 페이지용 - 캐시 10분."""
     entry = find_watch_entry(ticker)
     if not entry:
         raise HTTPException(404, f"unknown ticker: {ticker}")
+
+    cache_key = f"report:{entry['ticker']}"
+    if not refresh:
+        cached = cache_get(cache_key, REPORT_CACHE_TTL_SEC)
+        if cached:
+            return StockReport(**cached)
 
     try:
         r = analyze_one(entry["ticker"], entry["code"], entry["name"])
@@ -404,7 +584,7 @@ def stock_report(ticker: str):
         debt_ratio=fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None,
     )
 
-    return StockReport(
+    report = StockReport(
         ticker=r["ticker"],
         name=r["name"],
         grade=r["grade"],
@@ -413,6 +593,8 @@ def stock_report(ticker: str):
         financials=financials,
         updated_at=datetime.now().isoformat(),
     )
+    cache_set(cache_key, report.model_dump())
+    return report
 
 
 @app.get("/api/stocks/{ticker}/clipboard", response_model=ClipboardText)
