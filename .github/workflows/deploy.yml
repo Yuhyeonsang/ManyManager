@@ -1,17 +1,17 @@
 name: Deploy to Oracle Cloud
 
-# 자동 트리거는 비활성화 (수동 실행만).
-# 안정화 후 다시 활성화하려면 아래 push: 블록의 주석 풀면 됨.
+# main 브랜치에 파이썬/의존성/배포 관련 파일 푸시 시 자동 배포.
+# 수동 실행도 여전히 가능 (workflow_dispatch).
 on:
   workflow_dispatch:
-  # push:
-  #   branches: [main]
-  #   paths:
-  #     - '*.py'
-  #     - 'requirements.txt'
-  #     - 'runtime.txt'
-  #     - 'deploy/**'
-  #     - '.github/workflows/deploy.yml'
+  push:
+    branches: [main]
+    paths:
+      - '*.py'
+      - 'requirements.txt'
+      - 'runtime.txt'
+      - 'deploy/**'
+      - '.github/workflows/deploy.yml'
 
 jobs:
   deploy:
