@@ -34,14 +34,34 @@ def check_gemini() -> bool:
         print(f"{FAIL} GEMINI_API_KEY가 .env에 비었거나 템플릿 그대로임")
         return False
     try:
-        url = (
-            "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"gemini-1.5-flash:generateContent?key={key}"
-        )
+        list_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+        lr = requests.get(list_url, timeout=10)
+        if lr.status_code != 200:
+            print(f"{FAIL} ListModels HTTP {lr.status_code}: {lr.text[:200]}")
+            return False
+        models = lr.json().get("models", [])
+        usable = [
+            m["name"].replace("models/", "")
+            for m in models
+            if "generateContent" in m.get("supportedGenerationMethods", [])
+        ]
+        if not usable:
+            print(f"{FAIL} generateContent 지원 모델 없음")
+            return False
+
+        preferred = [
+            "gemini-2.5-flash", "gemini-2.0-flash", "gemini-flash-latest",
+            "gemini-2.5-pro", "gemini-2.0-flash-001", "gemini-2.0-flash-lite",
+        ]
+        pick = next((p for p in preferred if p in usable), usable[0])
+        print(f"  사용 가능 모델 {len(usable)}개 → 테스트: {pick}")
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{pick}:generateContent?key={key}"
         body = {"contents": [{"parts": [{"text": "ping"}]}]}
-        r = requests.post(url, json=body, timeout=10)
+        r = requests.post(url, json=body, timeout=15)
         if r.status_code == 200:
-            print(f"{OK} Gemini API 정상 응답")
+            print(f"{OK} Gemini API 정상 응답 (model={pick})")
+            print(f"  → analyzer.py에서 이 모델명 쓰면 됨: '{pick}'")
             return True
         print(f"{FAIL} HTTP {r.status_code}: {r.text[:200]}")
         return False

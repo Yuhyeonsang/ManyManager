@@ -33,12 +33,17 @@ USD_KRW         = float(os.getenv("USD_KRW", "1380"))
 
 # 모델별 단가 ($/1M tokens, 2026 기준 추정 — 필요시 갱신)
 PRICING = {
+    "gemini-2.5-flash":     {"in": 0.30,   "out": 2.50},
+    "gemini-2.5-pro":       {"in": 1.25,   "out": 10.00},
+    "gemini-2.0-flash":     {"in": 0.10,   "out": 0.40},
     "gemini-1.5-flash":     {"in": 0.075,  "out": 0.30},
     "gemini-1.5-pro":       {"in": 1.25,   "out": 5.00},
     "claude-haiku-4-5":     {"in": 1.00,   "out": 5.00},
     "claude-sonnet-4-6":    {"in": 3.00,   "out": 15.00},
     "claude-opus-4-6":      {"in": 15.00,  "out": 75.00},
 }
+
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # Gemini 무료 티어 일일 호출 한도 (Flash 기준)
 GEMINI_FREE_DAILY_CALLS = 1500
@@ -155,7 +160,7 @@ class UsageMonitor:
 # 계측이 적용된 Gemini 래퍼
 # ─────────────────────────────────────────────
 class TrackedGemini(GeminiClient):
-    def __init__(self, monitor: UsageMonitor, model: str = "gemini-1.5-flash"):
+    def __init__(self, monitor: UsageMonitor, model: str = DEFAULT_GEMINI_MODEL):
         super().__init__()
         self.monitor = monitor
         self.model = model
