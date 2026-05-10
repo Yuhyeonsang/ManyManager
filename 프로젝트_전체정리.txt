@@ -1,0 +1,535 @@
+================================================================================
+펀드매니저(ManyManager) 프로젝트 전체 정리
+1단계 ~ 5단계 + 배포 설정
+================================================================================
+작성일: 2026-05-10
+저장소: https://github.com/Yuhyeonsang/ManyManager
+로컬 경로: C:\Users\dbgus\Desktop\ai\펀드매니저만들기\
+오라클 서버: 158.179.164.79 (Ubuntu 22.04, VM.Standard.E2.1.Micro)
+모바일 앱: React Native + Expo SDK 54 (갤럭시 S24)
+================================================================================
+
+
+[ 프로젝트 개요 ]
+--------------------------------------------------------------------------------
+한국 주식 시장의 종목 데이터를 수집/분석하고, 갤럭시 S24의 React Native 앱에서
+조회 가능한 AI 기반 펀드매니저 시스템.
+
+핵심 아키텍처:
+  - 백엔드: FastAPI(Python) + Oracle Cloud Free Tier 무중단 서버
+  - AI: Gemini 1.5 Flash (뉴스 필터링, 관련주 추론)
+  - 시맨틱 레이어: 모든 숫자 계산은 파이썬, AI는 의미 해석만 (환각 방지)
+  - DB: SQLite (핸드폰 내 로컬 + 서버 누적 통계)
+  - 자동 배포: GitHub Actions (push 시 SSH로 서버 업데이트, Expo OTA)
+
+
+================================================================================
+[ 0단계: 환경 설정 ]
+================================================================================
+
+▶ 목표: 다른 PC에서도 한 번에 동일 환경을 만들 수 있는 자동 설치 스크립트 제작
+
+▶ 생성된 파일들 (총 9개):
+
+  1. START_HERE.md          - 처음 시작 가이드 (전체 사용설명서)
+  2. install_all.bat        - 다른 PC 이식용 한 방 설치 (Python+Node 자동)
+  3. install_all.ps1        - install_all.bat이 호출하는 PowerShell 스크립트
+  4. setup.bat              - Python/Node 이미 있을 때 간단 설치
+  5. run_server.bat         - FastAPI 서버 실행 (PC IP 자동 출력)
+  6. run_app.bat            - Expo 개발 서버 실행
+  7. run_monitor.bat        - 15분 모니터링 루프 실행
+  8. requirements.txt       - Python 의존성 (fastapi, yfinance, pandas, ...)
+  9. .env.example           - API 키 템플릿 (Gemini / 네이버 / DART)
+
+▶ 발급 필요한 API 키 3개:
+
+  | 키                        | 발급 사이트                                                 | 비고                |
+  |---------------------------|-------------------------------------------------------------|---------------------|
+  | GEMINI_API_KEY            | https://aistudio.google.com/apikey                          | 무료, Flash 1500회/일 |
+  | NAVER_CLIENT_ID/SECRET    | https://developers.naver.com/apps                           | "검색" API 체크     |
+  | DART_API_KEY              | https://opendart.fss.or.kr/uss/umt/cnfirmKey.do             | 무료, 즉시 발급     |
+
+▶ 발생한 문제와 해결:
+
+  [문제 1] .bat 파일 한글 깨짐
+    원인: UTF-8 저장 → 한국어 cmd(CP949)가 한글을 잘못 해석
+    해결: 모든 .bat 파일을 CP949 + CRLF 인코딩으로 재저장.
+          PowerShell 스크립트는 UTF-8 + BOM 사용.
+          이모지(체크/별/화살표)는 ASCII로 모두 변환.
+
+  [문제 2] expo-sqlite 모듈 깨짐 (Node 22 + Expo SDK 51 호환성)
+    해결: package.json을 Expo SDK 54로 업그레이드
+          (expo ~54.0.0, expo-sqlite ~16.0.8, react 19.1.0,
+           react-native 0.81.4 등)
+
+  [문제 3] react-native-gesture-handler 누락
+    원인: React Navigation v7 native-stack의 peer dependency 누락
+    해결: package.json에 "react-native-gesture-handler": "~2.28.0" 추가
+          + quick_fix.bat 작성
+
+
+================================================================================
+[ 1단계: 데이터 수집 ]
+================================================================================
+
+▶ 목표: 주가, 뉴스, 재무제표를 자동 수집하는 모듈 작성
+
+▶ 생성된 파일: data_collector.py
+
+▶ 핵심 클래스: StockDataCollector
+
+  주요 메서드:
+    - get_price_data(ticker)        : yfinance로 주가/캔들 수집
+    - get_news_data(stock_name)     : 네이버 뉴스 검색 API 호출
+    - get_financial_data(corp_code) : DART API로 재무제표 수집
+    - collect_all(ticker, name, code): 위 3가지 통합 호출
+
+  추가 함수:
+    - collect_news()  : 워치리스트 8종목 뉴스를 일괄 수집
+                        (삼성전자, SK하이닉스, NAVER, 카카오,
+                         현대차, 삼성바이오로직스, 셀트리온, LG에너지솔루션)
+                        종목당 최대 5건, 평탄 리스트로 반환
+
+▶ 데이터 소스:
+  - 주가:    yfinance (pip 패키지, 무료)
+  - 뉴스:    네이버 검색 API (https://openapi.naver.com/v1/search/news.json)
+  - 재무:    DART OPEN API (https://opendart.fss.or.kr)
+
+
+================================================================================
+[ 2단계: 제미나이 필터링 및 리포트 요약 ]
+================================================================================
+
+▶ 목표:
+  1. Gemini 1.5 Flash로 뉴스 헤드라인 분석 → 핵심 뉴스 3개 추출
+  2. 시맨틱 레이어: 숫자 계산은 모두 파이썬이 수행
+  3. 한 페이지 텍스트 리포트로 출력 (클로드 웹에 복붙용)
+
+▶ 생성된 파일: analyzer.py
+
+▶ 3개 클래스 구조:
+
+  [1] GeminiNewsFilter
+      - Gemini 1.5 Flash 호출
+      - 뉴스 압축 (title + desc만 전달) → 토큰 절약
+      - responseMimeType: application/json 강제
+      - top_k 3개 반환, 각 항목에 impact(긍정/부정/중립) + reason 포함
+
+  [2] SemanticLayer (모든 숫자 계산을 파이썬으로)
+      - 가격 지표: MA5/20/60 정·역배열, 20일선 돌파/이탈 %, 52주 위치,
+                   10일 모멘텀
+      - 재무 지표: 영업이익률, 순이익률, YoY 성장률(매출/영업익/순익),
+                   부채비율
+      - AI는 숫자에 손대지 않음
+
+  [3] ReportBuilder
+      - build()로 한 페이지 텍스트 리포트 생성
+      - 섹션: [1] 시세 / [2] 재무 / [3] 뉴스 / [4] 클로드 웹 질의 템플릿
+      - save()로 .txt 저장 가능
+
+▶ 사용 예시:
+    from data_collector import StockDataCollector
+    from analyzer import ReportBuilder
+
+    bundle = StockDataCollector().collect_all("005930.KS", "삼성전자", "005930")
+    print(ReportBuilder().build("005930.KS", bundle, "삼성전자"))
+
+▶ 환경변수 추가: GEMINI_API_KEY
+
+
+================================================================================
+[ 3단계: 뉴스 맥락 분석 및 종목 추론 ]
+================================================================================
+
+▶ 목표:
+  1. 회사 이름이 뉴스에 없어도 밸류체인 키워드로 관련주 추론
+  2. 파이썬으로 [주가추세 + 재무건전성 + 뉴스감성] 종합 → 투자등급 산출
+  3. 리포트에 [관련주 리스트] + [투자등급 + 근거] 추가
+
+▶ analyzer.py에 추가/변경된 클래스들:
+
+  [GeminiClient] - 공통 베이스
+      - call_json() 단일 메서드로 토큰/JSON 파싱/에러 처리 통일
+
+  [RelatedStockInferer] - 숨은 수혜주 포착
+      - infer_related_stocks(news_items, max_candidates)
+      - 밸류체인 5축 분석: upstream / midstream / downstream / policy / peer
+      - 결과 필드: name / ticker / reason / value_chain
+                   / expected_impact / confidence
+
+  [GeminiNewsFilter.sentiment_score()] - 감성 점수 계산
+      - 긍정 +1, 부정 -1, 중립 0 환산 후 평균
+      - 이 숫자 계산도 파이썬이 담당 (환각 방지)
+
+  [InvestmentGrader] - 핵심: 투자 등급 자동 산출
+      모든 분기/점수는 파이썬에서만 평가:
+      - 가격 축 (-2~+2): MA 정/역배열, 10일 모멘텀, 52주 위치
+      - 재무 축 (-2~+2): 매출/영업익 YoY, 영업이익률, 부채비율
+      - 감성 축 (-2~+2): sentiment_score 임계값
+      - 합계 -> "적극 매수 / 매수 / 보유 / 관망 / 비중 축소"
+
+  [ReportBuilder.build()] - 리포트 양식 확장
+      추가 섹션:
+        [4] 추론된 관련주 후보
+        [5] 투자 등급 (축별 점수 + 항목별 근거)
+        [6] 클로드 웹 정밀 분석 질의 템플릿
+            - 1차 등급 동의 여부 / 관련주 Top3 /
+              매매 시나리오 / 거시 리스크
+
+
+================================================================================
+[ 4단계: 실시간 모니터링, SQLite 저장, 토큰 관리 ]
+================================================================================
+
+▶ 목표:
+  1. 15분마다 자동 뉴스 수집 + 분석 루프
+  2. SQLite 로컬 DB 자동 저장 (중복 차단, 용량 최소화)
+  3. Gemini/Claude 호출 시 토큰 수 + USD/KRW 비용 누적 기록
+  4. 일일 예산 한도($1) 초과 시 자동 정지
+
+▶ 생성된 파일: monitor_loop.py
+
+▶ 핵심 동작 흐름:
+  1. SQLite 테이블 구조:
+     - news (PK: hash MD5)         : 중복 차단용 해시 + 본문 일부 + 분석 결과
+     - reports                     : 시간별 종목 리포트 메타+요약
+     - api_usage                   : 호출별 토큰/USD/KRW 누적
+
+  2. 사이클 시작 시:
+     a) today_total() 호출 -> DAILY_BUDGET_USD 초과 시 break
+     b) 신규 뉴스 hash 비교 -> 중복은 건너뜀
+     c) 신규만 Gemini 호출
+     d) 호출 후 사용 토큰 -> api_usage에 기록
+
+  3. 안전 종료:
+     - SIGINT (Ctrl+C) / SIGTERM -> finally 블록에서 DB connection 정리
+
+▶ 환경변수:
+    GEMINI_API_KEY=...
+    LOOP_INTERVAL_MIN=15           # 분 단위 인터벌
+    DAILY_BUDGET_USD=1.0           # 하루 예산 한도
+
+▶ 실행 명령:
+    python monitor_loop.py            # 루프 시작
+    python monitor_loop.py --status   # 오늘 사용량 즉시 조회
+
+
+================================================================================
+[ 5단계: UI 개발 및 배포 ]
+================================================================================
+
+▶ 목표: 갤럭시 S24 ↔ Oracle 서버 연결, OTA 자동 배포 파이프라인
+
+▶ 모바일 앱 구조 (fund-manager-app/):
+  - App.js + index.js
+  - src/screens/DashboardScreen.js   : 핫 종목 10개 리스트
+  - src/screens/DetailScreen.js      : 종목 상세 (가격, 재무, 뉴스, 등급)
+  - src/components/StockCard.js      : 종목 카드 컴포넌트
+  - src/components/GradeBadge.js     : 등급 배지 (적극매수/매수/보유/관망)
+  - src/services/api.js              : Oracle 서버 통신 (axios, timeout 60초)
+  - src/utils/clipboard.js           : 클로드 웹 복붙 도우미
+
+▶ 5단계에서 수정된 핵심 파일들:
+
+  [1] fund-manager-app/src/services/api.js
+      - axios timeout: 15초 -> 60초
+        (yfinance + 네이버 + Gemini 다중 호출로 첫 호출 30~60초 소요)
+
+  [2] /etc/systemd/system/fund-manager.service (서버에 생성)
+      - User=ubuntu
+      - WorkingDirectory=/home/ubuntu/ManyManager
+      - EnvironmentFile=/home/ubuntu/ManyManager/.env
+      - ExecStart=.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+      - Restart=always, RestartSec=5
+      - 로그: /var/log/fund-manager.log (append)
+
+  [3] .github/workflows/deploy.yml
+      - 배포 경로 수정: /opt/fund-manager -> /home/ubuntu/ManyManager
+      - systemd 미등록 시 nohup fallback 추가
+      - 자동 트리거 비활성화 -> 수동 트리거 전용
+        (의도치 않은 서버 다운 방지)
+
+  [4] analyzer.py (Python 3.10 호환성 수정)
+      - line 38: re.sub 정규식이 줄바꿈으로 잘려 unterminated string error
+                 -> 한 줄로 통합
+      - line 179 부근: 자동 포맷터로 if 블록이 한 줄로 뭉친 코드 복원
+
+▶ 정상 동작 확인된 핫 종목 10개:
+   SK이노베이션, 천보, Micron, Coinbase, AMD, ORCL,
+   삼성생명, 와이지엔터, 알테오젠, 한국항공우주
+
+
+================================================================================
+[ 배포 설정 - 서버 인프라 ]
+================================================================================
+
+▶ Oracle Cloud Free Tier 인스턴스
+  - 인스턴스명: instance-20260507-xxxx
+  - 이미지: Canonical Ubuntu 22.04
+  - Shape: VM.Standard.E2.1.Micro (Always Free)
+  - 공인 IP: 158.179.164.79
+  - SSH 키: C:\Users\dbgus\Desktop\ai\자료\ssh\amd\ssh-key-2026-05-07.key
+  - 스왑: 2GB (메모리 압박 대비)
+
+▶ SSH 접속:
+    ssh -i "C:\Users\dbgus\Desktop\ai\자료\ssh\amd\ssh-key-2026-05-07.key" ^
+        ubuntu@158.179.164.79
+
+  Windows 키 권한 오류 시 (icacls):
+    icacls "키경로" /inheritance:r
+    icacls "키경로" /grant:r "%USERNAME%:R"
+
+▶ 원샷 셋업 스크립트: setup_server.sh
+
+  하는 일:
+    1. 1GB 스왑 추가 (메모리 부족 대비)
+    2. apt update && python3.10-venv 설치
+    3. /home/ubuntu/ManyManager git clone
+    4. .venv 생성 + requirements.txt 설치
+    5. .env 템플릿 생성
+    6. /etc/systemd/system/manymanager.service 등록
+    7. ufw/iptables 8000 포트 개방
+    8. systemctl enable + start
+
+  실행 (신규 인스턴스에서):
+    curl -sSL https://raw.githubusercontent.com/Yuhyeonsang/ManyManager/main/setup_server.sh | bash
+
+▶ 외부 접근을 위한 3중 방화벽 통과:
+
+  [A] Oracle VCN Ingress 규칙
+      Networking -> VCN -> Subnet -> Security 탭
+      -> Default Security List -> Add Ingress Rules
+      -> Source CIDR: 0.0.0.0/0, Protocol: TCP, Dest Port: 8000
+
+  [B] Ubuntu iptables (영구화)
+      sudo iptables -I INPUT 5 -m state --state NEW -p tcp --dport 8000 -j ACCEPT
+      sudo netfilter-persistent save
+      # ※ INPUT 5에 넣는 이유: 룰 5번이 REJECT all이라 그 위에 와야 도달함
+
+  [C] uvicorn 바인딩
+      반드시 --host 0.0.0.0 으로 띄워야 외부 접근 가능
+      (127.0.0.1로 묶이면 PC에서만 접근됨)
+
+▶ 메모리 압박 대응:
+  - 스왑 증설:
+      sudo fallocate -l 2G /swapfile
+      sudo chmod 600 /swapfile
+      sudo mkswap /swapfile && sudo swapon /swapfile
+      echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+  - systemd MemoryMax: 800M -> 1500M로 완화
+  - 캐시 워머 영구 비활성: CACHE_WARM_ENABLED=0
+
+
+================================================================================
+[ 배포 설정 - GitHub Actions 자동화 ]
+================================================================================
+
+▶ 워크플로우 3종:
+
+  [1] .github/workflows/deploy.yml - 서버 SSH 자동 배포
+      - 트리거: 수동 (workflow_dispatch) 전용
+      - 동작: SSH로 Oracle 접속 -> git pull -> systemctl restart fund-manager
+
+  [2] .github/workflows/eas-update.yml - Expo OTA 업데이트
+      - 트리거: fund-manager-app/ 경로에 push 시
+      - 동작: eas update --branch preview
+      - 핸드폰에서 앱 재실행 시 자동 적용
+
+  [3] .github/workflows/build-apk.yml - APK 빌드
+      - 트리거: 수동
+      - 동작: eas build --platform android --profile preview
+
+▶ 필요한 GitHub Secrets:
+  - ORACLE_HOST            : 158.179.164.79
+  - ORACLE_USER            : ubuntu
+  - ORACLE_SSH_KEY         : SSH 개인키 전체 내용
+  - EXPO_TOKEN             : https://expo.dev/settings/access-tokens 발급
+
+▶ Expo OTA 수동 발행 (PC PowerShell):
+    cd fund-manager-app
+    eas update --branch preview --message "60s timeout"
+
+
+================================================================================
+[ 배포 중 발생한 사고와 복구 ]
+================================================================================
+
+[사고 1] 캐시 워머 메모리 폭주 -> 인스턴스 OS 무응답
+  현상: SSH 응답 없음, Reboot/Force Stop/Diagnostic Reboot 모두 실패
+  복구: Boot Volume(47GB)이 보존됨을 확인 -> 새 인스턴스 생성 후
+        Boot Volume Attach 또는 setup_server.sh로 재셋업
+  예방: CACHE_WARM_ENABLED=0 강제, 동시 호출 병렬도 제한
+
+[사고 2] SSH 키 매칭 오류 (구 키 vs 신규 인스턴스 키)
+  현상: 새 인스턴스 SSH 시 Permission denied
+  복구: 새 인스턴스 생성 시 다운로드한 ssh-key-2026-05-07.key 사용
+
+[사고 3] iptables 룰 순서 문제
+  현상: 8000 포트 ACCEPT 룰 추가했는데도 외부 접근 차단됨
+  원인: 룰 5번이 REJECT all이라 ACCEPT(룰 6)에 도달 못함
+  복구: iptables -D INPUT 6 후 iptables -I INPUT 5로 위로 이동
+
+[사고 4] analyzer.py 자동 포맷터 syntax error
+  현상: 자동 배포가 SSH로 들어와 pkill -> 재시작 시 SyntaxError로 실패
+  원인: line 38, 179의 정규식과 if 블록이 자동 포맷터로 깨짐
+  복구: PC에서 analyzer.py 수정 -> git push -> SSH로 git pull && restart
+  예방: deploy.yml을 자동 트리거 OFF, 수동 전용으로 변경
+
+[사고 5] .env API 키 노출
+  현상: 사용자가 화면에 .env 내용을 그대로 보여줌
+  대응: 즉시 모든 키 폐기/재발급 안내
+        - Gemini: AIStudio
+        - 네이버: 개발자센터 비밀키 재발급
+        - DART: 인증키 재발급
+
+
+================================================================================
+[ 트러블슈팅 ]
+================================================================================
+
+▶ "python을 인식할 수 없습니다"
+  -> Python 설치 시 "Add python.exe to PATH" 체크 안 함
+  -> 재설치 또는 환경변수 PATH에 추가:
+     C:\Users\<사용자>\AppData\Local\Programs\Python\Python312\
+
+▶ "Network Error" (모바일 앱)
+  1. PC와 핸드폰이 같은 와이파이 연결 (5G 모바일 데이터면 안 됨)
+  2. fund-manager-app/src/services/api.js의 BASE_URL이 PC IP와 일치
+  3. Windows 방화벽 uvicorn 차단 -> 첫 실행 팝업에서 "허용"
+  4. 회사/기숙사 와이파이는 기기 간 통신 차단 -> 핸드폰 핫스팟 사용
+
+▶ "missing GEMINI_API_KEY" / "missing dart api key"
+  -> .env 파일이 없거나 키가 비어있음. .env.example 보고 채워넣기
+
+▶ "Project is incompatible with this version of Expo Go"
+  -> 핸드폰 Expo Go가 최신(SDK 54)인데 프로젝트가 이전 버전
+  -> fix_app.bat 더블클릭 (전체 재설치) 또는 quick_fix.bat (빠진 패키지만)
+
+▶ ImportError: cannot import name 'collect_news'
+  -> data_collector.py 끝에 collect_news() 함수 추가됨 (해결 완료)
+
+
+================================================================================
+[ 현재 잔존 이슈 (다음 작업 후보) ]
+================================================================================
+
+  1. Gemini 뉴스 요약이 "최신 뉴스 부족 또는 Gemini 키 미설정" 메시지로 노출
+     - 가능 원인: 키 노출 후 재발급 미반영, 또는 네이버 뉴스 결과 없음
+     - 점검: 서버 .env의 GEMINI_API_KEY 갱신 + systemctl restart
+
+  2. KOSDAQ 소형주(예: 파마리서치 214450.KQ) 재무 데이터 빈 응답
+     - PER/PBR/ROE/영업이익률이 yfinance에서 누락
+     - 보강 방안: DART 기반 직접 계산 fallback 추가 또는 "-" 표시 정책 결정
+
+  3. 진단 Python 스크립트 (실행 대기):
+       from main import analyze_one
+       # 환경변수, Gemini 호출, 종목 분석 결과 일괄 점검
+
+
+================================================================================
+[ 동작 흐름도 ]
+================================================================================
+
+   [갤럭시 S24]                    [Oracle Server 158.179.164.79]
+      Expo Go         --HTTP-->     uvicorn (포트 8000)
+                                       |
+                                       v
+                                 main.py (FastAPI)
+                                 +-> data_collector.py
+                                 |    +-> yfinance (주가)
+                                 |    +-> 네이버 뉴스 API
+                                 |    +-> DART (재무)
+                                 +-> analyzer.py
+                                      +-> Gemini 1.5 Flash (뉴스 선별, 관련주)
+                                      +-> SemanticLayer (숫자 계산)
+                                      +-> InvestmentGrader (등급 산출)
+                                      +-> ReportBuilder (한 페이지 리포트)
+                                       |
+                                       v
+                                 SQLite: news / reports / api_usage
+
+
+================================================================================
+[ 최종 폴더 구조 ]
+================================================================================
+
+펀드매니저만들기/
+├── START_HERE.md                  ← 빠른 시작 가이드
+├── README.md                      ← 모바일 앱 상세 설명
+├── 프로젝트_전체정리.txt          ← 이 파일
+│
+├── install_all.bat / .ps1         ← 다른 PC 이식용 (Python+Node 자동설치)
+├── setup.bat                      ← 같은 PC 재설치용
+├── run_server.bat                 ← FastAPI 서버 실행
+├── run_app.bat                    ← Expo 개발 서버 실행
+├── run_monitor.bat                ← 모니터링 루프 실행
+├── fix_app.bat / quick_fix.bat    ← 모바일 앱 복구 스크립트
+├── setup_server.sh                ← Oracle 서버 원샷 셋업
+│
+├── requirements.txt               ← Python 의존성 목록
+├── .env.example                   ← API 키 템플릿
+├── .env                           ← 실제 키 (수동 입력, git 제외)
+│
+├── main.py                        ← FastAPI 서버 (모바일 앱 백엔드)
+├── data_collector.py              ← 1단계: 주가/뉴스/재무 데이터 수집
+├── analyzer.py                    ← 2~3단계: AI 분석 + 등급 산정
+├── monitor_loop.py                ← 4단계: 15분 모니터링 루프 + 토큰관리
+│
+├── .github/workflows/
+│   ├── deploy.yml                 ← 서버 SSH 자동 배포 (수동 트리거)
+│   ├── eas-update.yml             ← Expo OTA 자동 업데이트
+│   └── build-apk.yml              ← APK 빌드
+│
+└── fund-manager-app/              ← 5단계: React Native + Expo 모바일 앱
+    ├── App.js
+    ├── index.js
+    ├── package.json               ← Expo SDK 54
+    ├── babel.config.js
+    └── src/
+        ├── screens/
+        │   ├── DashboardScreen.js
+        │   └── DetailScreen.js
+        ├── components/
+        │   ├── StockCard.js
+        │   └── GradeBadge.js
+        ├── services/
+        │   └── api.js             ← timeout 60초
+        └── utils/
+            └── clipboard.js
+
+
+================================================================================
+[ 주요 명령어 치트시트 ]
+================================================================================
+
+# 로컬 개발 (PC)
+run_server.bat                              # FastAPI 백엔드 실행
+run_app.bat                                 # Expo 개발 서버 실행
+run_monitor.bat                             # 15분 모니터링 루프
+
+# 오라클 서버 SSH
+ssh -i "키경로" ubuntu@158.179.164.79
+
+# 서버 서비스 제어
+sudo systemctl status fund-manager          # 상태 확인
+sudo systemctl restart fund-manager         # 재시작
+sudo systemctl enable fund-manager          # 부팅 시 자동시작
+sudo journalctl -u fund-manager -n 50       # 최근 로그 50줄
+tail -f /var/log/fund-manager.log           # 실시간 로그
+
+# 서버에서 코드 업데이트
+cd /home/ubuntu/ManyManager
+git pull
+sudo systemctl restart fund-manager
+
+# Expo OTA 수동 발행
+cd fund-manager-app
+eas update --branch preview --message "변경사항 메모"
+
+# 외부 접근 헬스체크
+curl http://158.179.164.79:8000/health      # 외부에서
+curl http://localhost:8000/health           # 서버 내부에서
+
+================================================================================
+                              ※ 끝 ※
+================================================================================

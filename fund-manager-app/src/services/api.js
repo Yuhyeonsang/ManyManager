@@ -11,7 +11,7 @@ import { getSetting, setSetting, deleteSetting } from './database';
 // 기본 BASE_URL — SQLite 의 settings.base_url 이 비어있을 때 사용되는 fallback.
 // 이 값은 .apk 안에 박혀있지만, 사용자가 앱의 "설정" 화면에서 다른 URL 로
 // 덮어쓰면 그 값이 우선 적용됩니다 (재빌드 없이 변경 가능).
-export const BASE_URL = 'http://192.168.0.4:8000';
+export const BASE_URL = 'http://158.179.164.79:8000';
 
 const SETTINGS_KEY_BASE_URL = 'base_url';
 
