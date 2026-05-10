@@ -74,8 +74,50 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 log = logging.getLogger("fund-api")
 
 
+try:
+    from watchlist_builder import (
+        build_watchlist as _build_wl,
+        get_setting as _wl_get,
+        set_setting as _wl_set,
+        DEFAULT_CATEGORIES as _DEFAULT_CATS,
+    )
+    _WATCHLIST_BUILDER_AVAILABLE = True
+except ImportError:
+    _WATCHLIST_BUILDER_AVAILABLE = False
+
+
 def build_watchlist() -> List[Dict]:
-    """매 호출마다 동적으로 핫 종목 리스트를 만든다."""
+    """SQLite 의 watchlist_mode 설정에 따라 종목 리스트 생성.
+    - volume          : 거래대금 상위 (기본)
+    - news_categories : 카테고리별 핫 뉴스 → Gemini 추론
+    - news_keywords   : 사용자 키워드 → Gemini 추론
+    - hybrid          : 뉴스 + 거래량 혼합
+    """
+    if _WATCHLIST_BUILDER_AVAILABLE:
+        try:
+            items = _build_wl(
+                db_path=DB_PATH,
+                kr_limit=HOT_KR_LIMIT,
+                us_limit=HOT_US_LIMIT,
+                include_us=INCLUDE_US,
+            )
+            out = []
+            for s in items:
+                code = s.get("code") or s.get("ticker", "")
+                ticker = s.get("ticker") or to_yf_ticker(code)
+                out.append({
+                    "code": code,
+                    "name": s.get("name") or code,
+                    "ticker": ticker,
+                    "region": s.get("region") or ("KR" if code.isdigit() and len(code) == 6 else "US"),
+                    "market": s.get("market"),
+                    "news_inference": s.get("news_inference"),
+                })
+            return out
+        except Exception as e:
+            log.warning(f"watchlist_builder failed, fallback to volume: {e}")
+
+    # 폴백 — 기존 거래량 기반
     items: List[Dict] = []
     try:
         kr = get_hot_stocks_kr(limit=HOT_KR_LIMIT)
@@ -87,9 +129,7 @@ def build_watchlist() -> List[Dict]:
             {"code": w["code"], "name": w["name"], "ticker": w["ticker"], "region": "KR", "market": "KOSPI"}
             for w in DEFAULT_WATCHLIST
         ]
-
     items.extend(kr[:HOT_KR_LIMIT])
-
     if INCLUDE_US:
         try:
             us = get_hot_stocks_us(limit=HOT_US_LIMIT)
@@ -97,8 +137,6 @@ def build_watchlist() -> List[Dict]:
             log.warning(f"get_hot_stocks_us failed: {e}")
             us = []
         items.extend(us[:HOT_US_LIMIT])
-
-    # 정규화
     out = []
     for s in items:
         code = s.get("code") or s.get("ticker", "")
@@ -501,6 +539,65 @@ def diagnostics():
         "parallel_workers": HOT_STOCKS_PARALLEL,
     }
     return results
+
+
+# ─────────────────────────────────────────────
+# 종목 선정 모드 설정 API
+# ─────────────────────────────────────────────
+class WatchlistConfig(BaseModel):
+    mode: str  # "volume" | "news_categories" | "news_keywords" | "hybrid"
+    keywords: Optional[List[str]] = None
+    categories: Optional[List[str]] = None
+
+
+@app.get("/api/watchlist/config")
+def get_watchlist_config():
+    if not _WATCHLIST_BUILDER_AVAILABLE:
+        return {"mode": "volume", "available_modes": ["volume"], "error": "watchlist_builder not loaded"}
+    mode = _wl_get(DB_PATH, "watchlist_mode", "volume")
+    kw_raw = _wl_get(DB_PATH, "user_keywords", "[]")
+    cats_raw = _wl_get(DB_PATH, "active_categories", json.dumps(list(_DEFAULT_CATS.keys())))
+    try:
+        keywords = json.loads(kw_raw)
+    except Exception:
+        keywords = []
+    try:
+        active_cats = json.loads(cats_raw)
+    except Exception:
+        active_cats = list(_DEFAULT_CATS.keys())
+    return {
+        "mode": mode,
+        "available_modes": ["volume", "news_categories", "news_keywords", "hybrid"],
+        "keywords": keywords,
+        "active_categories": active_cats,
+        "available_categories": list(_DEFAULT_CATS.keys()),
+        "category_keywords": _DEFAULT_CATS,
+    }
+
+
+@app.post("/api/watchlist/config")
+def set_watchlist_config(cfg: WatchlistConfig):
+    if not _WATCHLIST_BUILDER_AVAILABLE:
+        raise HTTPException(503, "watchlist_builder not loaded on server")
+    valid_modes = {"volume", "news_categories", "news_keywords", "hybrid"}
+    if cfg.mode not in valid_modes:
+        raise HTTPException(400, f"mode must be one of {sorted(valid_modes)}")
+
+    _wl_set(DB_PATH, "watchlist_mode", cfg.mode)
+    if cfg.keywords is not None:
+        _wl_set(DB_PATH, "user_keywords", json.dumps(cfg.keywords, ensure_ascii=False))
+    if cfg.categories is not None:
+        _wl_set(DB_PATH, "active_categories", json.dumps(cfg.categories, ensure_ascii=False))
+
+    # 모드 바뀌면 캐시 무효화 → 다음 요청 시 새로 빌드
+    try:
+        with db_conn() as conn:
+            conn.execute("DELETE FROM report_cache WHERE ticker = ?", (HOT_STOCKS_CACHE_KEY,))
+            conn.commit()
+    except Exception:
+        pass
+
+    return {"ok": True, "mode": cfg.mode, "saved_at": datetime.now().isoformat()}
 
 
 @app.get("/api/hot-stocks", response_model=List[HotStock])
