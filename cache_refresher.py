@@ -18,7 +18,7 @@ from datetime import datetime
 
 # Gemini 2.5 Flash 무료 티어 RPM(분당 호출수) 보호
 # 종목당 ~2회 Gemini 호출 → 분당 10회 한도 안에서 안전한 간격
-GEMINI_RPM_SLEEP_SEC = int(os.getenv("GEMINI_RPM_SLEEP_SEC", "12"))
+GEMINI_RPM_SLEEP_SEC = int(os.getenv("GEMINI_RPM_SLEEP_SEC", "20"))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
