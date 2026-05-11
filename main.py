@@ -766,11 +766,17 @@ def stock_report(ticker: str, refresh: bool = False):
 
 
 @app.get("/api/stocks/{ticker}/clipboard", response_model=ClipboardText)
-def stock_clipboard(ticker: str):
-    """Claude 웹에 그대로 붙여넣을 텍스트."""
+def stock_clipboard(ticker: str, refresh: bool = False):
+    """Claude 웹에 그대로 붙여넣을 텍스트. 캐시 30분."""
     entry = find_watch_entry(ticker)
     if not entry:
         raise HTTPException(404, f"unknown ticker: {ticker}")
+
+    cache_key = f"clipboard:{entry['ticker']}"
+    if not refresh:
+        cached = cache_get(cache_key, REPORT_CACHE_TTL_SEC)
+        if cached and cached.get("text"):
+            return ClipboardText(text=cached["text"])
 
     try:
         bundle = collector.collect_all(
@@ -785,6 +791,7 @@ def stock_clipboard(ticker: str):
             top_k_news=3,
             max_related=8,
         )
+        cache_set(cache_key, {"text": text})
         return ClipboardText(text=text)
     except Exception as e:
         log.exception(f"clipboard failed for {ticker}")

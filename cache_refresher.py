@@ -18,7 +18,7 @@ from datetime import datetime
 
 # Gemini 2.5 Flash 무료 티어 RPM(분당 호출수) 보호
 # 종목당 ~2회 Gemini 호출 → 분당 10회 한도 안에서 안전한 간격
-GEMINI_RPM_SLEEP_SEC = int(os.getenv("GEMINI_RPM_SLEEP_SEC", "8"))
+GEMINI_RPM_SLEEP_SEC = int(os.getenv("GEMINI_RPM_SLEEP_SEC", "12"))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -35,6 +35,7 @@ from main import (
     build_watchlist,
     cache_set,
     HOT_STOCKS_CACHE_KEY,
+    report_builder,
 )
 
 logging.basicConfig(
@@ -104,7 +105,21 @@ def main():
                 "updated_at": datetime.now().isoformat(),
             }
             cache_set(f"report:{r['ticker']}", report_dict)
-            log.info(f"  ✔ {r['name']} 캐시 저장 완료 (등급 {r['grade']}, 점수 {r['score']})")
+
+            # 클립보드 텍스트 사전 생성 → 캐시 (사용자가 누르면 즉시 응답)
+            try:
+                clip_text = report_builder.build(
+                    ticker=r["ticker"],
+                    bundle=bundle,
+                    company_name=r["name"],
+                    top_k_news=3,
+                    max_related=8,
+                )
+                cache_set(f"clipboard:{r['ticker']}", {"text": clip_text})
+                log.info(f"  ✔ {r['name']} 캐시 저장 완료 (등급 {r['grade']}, 점수 {r['score']}, 클립보드 ✔)")
+            except Exception as ex:
+                log.warning(f"  ⚠ {r['name']} 클립보드 생성 실패 (다음 cron 재시도): {ex}")
+                log.info(f"  ✔ {r['name']} 캐시 저장 완료 (등급 {r['grade']}, 점수 {r['score']})")
         except Exception as e:
             log.error(f"  ✗ {w['name']} 실패: {e}")
 
