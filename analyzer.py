@@ -31,26 +31,38 @@ class GeminiClient:
     def call_json(self, prompt: str, temperature: float = 0.2) -> Dict:
         if not self.api_key:
             return {"error": "missing GEMINI_API_KEY"}
-        try:
-            r = requests.post(
-                self.ENDPOINT,
-                params={"key": self.api_key},
-                headers={"Content-Type": "application/json"},
-                json={
-                    "contents": [{"parts": [{"text": prompt}]}],
-                    "generationConfig": {
-                        "temperature": temperature,
-                        "responseMimeType": "application/json",
+        # 429 (RPM 한도 초과) 시 최대 2회 재시도, 각 30초 대기
+        import time as _t
+        last_err = None
+        for attempt in range(3):
+            try:
+                r = requests.post(
+                    self.ENDPOINT,
+                    params={"key": self.api_key},
+                    headers={"Content-Type": "application/json"},
+                    json={
+                        "contents": [{"parts": [{"text": prompt}]}],
+                        "generationConfig": {
+                            "temperature": temperature,
+                            "responseMimeType": "application/json",
+                        },
                     },
-                },
-                timeout=30,
-            )
-            r.raise_for_status()
-            text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-            text = re.sub(r"^```(?:json)?\s*|\s*```\s*$", "", text, flags=re.S)
-            return json.loads(text)
-        except Exception as e:
-            return {"error": f"gemini call failed: {e}"}
+                    timeout=30,
+                )
+                if r.status_code == 429 and attempt < 2:
+                    _t.sleep(30)  # RPM 풀릴 때까지 대기
+                    continue
+                r.raise_for_status()
+                text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                text = re.sub(r"^```(?:json)?\s*|\s*```\s*$", "", text, flags=re.S)
+                return json.loads(text)
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    _t.sleep(15)
+                    continue
+                break
+        return {"error": f"gemini call failed: {last_err}"}
  
  
 class GeminiNewsFilter(GeminiClient):

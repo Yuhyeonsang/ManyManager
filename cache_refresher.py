@@ -12,8 +12,13 @@ cron 등록 예 (30분마다):
 import os
 import sys
 import json
+import time
 import logging
 from datetime import datetime
+
+# Gemini 2.5 Flash 무료 티어 RPM(분당 호출수) 보호
+# 종목당 ~2회 Gemini 호출 → 분당 10회 한도 안에서 안전한 간격
+GEMINI_RPM_SLEEP_SEC = int(os.getenv("GEMINI_RPM_SLEEP_SEC", "8"))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -49,6 +54,10 @@ def main():
 
     hot_results = []
     for i, w in enumerate(wl, 1):
+        # 첫 종목 외에는 Gemini RPM 보호용 sleep
+        if i > 1 and GEMINI_RPM_SLEEP_SEC > 0:
+            log.info(f"  ⏳ Gemini RPM 보호 — {GEMINI_RPM_SLEEP_SEC}초 대기")
+            time.sleep(GEMINI_RPM_SLEEP_SEC)
         try:
             log.info(f"[{i}/{len(wl)}] {w['name']} ({w['code']}) 분석 중...")
             r = analyze_one(w["ticker"], w["code"], w["name"])
