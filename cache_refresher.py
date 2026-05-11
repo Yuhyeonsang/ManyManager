@@ -13,8 +13,9 @@ import os
 import sys
 import json
 import time
+import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 
 # Gemini 2.5 Flash 무료 티어 RPM(분당 호출수) 보호
 # 종목당 ~2회 Gemini 호출 → 분당 10회 한도 안에서 안전한 간격
@@ -45,10 +46,55 @@ logging.basicConfig(
 log = logging.getLogger("cache-refresher")
 
 
+def cleanup_expired_cache():
+    """1시간 이상 된 캐시 삭제 + DB 공간 회수.
+    호출당 한 번 실행되므로 매 cron마다 정리됨."""
+    db_path = os.getenv("FUND_DB", "/home/ubuntu/ManyManager/fund_manager.db")
+    cutoff = (datetime.now() - timedelta(hours=1)).isoformat()
+    try:
+        with sqlite3.connect(db_path) as conn:
+            cur = conn.execute(
+                "DELETE FROM report_cache WHERE updated_at < ?",
+                (cutoff,)
+            )
+            deleted = cur.rowcount
+            conn.commit()
+
+            # 매일 한 번 (자정 ~ 00:30) VACUUM 해서 디스크 회수
+            now_h = datetime.now().hour
+            now_m = datetime.now().minute
+            if now_h == 0 and now_m < 40:
+                conn.execute("VACUUM")
+                log.info("  ▶ DB VACUUM 완료 (일일 디스크 회수)")
+
+        if deleted > 0:
+            log.info(f"  ▶ 만료 캐시 {deleted}건 삭제")
+    except Exception as e:
+        log.warning(f"  ⚠ 캐시 정리 실패: {e}")
+
+
+def check_disk_and_memory():
+    """디스크/메모리 상태 점검 + 위험 시 경고."""
+    try:
+        import shutil
+        total, used, free = shutil.disk_usage("/")
+        used_pct = used / total * 100
+        if used_pct > 85:
+            log.warning(f"  🚨 디스크 사용률 {used_pct:.1f}% (위험)")
+        elif used_pct > 70:
+            log.info(f"  ⚠ 디스크 사용률 {used_pct:.1f}%")
+        else:
+            log.info(f"  ✔ 디스크 {used_pct:.1f}% / 여유 {free//(1024**3)}GB")
+    except Exception as e:
+        log.warning(f"  ⚠ 디스크 체크 실패: {e}")
+
+
 def main():
     log.info("=" * 50)
     log.info("캐시 갱신 시작")
     log.info("=" * 50)
+    cleanup_expired_cache()
+    check_disk_and_memory()
 
     wl = build_watchlist()
     log.info(f"분석 대상 {len(wl)}개 종목 (순차 처리)")

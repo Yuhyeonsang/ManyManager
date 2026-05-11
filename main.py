@@ -171,6 +171,19 @@ grader = InvestmentGrader()
 sem = SemanticLayer()
 report_builder = ReportBuilder(gemini_filter, related_inferer, grader)
 
+# ── 서버 안전장치 (safety.py) ──
+# 1) Gemini 호출에 분당 10회 / 일 250회 제한 자동 적용
+# 2) cache_set 시 만료 행 주기적 청소
+# 3) compute_with_cache 로 cache stampede 방지 (엔드포인트에서 사용)
+from safety import (
+    install_gemini_rate_limit,
+    db_cleaner,
+    keyed_lock,
+    compute_with_cache,
+    gemini_limiter,
+)
+install_gemini_rate_limit(gemini_filter, related_inferer)
+
 
 # ─────────────────────────────────────────────
 # 백그라운드 캐시 워머 — 사용자 첫 요청을 항상 즉시 응답되게
@@ -458,6 +471,8 @@ def cache_set(key: str, payload: Dict) -> None:
             conn.commit()
     except Exception as e:
         log.warning(f"cache_set({key}) failed: {e}")
+    # 매 N번 set마다 만료 캐시 자동 청소 (DB 무한 증가 방지)
+    db_cleaner.maybe_clean(DB_PATH, max(REPORT_CACHE_TTL_SEC, HOT_STOCKS_CACHE_TTL_SEC) * 6)
 
 
 # ─────────────────────────────────────────────
@@ -602,7 +617,7 @@ def set_watchlist_config(cfg: WatchlistConfig):
 
 @app.get("/api/hot-stocks", response_model=List[HotStock])
 def hot_stocks(refresh: bool = False):
-    """대시보드용 - 캐시 5분 + 병렬 8개 워커로 분석."""
+    """대시보드용 - 캐시 5분 + 병렬 8개 워커 + stampede 락."""
     # 캐시 확인 (refresh=True 면 강제 새로고침)
     if not refresh:
         cached = cache_get(HOT_STOCKS_CACHE_KEY, HOT_STOCKS_CACHE_TTL_SEC)
@@ -610,47 +625,57 @@ def hot_stocks(refresh: bool = False):
             log.info("hot-stocks: cache HIT")
             return [HotStock(**h) for h in cached]
 
-    log.info("hot-stocks: cache MISS → 병렬 분석 시작")
-    watchlist = build_watchlist()
+    # ★ Cache stampede 방지 - 동일 키 동시 분석 차단
+    _stampede_lock = keyed_lock.get(HOT_STOCKS_CACHE_KEY)
+    with _stampede_lock:
+        # 락 획득 후 다시 확인 (그 사이 다른 워커가 채웠을 수 있음)
+        if not refresh:
+            cached = cache_get(HOT_STOCKS_CACHE_KEY, HOT_STOCKS_CACHE_TTL_SEC)
+            if cached:
+                log.info("hot-stocks: stampede 방지 - 다른 워커 결과 사용")
+                return [HotStock(**h) for h in cached]
 
-    out: List[HotStock] = []
-    out_dicts: List[Dict] = []
+        log.info("hot-stocks: cache MISS → 병렬 분석 시작")
+        watchlist = build_watchlist()
 
-    def _job(w):
-        try:
-            r = analyze_one(w["ticker"], w["code"], w["name"])
-            return {
-                "ticker": r["ticker"], "name": r["name"], "price": r["price"],
-                "change_pct": r["change_pct"], "grade": r["grade"],
-                "score": r["score"], "summary": r["summary"],
-            }
-        except Exception as e:
-            log.error(f"hot-stocks failed for {w['ticker']}: {e}")
-            return {
-                "ticker": w["code"], "name": w["name"], "price": 0.0,
-                "change_pct": 0.0, "grade": "WATCH", "score": 50,
-                "summary": f"분석 실패: {str(e)[:60]}",
-            }
+        out: List[HotStock] = []
+        out_dicts: List[Dict] = []
 
-    with ThreadPoolExecutor(max_workers=HOT_STOCKS_PARALLEL) as ex:
-        futures = {ex.submit(_job, w): w for w in watchlist}
-        results_by_ticker: Dict[str, Dict] = {}
-        for f in as_completed(futures):
-            res = f.result()
-            results_by_ticker[res["ticker"]] = res
+        def _job(w):
+            try:
+                r = analyze_one(w["ticker"], w["code"], w["name"])
+                return {
+                    "ticker": r["ticker"], "name": r["name"], "price": r["price"],
+                    "change_pct": r["change_pct"], "grade": r["grade"],
+                    "score": r["score"], "summary": r["summary"],
+                }
+            except Exception as e:
+                log.error(f"hot-stocks failed for {w['ticker']}: {e}")
+                return {
+                    "ticker": w["code"], "name": w["name"], "price": 0.0,
+                    "change_pct": 0.0, "grade": "WATCH", "score": 50,
+                    "summary": f"분석 실패: {str(e)[:60]}",
+                }
 
-    # 원래 순서 유지
-    for w in watchlist:
-        key_ticker = to_yf_ticker(w["code"]) if w.get("code", "").isdigit() and len(w["code"]) == 6 else w["code"]
-        d = results_by_ticker.get(key_ticker) or results_by_ticker.get(w["code"])
-        if d:
-            out_dicts.append(d)
-            out.append(HotStock(**d))
+        with ThreadPoolExecutor(max_workers=HOT_STOCKS_PARALLEL) as ex:
+            futures = {ex.submit(_job, w): w for w in watchlist}
+            results_by_ticker: Dict[str, Dict] = {}
+            for f in as_completed(futures):
+                res = f.result()
+                results_by_ticker[res["ticker"]] = res
 
-    if out_dicts:
-        cache_set(HOT_STOCKS_CACHE_KEY, out_dicts)
-    log.info(f"hot-stocks: 분석 완료 {len(out)}건, 캐시 저장됨")
-    return out
+        # 원래 순서 유지
+        for w in watchlist:
+            key_ticker = to_yf_ticker(w["code"]) if w.get("code", "").isdigit() and len(w["code"]) == 6 else w["code"]
+            d = results_by_ticker.get(key_ticker) or results_by_ticker.get(w["code"])
+            if d:
+                out_dicts.append(d)
+                out.append(HotStock(**d))
+
+        if out_dicts:
+            cache_set(HOT_STOCKS_CACHE_KEY, out_dicts)
+        log.info(f"hot-stocks: 분석 완료 {len(out)}건, 캐시 저장됨")
+        return out
 
 
 # === 아래는 사용 안 함 (위에서 새 hot_stocks 가 대체) ===
@@ -704,7 +729,7 @@ def api_search(q: str, limit: int = 20):
 
 @app.get("/api/stocks/{ticker}/report", response_model=StockReport)
 def stock_report(ticker: str, refresh: bool = False):
-    """상세 페이지용 - 캐시 10분."""
+    """상세 페이지용 - 캐시 10분 + stampede 락."""
     entry = find_watch_entry(ticker)
     if not entry:
         raise HTTPException(404, f"unknown ticker: {ticker}")
@@ -715,59 +740,67 @@ def stock_report(ticker: str, refresh: bool = False):
         if cached:
             return StockReport(**cached)
 
-    try:
-        r = analyze_one(entry["ticker"], entry["code"], entry["name"])
-    except Exception as e:
-        log.exception(f"report failed for {ticker}")
-        raise HTTPException(500, f"analysis failed: {e}")
+    # ★ Cache stampede 방지 - 같은 종목 동시 분석 차단
+    with keyed_lock.get(cache_key):
+        if not refresh:
+            cached = cache_get(cache_key, REPORT_CACHE_TTL_SEC)
+            if cached:
+                log.info(f"stock_report: stampede 방지 - {cache_key}")
+                return StockReport(**cached)
 
-    intr = r["_internals"]
-    fin_an = intr["fin_an"]
-    picks = intr["picks"]
-    bundle = intr["bundle"]
-    market_metrics = (bundle or {}).get("market_metrics") or {}
+        try:
+            r = analyze_one(entry["ticker"], entry["code"], entry["name"])
+        except Exception as e:
+            log.exception(f"report failed for {ticker}")
+            raise HTTPException(500, f"analysis failed: {e}")
 
-    # 뉴스 요약 텍스트
-    if picks and not picks[0].get("error"):
-        news_lines = [f"• [{p.get('impact','-')}] {p.get('title','')}" for p in picks]
-        news_summary = "\n".join(news_lines)
-    else:
-        news_summary = "최신 뉴스 부족 또는 Gemini 키 미설정"
+        intr = r["_internals"]
+        fin_an = intr["fin_an"]
+        picks = intr["picks"]
+        bundle = intr["bundle"]
+        market_metrics = (bundle or {}).get("market_metrics") or {}
 
-    # 재무 지표 추출
-    margins = (fin_an.get("margins") or {}) if not fin_an.get("error") else {}
-    growth = (fin_an.get("yoy_growth_pct") or {}) if not fin_an.get("error") else {}
+        # 뉴스 요약 텍스트
+        if picks and not picks[0].get("error"):
+            news_lines = [f"• [{p.get('impact','-')}] {p.get('title','')}" for p in picks]
+            news_summary = "\n".join(news_lines)
+        else:
+            news_summary = "최신 뉴스 부족 또는 Gemini 키 미설정"
 
-    # PER/PBR/ROE - 1순위: DART 기반 계산값(없음), 2순위: yfinance.info
-    per = None if market_metrics.get("error") else market_metrics.get("per")
-    pbr = None if market_metrics.get("error") else market_metrics.get("pbr")
-    roe = None if market_metrics.get("error") else market_metrics.get("roe_pct")
+        # 재무 지표 추출
+        margins = (fin_an.get("margins") or {}) if not fin_an.get("error") else {}
+        growth = (fin_an.get("yoy_growth_pct") or {}) if not fin_an.get("error") else {}
 
-    financials = Financials(
-        per=per,
-        pbr=pbr,
-        roe=roe,
-        revenue_growth=growth.get("revenue"),
-        operating_margin=margins.get("operating_margin_pct"),
-        debt_ratio=fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None,
-    )
+        # PER/PBR/ROE - 1순위: DART 기반 계산값(없음), 2순위: yfinance.info
+        per = None if market_metrics.get("error") else market_metrics.get("per")
+        pbr = None if market_metrics.get("error") else market_metrics.get("pbr")
+        roe = None if market_metrics.get("error") else market_metrics.get("roe_pct")
 
-    report = StockReport(
-        ticker=r["ticker"],
-        name=r["name"],
-        grade=r["grade"],
-        score=r["score"],
-        news_summary=news_summary,
-        financials=financials,
-        updated_at=datetime.now().isoformat(),
-    )
-    cache_set(cache_key, report.model_dump())
-    return report
+        financials = Financials(
+            per=per,
+            pbr=pbr,
+            roe=roe,
+            revenue_growth=growth.get("revenue"),
+            operating_margin=margins.get("operating_margin_pct"),
+            debt_ratio=fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None,
+        )
+
+        report = StockReport(
+            ticker=r["ticker"],
+            name=r["name"],
+            grade=r["grade"],
+            score=r["score"],
+            news_summary=news_summary,
+            financials=financials,
+            updated_at=datetime.now().isoformat(),
+        )
+        cache_set(cache_key, report.model_dump())
+        return report
 
 
 @app.get("/api/stocks/{ticker}/clipboard", response_model=ClipboardText)
 def stock_clipboard(ticker: str, refresh: bool = False):
-    """Claude 웹에 그대로 붙여넣을 텍스트. 캐시 30분."""
+    """Claude 웹에 그대로 붙여넣을 텍스트. 캐시 10분 + stampede 락."""
     entry = find_watch_entry(ticker)
     if not entry:
         raise HTTPException(404, f"unknown ticker: {ticker}")
@@ -778,24 +811,59 @@ def stock_clipboard(ticker: str, refresh: bool = False):
         if cached and cached.get("text"):
             return ClipboardText(text=cached["text"])
 
-    try:
-        bundle = collector.collect_all(
-            ticker=entry["ticker"],
-            news_query=entry["name"],
-            stock_code=entry["code"],
-        )
-        text = report_builder.build(
-            ticker=entry["ticker"],
-            bundle=bundle,
-            company_name=entry["name"],
-            top_k_news=3,
-            max_related=8,
-        )
-        cache_set(cache_key, {"text": text})
-        return ClipboardText(text=text)
-    except Exception as e:
-        log.exception(f"clipboard failed for {ticker}")
-        raise HTTPException(500, f"clipboard build failed: {e}")
+    # ★ Cache stampede 방지
+    with keyed_lock.get(cache_key):
+        if not refresh:
+            cached = cache_get(cache_key, REPORT_CACHE_TTL_SEC)
+            if cached and cached.get("text"):
+                log.info(f"stock_clipboard: stampede 방지 - {cache_key}")
+                return ClipboardText(text=cached["text"])
+
+        try:
+            bundle = collector.collect_all(
+                ticker=entry["ticker"],
+                news_query=entry["name"],
+                stock_code=entry["code"],
+            )
+            text = report_builder.build(
+                ticker=entry["ticker"],
+                bundle=bundle,
+                company_name=entry["name"],
+                top_k_news=3,
+                max_related=8,
+            )
+            cache_set(cache_key, {"text": text})
+            return ClipboardText(text=text)
+        except Exception as e:
+            log.exception(f"clipboard failed for {ticker}")
+            raise HTTPException(500, f"clipboard build failed: {e}")
+
+
+# ─────────────────────────────────────────────
+# 안전장치 진단 엔드포인트
+# ─────────────────────────────────────────────
+@app.get("/api/safety/stats")
+def safety_stats():
+    """rate limiter / DB cleaner / keyed lock 현재 상태."""
+    return {
+        "gemini_limiter": gemini_limiter.stats(),
+        "db_cleaner": db_cleaner.stats(),
+        "keyed_lock": keyed_lock.stats(),
+        "cache_settings": {
+            "hot_stocks_ttl_sec": HOT_STOCKS_CACHE_TTL_SEC,
+            "report_ttl_sec": REPORT_CACHE_TTL_SEC,
+        },
+    }
+
+
+@app.post("/api/safety/cleanup-cache")
+def safety_cleanup_cache():
+    """report_cache 만료 행 즉시 청소 (관리자용)."""
+    deleted = db_cleaner.force_clean(
+        DB_PATH,
+        max(REPORT_CACHE_TTL_SEC, HOT_STOCKS_CACHE_TTL_SEC) * 6,
+    )
+    return {"deleted": deleted, "ok": True}
 
 
 # ─────────────────────────────────────────────
