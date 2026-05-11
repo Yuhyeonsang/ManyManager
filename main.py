@@ -553,8 +553,8 @@ class WatchlistConfig(BaseModel):
 @app.get("/api/watchlist/config")
 def get_watchlist_config():
     if not _WATCHLIST_BUILDER_AVAILABLE:
-        return {"mode": "volume", "available_modes": ["volume"], "error": "watchlist_builder not loaded"}
-    mode = _wl_get(DB_PATH, "watchlist_mode", "volume")
+        return {"mode": "news_hot", "available_modes": ["news_hot"], "error": "watchlist_builder not loaded"}
+    mode = _wl_get(DB_PATH, "watchlist_mode", "news_hot")
     kw_raw = _wl_get(DB_PATH, "user_keywords", "[]")
     cats_raw = _wl_get(DB_PATH, "active_categories", json.dumps(list(_DEFAULT_CATS.keys())))
     try:
@@ -567,7 +567,7 @@ def get_watchlist_config():
         active_cats = list(_DEFAULT_CATS.keys())
     return {
         "mode": mode,
-        "available_modes": ["volume", "news_categories", "news_keywords", "hybrid"],
+        "available_modes": ["news_hot", "news_categories", "news_keywords"],
         "keywords": keywords,
         "active_categories": active_cats,
         "available_categories": list(_DEFAULT_CATS.keys()),
@@ -579,7 +579,7 @@ def get_watchlist_config():
 def set_watchlist_config(cfg: WatchlistConfig):
     if not _WATCHLIST_BUILDER_AVAILABLE:
         raise HTTPException(503, "watchlist_builder not loaded on server")
-    valid_modes = {"volume", "news_categories", "news_keywords", "hybrid"}
+    valid_modes = {"news_hot", "news_categories", "news_keywords"}
     if cfg.mode not in valid_modes:
         raise HTTPException(400, f"mode must be one of {sorted(valid_modes)}")
 

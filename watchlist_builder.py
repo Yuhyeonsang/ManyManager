@@ -20,7 +20,7 @@ from data_collector import (
 from analyzer import RelatedStockInferer
 
 
-# 기본 카테고리 → 검색 키워드 매핑
+# 기본 카테고리 → 검색 키워드 매핑 (news_categories 모드용)
 DEFAULT_CATEGORIES: Dict[str, List[str]] = {
     "AI/반도체":  ["AI 반도체", "엔비디아 한국", "HBM 메모리"],
     "2차전지":    ["2차전지", "전기차 배터리", "양극재"],
@@ -31,6 +31,19 @@ DEFAULT_CATEGORIES: Dict[str, List[str]] = {
     "원전":       ["원전 수주", "SMR"],
     "로봇":       ["로봇 산업", "협동로봇"],
 }
+
+# 시장 전체에서 종목 영향력 큰 뉴스를 찾기 위한 키워드 (news_hot 모드용)
+HOT_MARKET_QUERIES: List[str] = [
+    "주가 급등",
+    "신고가",
+    "상한가",
+    "어닝 서프라이즈",
+    "실적 발표",
+    "대규모 수주",
+    "신제품 출시",
+    "M&A 인수합병",
+    "테마주",
+]
 
 
 # ─────────────────────────────────────────────
@@ -192,11 +205,17 @@ def build_watchlist(
     us_limit: int = 2,
     include_us: bool = True,
 ) -> List[Dict]:
+    """뉴스 기반 종목 선정만 사용. 추론 결과 없으면 빈 리스트."""
     if mode is None:
-        mode = get_setting(db_path, "watchlist_mode", "volume") or "volume"
+        mode = get_setting(db_path, "watchlist_mode", "news_hot") or "news_hot"
 
     total = kr_limit + us_limit
 
+    # ⭐ 핫 뉴스 기반 — 시장 전체에서 영향력 있는 뉴스 → 종목 추론
+    if mode == "news_hot":
+        return build_news_inferred(HOT_MARKET_QUERIES, limit=total)[:total]
+
+    # 카테고리 기반
     if mode == "news_categories":
         cats_raw = get_setting(db_path, "active_categories",
                                json.dumps(list(DEFAULT_CATEGORIES.keys())))
@@ -207,11 +226,9 @@ def build_watchlist(
         queries: List[str] = []
         for cat in active_cats:
             queries.extend(DEFAULT_CATEGORIES.get(cat, [cat]))
-        items = build_news_inferred(queries, limit=total)
-        if not items:
-            items = build_volume_based(kr_limit, us_limit, include_us)
-        return items[:total]
+        return build_news_inferred(queries, limit=total)[:total]
 
+    # 키워드 기반
     if mode == "news_keywords":
         kw_raw = get_setting(db_path, "user_keywords", "[]")
         try:
@@ -219,31 +236,8 @@ def build_watchlist(
         except Exception:
             keywords = []
         if not keywords:
-            return build_volume_based(kr_limit, us_limit, include_us)
-        items = build_news_inferred(keywords, limit=total)
-        if not items:
-            items = build_volume_based(kr_limit, us_limit, include_us)
-        return items[:total]
+            return []
+        return build_news_inferred(keywords, limit=total)[:total]
 
-    if mode == "hybrid":
-        cats_raw = get_setting(db_path, "active_categories",
-                               json.dumps(list(DEFAULT_CATEGORIES.keys())[:3]))
-        try:
-            active_cats = json.loads(cats_raw)
-        except Exception:
-            active_cats = list(DEFAULT_CATEGORIES.keys())[:3]
-        queries: List[str] = []
-        for cat in active_cats[:3]:
-            queries.extend(DEFAULT_CATEGORIES.get(cat, [cat]))
-        news_items = build_news_inferred(queries, limit=total // 2 + 1)
-        vol_items = build_volume_based(kr_limit, us_limit, include_us)
-        seen = set()
-        merged: List[Dict] = []
-        for x in news_items + vol_items:
-            c = x.get("code")
-            if c and c not in seen:
-                seen.add(c)
-                merged.append(x)
-        return merged[:total]
-
-    return build_volume_based(kr_limit, us_limit, include_us)
+    # 알 수 없는 모드 → news_hot 으로 폴백
+    return build_news_inferred(HOT_MARKET_QUERIES, limit=total)[:total]
