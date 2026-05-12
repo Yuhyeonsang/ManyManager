@@ -734,11 +734,13 @@ def stock_report(ticker: str, refresh: bool = False):
     if not entry:
         raise HTTPException(404, f"unknown ticker: {ticker}")
 
-    cache_key = f"report:{entry['ticker']}"
     if not refresh:
-        cached = cache_get(cache_key, REPORT_CACHE_TTL_SEC)
+        cached = cache_get(f"report:{entry['ticker']}", REPORT_CACHE_TTL_SEC)
+        if not cached:
+            cached = cache_get(f"report:{entry['code']}", REPORT_CACHE_TTL_SEC)
         if cached:
             return StockReport(**cached)
+    cache_key = f"report:{entry['ticker']}"
 
     # ★ Cache stampede 방지 - 같은 종목 동시 분석 차단
     with keyed_lock.get(cache_key):
@@ -805,11 +807,14 @@ def stock_clipboard(ticker: str, refresh: bool = False):
     if not entry:
         raise HTTPException(404, f"unknown ticker: {ticker}")
 
-    cache_key = f"clipboard:{entry['ticker']}"
     if not refresh:
-        cached = cache_get(cache_key, REPORT_CACHE_TTL_SEC)
+        # yf_ticker 키 우선, 없으면 code 키로 폴백
+        cached = cache_get(f"clipboard:{entry['ticker']}", REPORT_CACHE_TTL_SEC)
+        if not cached or not cached.get("text"):
+            cached = cache_get(f"clipboard:{entry['code']}", REPORT_CACHE_TTL_SEC)
         if cached and cached.get("text"):
             return ClipboardText(text=cached["text"])
+    cache_key = f"clipboard:{entry['ticker']}"
 
     # ★ Cache stampede 방지
     with keyed_lock.get(cache_key):

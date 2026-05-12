@@ -150,9 +150,15 @@ def main():
                 },
                 "updated_at": datetime.now().isoformat(),
             }
-            cache_set(f"report:{r['ticker']}", report_dict)
+            # ⭐ 캐시 키 통일 — main.py 가 yf_ticker (.KS 포함) 로 검색하므로 둘 다 저장
+            yf_t = w.get("ticker") or r["ticker"]   # 예: "005380.KS"
+            code = r["ticker"]                       # 예: "005380"
+            keys = list({yf_t, code})                # 중복 제거 (US 종목은 같음)
 
-            # 클립보드 텍스트 사전 생성 → 캐시 (사용자가 누르면 즉시 응답)
+            for k in keys:
+                cache_set(f"report:{k}", report_dict)
+
+            # 클립보드 텍스트 사전 생성 → 양쪽 키 모두 저장
             try:
                 clip_text = report_builder.build(
                     ticker=r["ticker"],
@@ -161,7 +167,8 @@ def main():
                     top_k_news=3,
                     max_related=8,
                 )
-                cache_set(f"clipboard:{r['ticker']}", {"text": clip_text})
+                for k in keys:
+                    cache_set(f"clipboard:{k}", {"text": clip_text})
                 log.info(f"  ✔ {r['name']} 캐시 저장 완료 (등급 {r['grade']}, 점수 {r['score']}, 클립보드 ✔)")
             except Exception as ex:
                 log.warning(f"  ⚠ {r['name']} 클립보드 생성 실패 (다음 cron 재시도): {ex}")
