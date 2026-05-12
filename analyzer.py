@@ -11,34 +11,95 @@ try:
 except ImportError:
     pass
 
-DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 
 class GeminiClient:
-    """Gemini 호출 공통 베이스. 토큰 절약 + JSON 강제."""
+    """LLM 호출 공통 베이스.
+    GROQ_API_KEY 가 있으면 Groq (Llama) 사용 — 매우 빠르고 한도가 넉넉.
+    없으면 Gemini fallback.
+    클래스명은 호환성을 위해 유지 (safety.py 의 RateLimiter 등이 동작하도록)."""
+
+    GROQ_ENDPOINT = "https://api.groq.com/openai/v1/chat/completions"
 
     def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
-        self.api_key = api_key or os.getenv("GEMINI_API_KEY")
-        self.model = model or DEFAULT_GEMINI_MODEL
+        # provider 자동 선택
+        self.groq_key = os.getenv("GROQ_API_KEY")
+        self.groq_model = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)
+        self.gemini_key = api_key or os.getenv("GEMINI_API_KEY")
+        self.gemini_model = model or DEFAULT_GEMINI_MODEL
+        self.provider = "groq" if self.groq_key else "gemini"
+        # 하위 호환 — 기존 코드가 self.api_key, self.model 참조해도 동작
+        self.api_key = self.groq_key if self.provider == "groq" else self.gemini_key
+        self.model = self.groq_model if self.provider == "groq" else self.gemini_model
 
     @property
     def ENDPOINT(self) -> str:
+        if self.provider == "groq":
+            return self.GROQ_ENDPOINT
         return (
             "https://generativelanguage.googleapis.com/v1beta/models/"
-            f"{self.model}:generateContent"
+            f"{self.gemini_model}:generateContent"
         )
- 
+
     def call_json(self, prompt: str, temperature: float = 0.2) -> Dict:
-        if not self.api_key:
-            return {"error": "missing GEMINI_API_KEY"}
-        # 429 (RPM 한도 초과) 시 최대 2회 재시도, 각 30초 대기
+        if self.provider == "groq":
+            return self._call_groq(prompt, temperature)
+        return self._call_gemini(prompt, temperature)
+
+    def _call_groq(self, prompt: str, temperature: float = 0.2) -> Dict:
+        if not self.groq_key:
+            return {"error": "missing GROQ_API_KEY"}
         import time as _t
         last_err = None
         for attempt in range(3):
             try:
                 r = requests.post(
-                    self.ENDPOINT,
-                    params={"key": self.api_key},
+                    self.GROQ_ENDPOINT,
+                    headers={
+                        "Authorization": f"Bearer {self.groq_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": self.groq_model,
+                        "messages": [
+                            {"role": "user", "content": prompt + "\n\n반드시 JSON 객체만 출력."}
+                        ],
+                        "temperature": temperature,
+                        "response_format": {"type": "json_object"},
+                    },
+                    timeout=30,
+                )
+                if r.status_code == 429 and attempt < 2:
+                    _t.sleep(20)
+                    continue
+                r.raise_for_status()
+                text = r.json()["choices"][0]["message"]["content"].strip()
+                text = re.sub(r"^```(?:json)?\s*|\s*```\s*$", "", text, flags=re.S)
+                return json.loads(text)
+            except Exception as e:
+                last_err = e
+                if attempt < 2:
+                    _t.sleep(10)
+                    continue
+                break
+        return {"error": f"groq call failed: {last_err}"}
+
+    def _call_gemini(self, prompt: str, temperature: float = 0.2) -> Dict:
+        if not self.gemini_key:
+            return {"error": "missing GEMINI_API_KEY"}
+        import time as _t
+        last_err = None
+        endpoint = (
+            "https://generativelanguage.googleapis.com/v1beta/models/"
+            f"{self.gemini_model}:generateContent"
+        )
+        for attempt in range(3):
+            try:
+                r = requests.post(
+                    endpoint,
+                    params={"key": self.gemini_key},
                     headers={"Content-Type": "application/json"},
                     json={
                         "contents": [{"parts": [{"text": prompt}]}],
@@ -50,7 +111,7 @@ class GeminiClient:
                     timeout=30,
                 )
                 if r.status_code == 429 and attempt < 2:
-                    _t.sleep(30)  # RPM 풀릴 때까지 대기
+                    _t.sleep(30)
                     continue
                 r.raise_for_status()
                 text = r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()

@@ -17,9 +17,9 @@ import sqlite3
 import logging
 from datetime import datetime, timedelta
 
-# Gemini 2.5 Flash 무료 티어 RPM(분당 호출수) 보호
-# 종목당 ~2회 Gemini 호출 → 분당 10회 한도 안에서 안전한 간격
-GEMINI_RPM_SLEEP_SEC = int(os.getenv("GEMINI_RPM_SLEEP_SEC", "20"))
+# LLM RPM 보호 — Groq 는 분당 30 RPM 이라 짧게, Gemini fallback 은 길게
+# 환경변수로 조정 가능
+GEMINI_RPM_SLEEP_SEC = int(os.getenv("LLM_RPM_SLEEP_SEC", os.getenv("GEMINI_RPM_SLEEP_SEC", "4")))
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
