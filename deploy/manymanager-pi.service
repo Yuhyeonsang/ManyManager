@@ -1,0 +1,60 @@
+# ============================================================
+# ManyManager FastAPI Server — Raspberry Pi 용 systemd 서비스
+# ============================================================
+# 설치 (setup_pi.sh 안 쓰고 수동 설치할 때):
+#   sudo cp deploy/manymanager-pi.service /etc/systemd/system/manymanager.service
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable manymanager
+#   sudo systemctl start manymanager
+#
+# 명령어 치트시트:
+#   상태:    sudo systemctl status manymanager
+#   재시작:  sudo systemctl restart manymanager
+#   중지:    sudo systemctl stop manymanager
+#   로그:    sudo journalctl -u manymanager -f
+#   로그 50줄: sudo journalctl -u manymanager -n 50
+# ============================================================
+
+[Unit]
+Description=ManyManager FastAPI Server (Raspberry Pi)
+Documentation=https://github.com/Yuhyeonsang/ManyManager
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/ManyManager
+EnvironmentFile=/home/pi/ManyManager/.env
+
+# uvicorn 실행 — venv 의 절대경로 사용 (PATH 의존 없애기)
+ExecStart=/home/pi/ManyManager/.venv/bin/uvicorn main:app --host 0.0.0.0 --port 8000
+
+# 죽으면 10초 후 자동 재시작
+Restart=on-failure
+RestartSec=10
+
+# ── 메모리 보호 ──────────────────────────────
+# Pi 4 (4GB): 1500M / Pi 4 (8GB): 2500M / Pi 5 (8GB): 3000M 까지 OK
+# 이 값 초과 시 systemd 가 프로세스 죽이고 재시작 → OOM 으로 시스템 전체 다운 방지
+MemoryMax=1500M
+
+# OOM killer가 이 프로세스를 마지막에 죽이도록 (낮을수록 보호)
+OOMScoreAdjust=-100
+
+# ── 로깅 ──────────────────────────────────────
+# journald로 모아서 SD카드 쓰기 줄임
+StandardOutput=journal
+StandardError=journal
+
+# ── 보안 강화 (선택) ──────────────────────────
+# NoNewPrivileges=true
+# PrivateTmp=true
+# ProtectSystem=strict
+# ProtectHome=true
+# ReadWritePaths=/home/pi/ManyManager
+# (위 4줄 켜면 보안 ↑, 단 디스크 경로 추가 시 ReadWritePaths 갱신 필요)
+
+[Install]
+WantedBy=multi-user.target
