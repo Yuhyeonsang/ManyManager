@@ -8,6 +8,7 @@
 yfinance>=0.2.40        # 주가 데이터 (data_collector.py)
 pandas>=2.0.0           # 데이터프레임
 requests>=2.31.0        # HTTP 요청 (네이버, DART, Gemini)
+pykrx>=1.0.0            # KRX 공식 PER/PBR/EPS — 코스닥 소형주까지 완벽 커버 (yfinance/KRX직통 폴백)
 
 # --- FastAPI 서버 (main.py) ---
 fastapi>=0.110.0        # REST API 프레임워크

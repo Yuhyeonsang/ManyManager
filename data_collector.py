@@ -1,4 +1,5 @@
 import os
+import logging
 import requests
 import yfinance as yf
 import pandas as pd
@@ -10,6 +11,51 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+log = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────
+# pykrx 벌크 fundamental 캐시 (KRX 전체 종목 PER/PBR/EPS/BPS)
+#   - KRX 직통 API 가 응답 안 줄 때의 폴백
+#   - 프로세스 시작 후 첫 호출 시 1~2초 (KRX 전체 ~2600개 한 번에 받음)
+#   - 그 후엔 메모리에서 즉시 조회 (microsecond)
+#   - 날짜 바뀌면 자동 재로드
+# ─────────────────────────────────────────────────────────────
+try:
+    from pykrx import stock as pykrx_stock  # type: ignore
+    _PYKRX_AVAILABLE = True
+except ImportError:
+    _PYKRX_AVAILABLE = False
+    log.warning("pykrx 미설치 — 코스닥 소형주 PER/PBR 폴백 비활성")
+
+
+_pykrx_fund_cache: Optional[pd.DataFrame] = None
+_pykrx_fund_cache_date: Optional[str] = None
+
+
+def get_pykrx_fundamentals() -> Optional[pd.DataFrame]:
+    """KRX 전체 종목의 PER/PBR/EPS/BPS/DIV/DPS DataFrame.
+    인덱스는 종목코드(문자열 6자리). 하루 1회 자동 새로 로드.
+    실패 시 None."""
+    global _pykrx_fund_cache, _pykrx_fund_cache_date
+    if not _PYKRX_AVAILABLE:
+        return None
+    today = datetime.now().strftime("%Y%m%d")
+    if _pykrx_fund_cache is not None and _pykrx_fund_cache_date == today:
+        return _pykrx_fund_cache
+    # 휴장일/주말 대비 — 최근 7일 거슬러 가며 시도
+    for delta in range(0, 7):
+        trd = (datetime.now() - timedelta(days=delta)).strftime("%Y%m%d")
+        try:
+            df = pykrx_stock.get_market_fundamental(trd, market="ALL")
+            if df is not None and len(df) > 0:
+                _pykrx_fund_cache = df
+                _pykrx_fund_cache_date = today
+                log.info(f"pykrx fundamental 로드: {len(df)}종목 (기준일 {trd})")
+                return df
+        except Exception as e:
+            log.warning(f"pykrx 호출 실패 ({trd}): {e}")
+    return None
 
 
 class StockDataCollector:
@@ -23,6 +69,37 @@ class StockDataCollector:
         self.naver_client_secret = naver_client_secret or os.getenv("NAVER_CLIENT_SECRET")
         self.dart_api_key = dart_api_key or os.getenv("DART_API_KEY")
         self._corp_code_cache: Dict[str, str] = {}
+
+    def get_kr_fundamentals_pykrx(self, stock_code: str) -> Optional[Dict]:
+        """pykrx 로 단일 종목 PER/PBR/EPS/BPS 받음 (벌크 캐시에서 조회).
+        코스피/코스닥 가리지 않고 KRX 상장 전 종목 커버."""
+        if not stock_code or not stock_code.isdigit() or len(stock_code) != 6:
+            return None
+        df = get_pykrx_fundamentals()
+        if df is None or stock_code not in df.index:
+            return None
+        try:
+            row = df.loc[stock_code]
+            def _safe(v):
+                try:
+                    if v is None or pd.isna(v):
+                        return None
+                    f = float(v)
+                    return f if f != 0 else None
+                except Exception:
+                    return None
+            return {
+                "stock_code": stock_code,
+                "per": _safe(row.get("PER")),
+                "pbr": _safe(row.get("PBR")),
+                "eps": _safe(row.get("EPS")),
+                "bps": _safe(row.get("BPS")),
+                "div_yield_pct": _safe(row.get("DIV")),
+                "dps": _safe(row.get("DPS")),
+            }
+        except Exception as e:
+            log.warning(f"pykrx 조회 실패 ({stock_code}): {e}")
+            return None
 
     def get_price_data(
         self,
@@ -393,6 +470,26 @@ class StockDataCollector:
                     mm["eps"] = krx.get("eps")
                     mm["bps"] = krx.get("bps")
                     mm["shares_outstanding"] = krx.get("shares_outstanding")
+
+        # KRX 직통도 못 채웠으면 pykrx 폴백 (코스닥 소형주 강함)
+        if stock_code and isinstance(mm, dict):
+            still_need = mm.get("per") is None or mm.get("pbr") is None
+            if still_need:
+                pk = self.get_kr_fundamentals_pykrx(stock_code)
+                if pk:
+                    if mm.get("per") is None and pk.get("per") is not None:
+                        mm["per"] = pk["per"]
+                        mm["per_source"] = "pykrx"
+                    if mm.get("pbr") is None and pk.get("pbr") is not None:
+                        mm["pbr"] = pk["pbr"]
+                        mm["pbr_source"] = "pykrx"
+                    if mm.get("eps") is None and pk.get("eps") is not None:
+                        mm["eps"] = pk["eps"]
+                    if mm.get("bps") is None and pk.get("bps") is not None:
+                        mm["bps"] = pk["bps"]
+                    if mm.get("dividend_yield_pct") is None and pk.get("div_yield_pct") is not None:
+                        mm["dividend_yield_pct"] = pk["div_yield_pct"]
+                        mm["dividend_yield_source"] = "pykrx"
 
         if fin and "ratios" in fin and isinstance(mm, dict):
             r = fin["ratios"]
