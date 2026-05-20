@@ -239,5 +239,30 @@ def build_watchlist(
             return []
         return build_news_inferred(keywords, limit=total)[:total]
 
-    # 알 수 없는 모드 → news_hot 으로 폴백
-    return build_news_inferred(HOT_MARKET_QUERIES, limit=total)[:total]
+    # 거래대금 기반 — 가장 단순, 항상 동작 (Pi 3B+ 권장)
+    if mode == "volume":
+        return build_volume_based(
+            kr_limit=kr_limit,
+            us_limit=us_limit,
+            include_us=include_us,
+        )
+
+    # 하이브리드 — 뉴스 추론 + 거래대금 혼합
+    if mode == "hybrid":
+        half = max(total // 2, 1)
+        news = build_news_inferred(HOT_MARKET_QUERIES, limit=half)
+        vol = build_volume_based(
+            kr_limit=kr_limit,
+            us_limit=us_limit,
+            include_us=include_us,
+        )
+        seen = {it.get("code") for it in news}
+        merged = list(news) + [v for v in vol if v.get("code") not in seen]
+        return merged[:total]
+
+    # 알 수 없는 모드 → 안전한 거래대금 모드로 폴백 (news_hot 은 0개 위험)
+    return build_volume_based(
+        kr_limit=kr_limit,
+        us_limit=us_limit,
+        include_us=include_us,
+    )

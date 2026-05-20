@@ -9,9 +9,16 @@ import axios from 'axios';
 import { getSetting, setSetting, deleteSetting } from './database';
 
 // 기본 BASE_URL — SQLite 의 settings.base_url 이 비어있을 때 사용되는 fallback.
-// 이 값은 .apk 안에 박혀있지만, 사용자가 앱의 "설정" 화면에서 다른 URL 로
-// 덮어쓰면 그 값이 우선 적용됩니다 (재빌드 없이 변경 가능).
-export const BASE_URL = 'http://158.179.164.79:8000';
+//
+// 🚨 서버 이전 (Oracle → Raspberry Pi) 로 IP가 더 이상 고정되지 않음:
+//    - Oracle 시절: 158.179.164.79 (고정 IP)
+//    - Pi 이후: 집 ISP 동적 IP → DDNS 도메인으로 접속
+//
+// 처음 앱을 깐 사용자는 반드시 "설정 → 서버 URL" 화면에서 입력해야 합니다.
+// 예) https://myfundpi.duckdns.org   또는  http://192.168.0.50:8000 (집 와이파이)
+//
+// 빈 문자열이면 첫 실행 시 설정 화면으로 유도 (App.js / 메인 화면에서 처리).
+export const BASE_URL = '';
 
 const SETTINGS_KEY_BASE_URL = 'base_url';
 

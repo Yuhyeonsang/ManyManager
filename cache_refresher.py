@@ -7,7 +7,10 @@ cron 으로 정기 실행 → 모든 종목을 미리 분석해서 SQLite 캐시
   python cache_refresher.py        # 1회 실행
 
 cron 등록 예 (30분마다):
+  # Oracle (ubuntu 사용자):
   */30 * * * * /home/ubuntu/ManyManager/.venv/bin/python /home/ubuntu/ManyManager/cache_refresher.py >> /home/ubuntu/cache_refresher.log 2>&1
+  # Raspberry Pi (pi 사용자):
+  */30 * * * * /home/pi/ManyManager/.venv/bin/python /home/pi/ManyManager/cache_refresher.py >> /home/pi/cache_refresher.log 2>&1
 """
 import os
 import sys
@@ -49,7 +52,10 @@ log = logging.getLogger("cache-refresher")
 def cleanup_expired_cache():
     """1시간 이상 된 캐시 삭제 + DB 공간 회수.
     호출당 한 번 실행되므로 매 cron마다 정리됨."""
-    db_path = os.getenv("FUND_DB", "/home/ubuntu/ManyManager/fund_manager.db")
+    # 우선순위: 환경변수 FUND_DB > 스크립트 옆 fund_manager.db
+    # (Oracle: ubuntu, Pi: pi 등 어느 환경이든 자동 동작)
+    _here = os.path.dirname(os.path.abspath(__file__))
+    db_path = os.getenv("FUND_DB", os.path.join(_here, "fund_manager.db"))
     cutoff = (datetime.now() - timedelta(hours=1)).isoformat()
     try:
         with sqlite3.connect(db_path) as conn:
