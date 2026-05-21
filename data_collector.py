@@ -201,7 +201,10 @@ class StockDataCollector:
             if hist.empty:
                 return {"ticker": ticker, "error": "no price data"}
 
-            close = hist["Close"]
+            # NaN 행 제거 — 일부 소스(Naver siseJson)는 trailing 빈 row 가 있음
+            close = hist["Close"].dropna()
+            if len(close) == 0:
+                return {"ticker": ticker, "error": "no valid close price"}
             current_price = float(close.iloc[-1])
             prev_close = float(close.iloc[-2]) if len(close) > 1 else current_price
             change = current_price - prev_close

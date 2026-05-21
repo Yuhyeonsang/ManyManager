@@ -160,7 +160,12 @@ def get_history(code: str, period_days: int = 180) -> pd.DataFrame:
 
     # 필요한 컬럼만, 숫자형으로
     out_cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
-    df = df[out_cols].apply(pd.to_numeric, errors="coerce").dropna(how="all")
+    df = df[out_cols].apply(pd.to_numeric, errors="coerce")
+    # Close 가 NaN 인 행은 거래 없는 빈 행 — 제거 (특히 trailing row)
+    if "Close" in df.columns:
+        df = df.dropna(subset=["Close"])
+    # 인덱스 오름차순 보장 (Naver 는 보통 오래된 게 먼저 오지만 안전 차원)
+    df = df.sort_index()
     return df
 
 
