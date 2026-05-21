@@ -14,48 +14,48 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
-# 실제 브라우저처럼 보이는 헤더 — Yahoo 봇 검출 우회
+# 헤더 — curl 로 HTTP 200 받았던 조합. Origin/Referer 빼야 CORS 경로 안 탐.
 _HEADERS = {
     "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_0) "
-        "AppleWebKit/605.1.15 (KHTML, like Gecko) "
-        "Version/17.0 Safari/605.1.15"
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json,text/plain,*/*",
+    "Accept": "*/*",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Origin": "https://finance.yahoo.com",
-    "Referer": "https://finance.yahoo.com/",
 }
 
 # 세션 + 크럼 캐시 (프로세스 동안 재사용)
 _session: Optional[requests.Session] = None
 _crumb: Optional[str] = None
+_crumb_tried: bool = False
 
 
 def _get_session() -> requests.Session:
-    global _session, _crumb
+    """가벼운 세션. fc.yahoo.com warm-up 안 함 (rate limit 절약)."""
+    global _session
     if _session is not None:
         return _session
     s = requests.Session()
     s.headers.update(_HEADERS)
-    # 1) 야후 쿠키 받기
-    try:
-        s.get("https://fc.yahoo.com/", timeout=10)
-    except Exception as e:
-        logger.warning("fc.yahoo.com warm-up 실패: %s", e)
-    # 2) 크럼 받기
-    try:
-        r = s.get(
-            "https://query1.finance.yahoo.com/v1/test/getcrumb",
-            timeout=10,
-        )
-        if r.status_code == 200 and r.text:
-            _crumb = r.text.strip()
-    except Exception as e:
-        logger.warning("crumb 획득 실패: %s", e)
     _session = s
     return s
+
+
+def _ensure_crumb(s: requests.Session) -> Optional[str]:
+    """quoteSummary 처음 호출할 때만 크럼 시도. 실패해도 chart 는 가능."""
+    global _crumb, _crumb_tried
+    if _crumb or _crumb_tried:
+        return _crumb
+    _crumb_tried = True
+    try:
+        s.get("https://fc.yahoo.com/", timeout=10)
+        r = s.get("https://query1.finance.yahoo.com/v1/test/getcrumb", timeout=10)
+        if r.status_code == 200 and r.text and "Too Many" not in r.text:
+            _crumb = r.text.strip()
+    except Exception as e:
+        logger.debug("crumb 획득 실패: %s", e)
+    return _crumb
 
 
 def download(
@@ -119,7 +119,8 @@ def get_quote(ticker: str) -> Dict:
     실패 시 빈 dict.
     """
     s = _get_session()
-    if not _crumb:
+    crumb = _ensure_crumb(s)
+    if not crumb:
         # crumb 없으면 quoteSummary는 못 씀
         return {}
     modules = ",".join([
@@ -127,7 +128,7 @@ def get_quote(ticker: str) -> Dict:
         "defaultKeyStatistics", "financialData",
     ])
     url = f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/{ticker}"
-    params = {"modules": modules, "crumb": _crumb}
+    params = {"modules": modules, "crumb": crumb}
     try:
         r = s.get(url, params=params, timeout=15)
         if r.status_code == 401:
@@ -171,9 +172,10 @@ def get_quote(ticker: str) -> Dict:
 
 
 def _reset_session():
-    global _session, _crumb
+    global _session, _crumb, _crumb_tried
     _session = None
     _crumb = None
+    _crumb_tried = False
 
 
 # yfinance.download 시그니처 호환 wrapper
