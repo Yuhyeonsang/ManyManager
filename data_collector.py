@@ -15,6 +15,58 @@ except ImportError:
 log = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────
+# yfinance 폴백 — Pi 3B+ 에서 curl_cffi 부재로 yfinance 가
+# Yahoo crumb 인증을 못 받는 경우, 직접 Chart API 호출.
+# ─────────────────────────────────────────────────────────────
+try:
+    import yahoo_direct as _yd  # type: ignore
+    _YD_AVAILABLE = True
+except ImportError:
+    _YD_AVAILABLE = False
+    log.warning("yahoo_direct 미설치 — yfinance 폴백 비활성")
+
+
+def _yf_history_safe(ticker: str, period: str = "6mo") -> pd.DataFrame:
+    """yfinance.Ticker.history 우선, 실패 시 yahoo_direct 폴백."""
+    try:
+        tk = yf.Ticker(ticker)
+        hist = tk.history(period=period, auto_adjust=True)
+        if hist is not None and not hist.empty:
+            return hist
+    except Exception as e:
+        log.debug(f"yfinance history 실패 ({ticker}): {e}")
+    if _YD_AVAILABLE:
+        try:
+            df = _yd.download(ticker, period=period)
+            if df is not None and not df.empty:
+                # auto_adjust=True 와 동등하게 Adj Close 를 Close 로 사용
+                if "Adj Close" in df.columns:
+                    df = df.copy()
+                    df["Close"] = df["Adj Close"]
+                return df
+        except Exception as e:
+            log.debug(f"yahoo_direct fallback 실패 ({ticker}): {e}")
+    return pd.DataFrame()
+
+
+def _yf_info_safe(ticker: str) -> Dict:
+    """yfinance.Ticker.info 우선, 실패 시 yahoo_direct.get_quote 폴백."""
+    try:
+        tk = yf.Ticker(ticker)
+        info = tk.info or {}
+        if info and (info.get("trailingPE") is not None or info.get("currentPrice") is not None):
+            return info
+    except Exception as e:
+        log.debug(f"yfinance info 실패 ({ticker}): {e}")
+    if _YD_AVAILABLE:
+        try:
+            q = _yd.get_quote(ticker) or {}
+            return q
+        except Exception as e:
+            log.debug(f"yahoo_direct quote 실패 ({ticker}): {e}")
+    return {}
+
+# ─────────────────────────────────────────────────────────────
 # pykrx 벌크 fundamental 캐시 (KRX 전체 종목 PER/PBR/EPS/BPS)
 #   - KRX 직통 API 가 응답 안 줄 때의 폴백
 #   - 프로세스 시작 후 첫 호출 시 1~2초 (KRX 전체 ~2600개 한 번에 받음)
@@ -108,8 +160,7 @@ class StockDataCollector:
         ma_windows: List[int] = [5, 20, 60, 120],
     ) -> Dict:
         try:
-            tk = yf.Ticker(ticker)
-            hist = tk.history(period=period, auto_adjust=True)
+            hist = _yf_history_safe(ticker, period=period)
             if hist.empty:
                 return {"ticker": ticker, "error": "no price data"}
 
@@ -393,12 +444,7 @@ class StockDataCollector:
         DART 만으로는 안 잡히는 PER·PBR 을 채우기 위한 보조 소스.
         """
         try:
-            tk = yf.Ticker(ticker)
-            info = {}
-            try:
-                info = tk.info or {}
-            except Exception:
-                info = {}
+            info = _yf_info_safe(ticker)
 
             def _round(x, n=2):
                 try:
@@ -781,16 +827,14 @@ def get_hot_stocks_kr(limit: int = 8) -> List[Dict]:
 
 
 def get_hot_stocks_us(limit: int = 5) -> List[Dict]:
-    """미국 핫 종목 - yfinance로 등락률·거래량 기준."""
+    """미국 핫 종목 - yfinance + yahoo_direct 폴백으로 등락률·거래량 기준."""
     import random
     try:
         candidates = [s["code"] for s in US_STOCK_UNIVERSE[:30]]
-        tickers = yf.Tickers(" ".join(candidates))
         scored: List[Tuple[str, float, float]] = []
         for code in candidates:
             try:
-                tk = tickers.tickers[code]
-                hist = tk.history(period="2d", auto_adjust=True)
+                hist = _yf_history_safe(code, period="5d")
                 if hist.empty or len(hist) < 2:
                     continue
                 last = float(hist["Close"].iloc[-1])
