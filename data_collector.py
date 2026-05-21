@@ -39,10 +39,9 @@ def _yf_history_safe(ticker: str, period: str = "6mo") -> pd.DataFrame:
         try:
             df = _yd.download(ticker, period=period)
             if df is not None and not df.empty:
-                # auto_adjust=True 와 동등하게 Adj Close 를 Close 로 사용
-                if "Adj Close" in df.columns:
-                    df = df.copy()
-                    df["Close"] = df["Adj Close"]
+                # ⚠️ Yahoo Chart API 의 "close" 는 이미 분할 조정됨 (auto_adjust=True 와 유사).
+                # 반면 "adjclose" 는 배당까지 누적 적용되어 한국 고배당주는 3~5배 부풀려짐.
+                # 따라서 그대로 두고 raw close 를 사용한다.
                 return df
         except Exception as e:
             log.debug(f"yahoo_direct fallback 실패 ({ticker}): {e}")
