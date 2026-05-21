@@ -25,9 +25,21 @@ except ImportError:
     _YD_AVAILABLE = False
     log.warning("yahoo_direct 미설치 — yfinance 폴백 비활성")
 
+try:
+    import naver_finance as _naver  # type: ignore
+    _NAVER_AVAILABLE = True
+except ImportError:
+    _NAVER_AVAILABLE = False
+    log.warning("naver_finance 미설치 — KR 폴백 비활성")
+
+
+def _is_kr_ticker(ticker: str) -> bool:
+    t = (ticker or "").upper()
+    return t.endswith(".KS") or t.endswith(".KQ")
+
 
 def _yf_history_safe(ticker: str, period: str = "6mo") -> pd.DataFrame:
-    """yfinance.Ticker.history 우선, 실패 시 yahoo_direct 폴백."""
+    """yfinance → yahoo_direct → (KR 한정) naver_finance 순서로 폴백."""
     try:
         tk = yf.Ticker(ticker)
         hist = tk.history(period=period, auto_adjust=True)
@@ -45,7 +57,33 @@ def _yf_history_safe(ticker: str, period: str = "6mo") -> pd.DataFrame:
                 return df
         except Exception as e:
             log.debug(f"yahoo_direct fallback 실패 ({ticker}): {e}")
+    # 한국 종목 — Naver 폴백 (Yahoo rate limit 대응)
+    if _NAVER_AVAILABLE and _is_kr_ticker(ticker):
+        try:
+            # period "6mo" / "1y" 등 → days 로 변환
+            period_days = _period_to_days(period)
+            df = _naver.get_history(ticker, period_days=period_days)
+            if df is not None and not df.empty:
+                log.info(f"Naver history 폴백 성공: {ticker} ({len(df)}일)")
+                return df
+        except Exception as e:
+            log.debug(f"naver_finance history 실패 ({ticker}): {e}")
     return pd.DataFrame()
+
+
+def _period_to_days(period: str) -> int:
+    """yfinance period 문자열 → 일수. '6mo' → 180, '1y' → 365"""
+    p = (period or "").lower().strip()
+    if p.endswith("d"):
+        try: return int(p[:-1])
+        except: return 30
+    if p.endswith("mo"):
+        try: return int(p[:-2]) * 30
+        except: return 180
+    if p.endswith("y"):
+        try: return int(p[:-1]) * 365
+        except: return 365
+    return 180
 
 
 def _yf_info_safe(ticker: str) -> Dict:
