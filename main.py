@@ -443,7 +443,10 @@ REPORT_CACHE_TTL_SEC = int(os.getenv("REPORT_CACHE_TTL_SEC", "600"))       # 10�
 HOT_STOCKS_PARALLEL = int(os.getenv("HOT_STOCKS_PARALLEL", "8"))           # 동시 처리 워커 수
 
 
-def cache_get(key: str, ttl_sec: int) -> Optional[Dict]:
+def cache_get(key: str, ttl_sec: Optional[int] = None) -> Optional[Dict]:
+    """캐시 조회. ttl_sec=None 이면 만료 검사 없이 무조건 반환 (백그라운드 데몬이
+    덮어쓰기 갱신하므로, reader 는 신선도 검사 없이 즉시 응답하는 게 정상 동작).
+    ttl_sec 지정 시 그 시간 지나면 None 반환 (legacy 호환)."""
     try:
         with db_conn() as conn:
             row = conn.execute(
@@ -452,9 +455,10 @@ def cache_get(key: str, ttl_sec: int) -> Optional[Dict]:
             ).fetchone()
         if not row:
             return None
-        updated = datetime.fromisoformat(row["updated_at"])
-        if (datetime.now() - updated).total_seconds() > ttl_sec:
-            return None
+        if ttl_sec is not None:
+            updated = datetime.fromisoformat(row["updated_at"])
+            if (datetime.now() - updated).total_seconds() > ttl_sec:
+                return None
         return json.loads(row["payload"])
     except Exception as e:
         log.warning(f"cache_get({key}) failed: {e}")
@@ -617,10 +621,11 @@ def set_watchlist_config(cfg: WatchlistConfig):
 
 @app.get("/api/hot-stocks", response_model=List[HotStock])
 def hot_stocks(refresh: bool = False):
-    """대시보드용 - 캐시 5분 + 병렬 8개 워커 + stampede 락."""
+    """대시보드용 - 백그라운드 데몬 캐시 무조건 반환 (TTL 무시).
+    refresh=True 인 경우만 즉석 재분석. + 병렬 8개 워커 + stampede 락."""
     # 캐시 확인 (refresh=True 면 강제 새로고침)
     if not refresh:
-        cached = cache_get(HOT_STOCKS_CACHE_KEY, HOT_STOCKS_CACHE_TTL_SEC)
+        cached = cache_get(HOT_STOCKS_CACHE_KEY)  # TTL 없음 - 있으면 무조건 반환
         if cached:
             log.info("hot-stocks: cache HIT")
             return [HotStock(**h) for h in cached]
@@ -630,7 +635,7 @@ def hot_stocks(refresh: bool = False):
     with _stampede_lock:
         # 락 획득 후 다시 확인 (그 사이 다른 워커가 채웠을 수 있음)
         if not refresh:
-            cached = cache_get(HOT_STOCKS_CACHE_KEY, HOT_STOCKS_CACHE_TTL_SEC)
+            cached = cache_get(HOT_STOCKS_CACHE_KEY)
             if cached:
                 log.info("hot-stocks: stampede 방지 - 다른 워커 결과 사용")
                 return [HotStock(**h) for h in cached]
@@ -729,23 +734,25 @@ def api_search(q: str, limit: int = 20):
 
 @app.get("/api/stocks/{ticker}/report", response_model=StockReport)
 def stock_report(ticker: str, refresh: bool = False):
-    """상세 페이지용 - 캐시 10분 + stampede 락."""
+    """상세 페이지용 - 백그라운드 데몬 캐시 무조건 반환 (TTL 무시).
+    캐시 있으면 데이터 신선도 관계 없이 즉시 응답 (updated_at 으로 신선도 표시).
+    refresh=True 인 경우만 즉석 재분석. + stampede 락."""
     entry = find_watch_entry(ticker)
     if not entry:
         raise HTTPException(404, f"unknown ticker: {ticker}")
 
     if not refresh:
-        cached = cache_get(f"report:{entry['ticker']}", REPORT_CACHE_TTL_SEC)
+        cached = cache_get(f"report:{entry['ticker']}")  # TTL 없음
         if not cached:
-            cached = cache_get(f"report:{entry['code']}", REPORT_CACHE_TTL_SEC)
+            cached = cache_get(f"report:{entry['code']}")
         if cached:
             return StockReport(**cached)
     cache_key = f"report:{entry['ticker']}"
 
-    # ★ Cache stampede 방지 - 같은 종목 동시 분석 차단
+    # ★ Cache stampede 방지 - 같은 종목 동시 분석 차단 (캐시 미스 첫 1회 또는 refresh)
     with keyed_lock.get(cache_key):
         if not refresh:
-            cached = cache_get(cache_key, REPORT_CACHE_TTL_SEC)
+            cached = cache_get(cache_key)
             if cached:
                 log.info(f"stock_report: stampede 방지 - {cache_key}")
                 return StockReport(**cached)
@@ -802,24 +809,25 @@ def stock_report(ticker: str, refresh: bool = False):
 
 @app.get("/api/stocks/{ticker}/clipboard", response_model=ClipboardText)
 def stock_clipboard(ticker: str, refresh: bool = False):
-    """Claude 웹에 그대로 붙여넣을 텍스트. 캐시 10분 + stampede 락."""
+    """Claude 웹에 그대로 붙여넣을 텍스트. 백그라운드 캐시 무조건 반환 (TTL 무시).
+    refresh=True 인 경우만 즉석 재생성. + stampede 락."""
     entry = find_watch_entry(ticker)
     if not entry:
         raise HTTPException(404, f"unknown ticker: {ticker}")
 
     if not refresh:
-        # yf_ticker 키 우선, 없으면 code 키로 폴백
-        cached = cache_get(f"clipboard:{entry['ticker']}", REPORT_CACHE_TTL_SEC)
+        # yf_ticker 키 우선, 없으면 code 키로 폴백 - TTL 없음
+        cached = cache_get(f"clipboard:{entry['ticker']}")
         if not cached or not cached.get("text"):
-            cached = cache_get(f"clipboard:{entry['code']}", REPORT_CACHE_TTL_SEC)
+            cached = cache_get(f"clipboard:{entry['code']}")
         if cached and cached.get("text"):
             return ClipboardText(text=cached["text"])
     cache_key = f"clipboard:{entry['ticker']}"
 
-    # ★ Cache stampede 방지
+    # ★ Cache stampede 방지 (캐시 미스 첫 1회 또는 refresh)
     with keyed_lock.get(cache_key):
         if not refresh:
-            cached = cache_get(cache_key, REPORT_CACHE_TTL_SEC)
+            cached = cache_get(cache_key)
             if cached and cached.get("text"):
                 log.info(f"stock_clipboard: stampede 방지 - {cache_key}")
                 return ClipboardText(text=cached["text"])

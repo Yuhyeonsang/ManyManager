@@ -1,0 +1,22 @@
+[Unit]
+Description=Fund Manager - cache refresh daemon (continuous overwrite)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jongmin
+WorkingDirectory=/home/jongmin/ManyManager
+ExecStart=/usr/bin/python3 /home/jongmin/ManyManager/refresh_daemon.py
+Restart=on-failure
+RestartSec=30
+StandardOutput=append:/home/jongmin/refresh_daemon.log
+StandardError=append:/home/jongmin/refresh_daemon.log
+
+# 사이클 사이 휴식 (초). 15분
+Environment="REFRESH_REST_SEC=900"
+# 종목 사이 Gemini 보호 sleep (초)
+Environment="LLM_RPM_SLEEP_SEC=4"
+
+[Install]
+WantedBy=multi-user.target
