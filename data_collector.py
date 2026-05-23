@@ -39,7 +39,25 @@ def _is_kr_ticker(ticker: str) -> bool:
 
 
 def _yf_history_safe(ticker: str, period: str = "6mo") -> pd.DataFrame:
-    """yfinance → yahoo_direct → (KR 한정) naver_finance 순서로 폴백."""
+    """가격 일봉 데이터.
+    KR 종목(.KS/.KQ): Naver 직행 → 실패 시 yfinance/yahoo_direct 폴백.
+    US 종목: yfinance → yahoo_direct 순.
+    ─ Yahoo 429 rate-limit 차단 대응 (2024~): KR 호출량을 0으로 줄여서
+      US 종목 야후 호출이 차단 임계치를 안 넘게 함.
+    """
+    is_kr = _is_kr_ticker(ticker)
+
+    # KR 종목: Naver 우선
+    if is_kr and _NAVER_AVAILABLE:
+        try:
+            period_days = _period_to_days(period)
+            df = _naver.get_history(ticker, period_days=period_days)
+            if df is not None and not df.empty:
+                return df
+        except Exception as e:
+            log.debug(f"naver_finance history 실패 ({ticker}): {e}")
+
+    # US 종목, 또는 KR 인데 Naver 가 실패한 경우
     try:
         tk = yf.Ticker(ticker)
         hist = tk.history(period=period, auto_adjust=True)
@@ -57,17 +75,6 @@ def _yf_history_safe(ticker: str, period: str = "6mo") -> pd.DataFrame:
                 return df
         except Exception as e:
             log.debug(f"yahoo_direct fallback 실패 ({ticker}): {e}")
-    # 한국 종목 — Naver 폴백 (Yahoo rate limit 대응)
-    if _NAVER_AVAILABLE and _is_kr_ticker(ticker):
-        try:
-            # period "6mo" / "1y" 등 → days 로 변환
-            period_days = _period_to_days(period)
-            df = _naver.get_history(ticker, period_days=period_days)
-            if df is not None and not df.empty:
-                log.info(f"Naver history 폴백 성공: {ticker} ({len(df)}일)")
-                return df
-        except Exception as e:
-            log.debug(f"naver_finance history 실패 ({ticker}): {e}")
     return pd.DataFrame()
 
 
@@ -87,7 +94,12 @@ def _period_to_days(period: str) -> int:
 
 
 def _yf_info_safe(ticker: str) -> Dict:
-    """yfinance.Ticker.info 우선, 실패 시 yahoo_direct.get_quote 폴백."""
+    """yfinance.Ticker.info 우선, 실패 시 yahoo_direct.get_quote 폴백.
+    KR 종목은 야후 info 안 씀 — pykrx/KRX 직통이 더 정확하고 차단 위험 0.
+    (collect_all 의 KRX/pykrx 폴백이 PER/PBR/ROE/시총 채워줌)
+    """
+    if _is_kr_ticker(ticker):
+        return {}
     try:
         tk = yf.Ticker(ticker)
         info = tk.info or {}
