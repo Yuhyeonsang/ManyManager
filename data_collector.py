@@ -137,6 +137,7 @@ _pykrx_fund_cache_date: Optional[str] = None
 def get_pykrx_fundamentals() -> Optional[pd.DataFrame]:
     """KRX 전체 종목의 PER/PBR/EPS/BPS/DIV/DPS DataFrame.
     인덱스는 종목코드(문자열 6자리). 하루 1회 자동 새로 로드.
+    휴장일(주말·공휴일)에는 직전 거래일로 자동 폴백.
     실패 시 None."""
     global _pykrx_fund_cache, _pykrx_fund_cache_date
     if not _PYKRX_AVAILABLE:
@@ -144,16 +145,28 @@ def get_pykrx_fundamentals() -> Optional[pd.DataFrame]:
     today = datetime.now().strftime("%Y%m%d")
     if _pykrx_fund_cache is not None and _pykrx_fund_cache_date == today:
         return _pykrx_fund_cache
-    # 휴장일/주말 대비 — 최근 7일 거슬러 가며 시도
-    for delta in range(0, 7):
+    # 휴장일/주말 대비 — 최근 10일 거슬러 가며 시도
+    for delta in range(0, 10):
         trd = (datetime.now() - timedelta(days=delta)).strftime("%Y%m%d")
         try:
             df = pykrx_stock.get_market_fundamental(trd, market="ALL")
-            if df is not None and len(df) > 0:
-                _pykrx_fund_cache = df
-                _pykrx_fund_cache_date = today
-                log.info(f"pykrx fundamental 로드: {len(df)}종목 (기준일 {trd})")
-                return df
+            if df is None or len(df) == 0:
+                continue
+            # ★ 휴장일 검증 — pykrx 는 휴장일에도 모든 종목 0으로 채운 df 를 반환함.
+            #    PER>0 인 종목이 전체의 10% 이상 있어야 정상 거래일로 본다.
+            try:
+                non_zero = int((df["PER"] > 0).sum())
+            except Exception:
+                non_zero = 0
+            if non_zero < len(df) * 0.1:
+                log.info(
+                    f"pykrx {trd}: 휴장일 추정 (PER>0: {non_zero}/{len(df)}) — 직전 거래일 시도"
+                )
+                continue
+            _pykrx_fund_cache = df
+            _pykrx_fund_cache_date = today
+            log.info(f"pykrx fundamental 로드: {len(df)}종목 (기준일 {trd})")
+            return df
         except Exception as e:
             log.warning(f"pykrx 호출 실패 ({trd}): {e}")
     return None
