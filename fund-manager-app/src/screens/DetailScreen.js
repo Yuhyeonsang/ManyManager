@@ -290,3 +290,125 @@ function formatRelativeTime(pubDate) {
   if (mo < 12) return `${mo}개월 전`;
   return `${Math.floor(day / 365)}년 전`;
 }
+const styles = StyleSheet.create({
+  container: { flex: 1, backgroundColor: '#F1F5F9' },
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+  },
+  loadingText: { marginTop: 12, color: '#475569' },
+  empty: { color: '#64748B' },
+  offlineBanner: {
+    backgroundColor: '#FEF3C7',
+    padding: 10,
+    borderRadius: 8,
+    marginBottom: 12,
+  },
+  offlineText: { color: '#92400E', fontSize: 12, fontWeight: '600' },
+  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
+  name: { fontSize: 22, fontWeight: '800', color: '#0F172A' },
+  ticker: { color: '#64748B', marginTop: 2 },
+  scoreBox: {
+    backgroundColor: '#0F172A',
+    borderRadius: 16,
+    padding: 16,
+    marginBottom: 16,
+  },
+  scoreLabel: { color: '#94A3B8', fontSize: 12 },
+  scoreValue: {
+    color: '#F8FAFC',
+    fontSize: 36,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  scoreMax: { fontSize: 16, fontWeight: '500', color: '#94A3B8' },
+  section: { marginBottom: 16 },
+  sectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: '#334155',
+    marginBottom: 8,
+  },
+  sectionBody: {
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    padding: 14,
+  },
+  body: { color: '#1E293B', fontSize: 14, lineHeight: 21 },
+  finRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingVertical: 8,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E2E8F0',
+  },
+  finLabel: { color: '#64748B' },
+  finValue: { color: '#0F172A', fontWeight: '600' },
+  updatedAt: {
+    color: '#94A3B8',
+    fontSize: 11,
+    textAlign: 'right',
+    marginTop: 8,
+  },
+  footer: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 0,
+    padding: 16,
+    backgroundColor: 'rgba(241,245,249,0.95)',
+  },
+  copyBtn: {
+    backgroundColor: '#0F172A',
+    borderRadius: 12,
+    paddingVertical: 16,
+    alignItems: 'center',
+  },
+  copyBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  // 뉴스 카드
+  newsRow: {
+    paddingVertical: 10,
+    paddingHorizontal: 2,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E2E8F0',
+  },
+  newsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  impactBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  impactBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  newsTime: {
+    fontSize: 11,
+    color: '#94A3B8',
+    fontWeight: '500',
+  },
+  newsTitle: {
+    color: '#0F172A',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '500',
+  },
+  newsLink: {
+    color: '#2563EB',
+    fontSize: 11,
+    marginTop: 4,
+    fontWeight: '600',
+  },
+});
+
