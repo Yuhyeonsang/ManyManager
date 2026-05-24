@@ -159,6 +159,18 @@ def main():
             else:
                 news_summary = "최신 뉴스 부족"
 
+            # DART (한국) → yfinance.info (미국) 폴백
+            mm_safe = mm if not mm.get("error") else {}
+            rev_growth = growth.get("revenue")
+            if rev_growth is None:
+                rev_growth = mm_safe.get("revenue_growth_pct")
+            op_margin = margins.get("operating_margin_pct")
+            if op_margin is None:
+                op_margin = mm_safe.get("operating_margin_pct")
+            debt_ratio = fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None
+            if debt_ratio is None:
+                debt_ratio = mm_safe.get("debt_to_equity_pct")
+
             report_dict = {
                 "ticker": r["ticker"],
                 "name": r["name"],
@@ -167,12 +179,12 @@ def main():
                 "news_summary": news_summary,
                 "news_items": news_items_list or None,
                 "financials": {
-                    "per": None if mm.get("error") else mm.get("per"),
-                    "pbr": None if mm.get("error") else mm.get("pbr"),
-                    "roe": None if mm.get("error") else mm.get("roe_pct"),
-                    "revenue_growth": growth.get("revenue"),
-                    "operating_margin": margins.get("operating_margin_pct"),
-                    "debt_ratio": fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None,
+                    "per": mm_safe.get("per"),
+                    "pbr": mm_safe.get("pbr"),
+                    "roe": mm_safe.get("roe_pct"),
+                    "revenue_growth": rev_growth,
+                    "operating_margin": op_margin,
+                    "debt_ratio": debt_ratio,
                 },
                 "updated_at": datetime.now().isoformat(),
             }

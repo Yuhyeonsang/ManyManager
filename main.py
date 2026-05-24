@@ -803,22 +803,33 @@ def stock_report(ticker: str, refresh: bool = False):
         else:
             news_summary = "최신 뉴스 부족 또는 Gemini 키 미설정"
 
-        # 재무 지표 추출
+        # 재무 지표 추출 - 1순위 DART (한국), 2순위 yfinance.info (미국)
         margins = (fin_an.get("margins") or {}) if not fin_an.get("error") else {}
         growth = (fin_an.get("yoy_growth_pct") or {}) if not fin_an.get("error") else {}
+        mm_safe = market_metrics if not market_metrics.get("error") else {}
 
-        # PER/PBR/ROE - 1순위: DART 기반 계산값(없음), 2순위: yfinance.info
-        per = None if market_metrics.get("error") else market_metrics.get("per")
-        pbr = None if market_metrics.get("error") else market_metrics.get("pbr")
-        roe = None if market_metrics.get("error") else market_metrics.get("roe_pct")
+        per = mm_safe.get("per")
+        pbr = mm_safe.get("pbr")
+        roe = mm_safe.get("roe_pct")
+
+        # 매출 성장률 / 영업이익률 / 부채비율: DART → yfinance.info 폴백
+        revenue_growth = growth.get("revenue")
+        if revenue_growth is None:
+            revenue_growth = mm_safe.get("revenue_growth_pct")
+        operating_margin = margins.get("operating_margin_pct")
+        if operating_margin is None:
+            operating_margin = mm_safe.get("operating_margin_pct")
+        debt_ratio = fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None
+        if debt_ratio is None:
+            debt_ratio = mm_safe.get("debt_to_equity_pct")
 
         financials = Financials(
             per=per,
             pbr=pbr,
             roe=roe,
-            revenue_growth=growth.get("revenue"),
-            operating_margin=margins.get("operating_margin_pct"),
-            debt_ratio=fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None,
+            revenue_growth=revenue_growth,
+            operating_margin=operating_margin,
+            debt_ratio=debt_ratio,
         )
 
         report = StockReport(
@@ -878,6 +889,33 @@ def stock_clipboard(ticker: str, refresh: bool = False):
         except Exception as e:
             log.exception(f"clipboard failed for {ticker}")
             raise HTTPException(500, f"clipboard build failed: {e}")
+
+
+# ─────────────────────────────────────────────
+# 안전장치 진단 엔드포인트
+# ─────────────────────────────────────────────
+@app.get("/api/safety/stats")
+def safety_stats():
+    """rate limiter / DB cleaner / keyed lock 현재 상태."""
+    return {
+        "gemini_limiter": gemini_limiter.stats(),
+        "db_cleaner": db_cleaner.stats(),
+        "keyed_lock": keyed_lock.stats(),
+        "cache_settings": {
+            "hot_stocks_ttl_sec": HOT_STOCKS_CACHE_TTL_SEC,
+            "report_ttl_sec": REPORT_CACHE_TTL_SEC,
+        },
+    }
+
+
+@app.post("/api/safety/cleanup-cache")
+def safety_cleanup_cache():
+    """report_cache 만료 행 즉시 청소 (관리자용)."""
+    deleted = db_cleaner.force_clean(
+        DB_PATH,
+        max(REPORT_CACHE_TTL_SEC, HOT_STOCKS_CACHE_TTL_SEC) * 6,
+    )
+    return {"deleted": deleted, "ok": True}
 
 
 # ─────────────────────────────────────────────

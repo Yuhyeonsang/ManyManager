@@ -530,6 +530,20 @@ class StockDataCollector:
                 else _round(div_yield, 2)
             )
 
+            # 미국 종목 보강 — DART 없으니 yfinance.info 에서 직접
+            # yfinance 는 ratio(0~1) 로 줘서 *100 해야 함
+            rev_growth = info.get("revenueGrowth")
+            rev_growth_pct = (
+                _round(rev_growth * 100, 2) if isinstance(rev_growth, (int, float)) else None
+            )
+            op_margin = info.get("operatingMargins")
+            op_margin_pct = (
+                _round(op_margin * 100, 2) if isinstance(op_margin, (int, float)) else None
+            )
+            # debtToEquity 는 yfinance 가 이미 0~수백 의 % 형태로 줌 (예: 28.71)
+            debt_to_equity = info.get("debtToEquity")
+            debt_to_equity_pct = _round(debt_to_equity, 2) if isinstance(debt_to_equity, (int, float)) else None
+
             return {
                 "ticker": ticker,
                 "per": _round(per, 2),
@@ -543,6 +557,10 @@ class StockDataCollector:
                 "short_name": info.get("shortName") or info.get("longName"),
                 "sector": info.get("sector"),
                 "industry": info.get("industry"),
+                # 보강 필드 (특히 US — DART 못 쓰는 경우용)
+                "revenue_growth_pct": rev_growth_pct,
+                "operating_margin_pct": op_margin_pct,
+                "debt_to_equity_pct": debt_to_equity_pct,
             }
         except Exception as e:
             return {"ticker": ticker, "error": str(e)}
@@ -939,6 +957,8 @@ def get_hot_stocks_mixed(kr_limit: int = 6, us_limit: int = 4) -> List[Dict]:
     return get_hot_stocks_kr(kr_limit) + get_hot_stocks_us(us_limit)
 
 
+# ─────────────────────────────────────────────
+# monitor_loop.py 가 호출하는 모듈 레벨 헬퍼
 # ─────────────────────────────────────────────
 # monitor_loop.py 가 호출하는 모듈 레벨 헬퍼
 # ─────────────────────────────────────────────
