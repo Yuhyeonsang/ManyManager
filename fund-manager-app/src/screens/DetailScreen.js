@@ -9,7 +9,7 @@ import {
   Alert,
   Linking,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import GradeBadge from '../components/GradeBadge';
 import { fetchStockReport, fetchClipboardText } from '../services/api';
@@ -25,6 +25,7 @@ export default function DetailScreen({ route }) {
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
   const [copying, setCopying] = useState(false);
+  const insets = useSafeAreaInsets();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -99,7 +100,12 @@ export default function DetailScreen({ route }) {
 
   return (
     <SafeAreaView style={styles.container} edges={['left', 'right']}>
-      <ScrollView contentContainerStyle={{ padding: 16, paddingBottom: 120 }}>
+      <ScrollView
+        contentContainerStyle={{
+          padding: 16,
+          paddingBottom: 120 + (insets.bottom || 0),
+        }}
+      >
         {offline && (
           <View style={styles.offlineBanner}>
             <Text style={styles.offlineText}>
@@ -164,7 +170,12 @@ export default function DetailScreen({ route }) {
         )}
       </ScrollView>
 
-      <View style={styles.footer}>
+      <View
+        style={[
+          styles.footer,
+          { paddingBottom: 16 + (insets.bottom || 0) },
+        ]}
+      >
         <Pressable
           onPress={handleCopy}
           disabled={copying}
