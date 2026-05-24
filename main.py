@@ -323,12 +323,20 @@ class Financials(BaseModel):
     debt_ratio: Optional[float] = None
 
 
+class NewsItem(BaseModel):
+    title: str
+    link: Optional[str] = None
+    pub_date: Optional[str] = None      # 원본 형식 (예: "Sat, 24 May 2026 11:30:00 +0900")
+    impact: Optional[str] = None        # 긍정/부정/중립
+
+
 class StockReport(BaseModel):
     ticker: str
     name: str
     grade: str
     score: int
-    news_summary: str
+    news_summary: str                   # legacy 호환용 — 줄바꿈 텍스트
+    news_items: Optional[List[NewsItem]] = None   # 구조화된 뉴스 (앱이 우선 사용)
     financials: Financials
     updated_at: str
 
@@ -769,10 +777,29 @@ def stock_report(ticker: str, refresh: bool = False):
         bundle = intr["bundle"]
         market_metrics = (bundle or {}).get("market_metrics") or {}
 
-        # 뉴스 요약 텍스트
+        # 뉴스 — 구조화 + 중복 제거 (제목 정규화 기준)
+        news_items_out: List[NewsItem] = []
         if picks and not picks[0].get("error"):
-            news_lines = [f"• [{p.get('impact','-')}] {p.get('title','')}" for p in picks]
-            news_summary = "\n".join(news_lines)
+            seen_titles = set()
+            for p in picks:
+                title = (p.get("title") or "").strip()
+                if not title:
+                    continue
+                # 정규화 키: 공백/특수문자 제거 + 앞 60자
+                norm = "".join(ch for ch in title if ch.isalnum())[:60].lower()
+                if norm in seen_titles:
+                    continue
+                seen_titles.add(norm)
+                news_items_out.append(NewsItem(
+                    title=title,
+                    link=p.get("link"),
+                    pub_date=p.get("pub_date"),
+                    impact=p.get("impact") or "중립",
+                ))
+            news_lines = [
+                f"• [{ni.impact or '-'}] {ni.title}" for ni in news_items_out
+            ]
+            news_summary = "\n".join(news_lines) if news_lines else "최신 뉴스 부족"
         else:
             news_summary = "최신 뉴스 부족 또는 Gemini 키 미설정"
 
@@ -800,6 +827,7 @@ def stock_report(ticker: str, refresh: bool = False):
             grade=r["grade"],
             score=r["score"],
             news_summary=news_summary,
+            news_items=news_items_out or None,
             financials=financials,
             updated_at=datetime.now().isoformat(),
         )

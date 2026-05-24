@@ -7,6 +7,7 @@ import {
   Pressable,
   ActivityIndicator,
   Alert,
+  Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
@@ -124,9 +125,19 @@ export default function DetailScreen({ route }) {
         </View>
 
         <Section title="📰 AI 뉴스 요약">
-          <Text style={styles.body}>
-            {report.news_summary?.trim() || '(요약된 뉴스가 없습니다)'}
-          </Text>
+          {Array.isArray(report.news_items) && report.news_items.length > 0 ? (
+            report.news_items.map((item, idx) => (
+              <NewsRow
+                key={`${idx}-${item.title}`}
+                item={item}
+                isLast={idx === report.news_items.length - 1}
+              />
+            ))
+          ) : (
+            <Text style={styles.body}>
+              {report.news_summary?.trim() || '(요약된 뉴스가 없습니다)'}
+            </Text>
+          )}
         </Section>
 
         <Section title="📊 주요 재무 수치">
@@ -196,85 +207,86 @@ function FinancialRow({ label, value, suffix }) {
   );
 }
 
-const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F1F5F9' },
-  center: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 24,
-  },
-  loadingText: { marginTop: 12, color: '#475569' },
-  empty: { color: '#64748B' },
-  offlineBanner: {
-    backgroundColor: '#FEF3C7',
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 12,
-  },
-  offlineText: { color: '#92400E', fontSize: 12, fontWeight: '600' },
-  header: { flexDirection: 'row', alignItems: 'center', marginBottom: 16 },
-  name: { fontSize: 22, fontWeight: '800', color: '#0F172A' },
-  ticker: { color: '#64748B', marginTop: 2 },
-  scoreBox: {
-    backgroundColor: '#0F172A',
-    borderRadius: 16,
-    padding: 16,
-    marginBottom: 16,
-  },
-  scoreLabel: { color: '#94A3B8', fontSize: 12 },
-  scoreValue: {
-    color: '#F8FAFC',
-    fontSize: 36,
-    fontWeight: '800',
-    marginTop: 4,
-  },
-  scoreMax: { fontSize: 16, fontWeight: '500', color: '#94A3B8' },
-  section: { marginBottom: 16 },
-  sectionTitle: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: '#334155',
-    marginBottom: 8,
-  },
-  sectionBody: {
-    backgroundColor: '#FFFFFF',
-    borderRadius: 12,
-    padding: 14,
-  },
-  body: { color: '#1E293B', fontSize: 14, lineHeight: 21 },
-  finRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    paddingVertical: 8,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#E2E8F0',
-  },
-  finLabel: { color: '#64748B' },
-  finValue: { color: '#0F172A', fontWeight: '600' },
-  updatedAt: {
-    color: '#94A3B8',
-    fontSize: 11,
-    textAlign: 'right',
-    marginTop: 8,
-  },
-  footer: {
-    position: 'absolute',
-    left: 0,
-    right: 0,
-    bottom: 0,
-    padding: 16,
-    backgroundColor: 'rgba(241,245,249,0.95)',
-  },
-  copyBtn: {
-    backgroundColor: '#0F172A',
-    borderRadius: 12,
-    paddingVertical: 16,
-    alignItems: 'center',
-  },
-  copyBtnText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '700',
-  },
-});
+// ─────────────────────────────────────────────
+// 뉴스 한 줄 — 탭하면 링크 열림, "N시간 전" 표시
+// ─────────────────────────────────────────────
+function NewsRow({ item, isLast }) {
+  const url = (item.link || '').trim();
+  const hasLink = !!url;
+  const rel = formatRelativeTime(item.pub_date);
+  const impactStyle = impactBadgeStyle(item.impact);
+
+  const handlePress = async () => {
+    if (!hasLink) return;
+    try {
+      const can = await Linking.canOpenURL(url);
+      if (can) {
+        await Linking.openURL(url);
+      } else {
+        Alert.alert('링크 열기 실패', '브라우저에서 이 URL을 열 수 없습니다.');
+      }
+    } catch (e) {
+      Alert.alert('링크 열기 실패', String(e?.message || e));
+    }
+  };
+
+  return (
+    <Pressable
+      onPress={handlePress}
+      disabled={!hasLink}
+      style={({ pressed }) => [
+        styles.newsRow,
+        isLast && { borderBottomWidth: 0 },
+        pressed && hasLink && { backgroundColor: '#F8FAFC' },
+      ]}
+    >
+      <View style={styles.newsHeaderRow}>
+        <View style={[styles.impactBadge, { backgroundColor: impactStyle.bg }]}>
+          <Text style={[styles.impactBadgeText, { color: impactStyle.fg }]}>
+            {item.impact || '중립'}
+          </Text>
+        </View>
+        {rel ? <Text style={styles.newsTime}>{rel}</Text> : null}
+      </View>
+      <Text style={styles.newsTitle} numberOfLines={3}>
+        {item.title}
+      </Text>
+      {hasLink ? (
+        <Text style={styles.newsLink}>탭하여 원문 보기 ›</Text>
+      ) : null}
+    </Pressable>
+  );
+}
+
+function impactBadgeStyle(impact) {
+  switch (impact) {
+    case '긍정':
+      return { bg: '#DCFCE7', fg: '#166534' };
+    case '부정':
+      return { bg: '#FEE2E2', fg: '#991B1B' };
+    default:
+      return { bg: '#E2E8F0', fg: '#475569' };
+  }
+}
+
+// pub_date (RFC 2822 또는 ISO) → 현재 시각 기준 상대 시간
+function formatRelativeTime(pubDate) {
+  if (!pubDate) return '';
+  const t = Date.parse(pubDate);
+  if (isNaN(t)) return '';
+  const diffMs = Date.now() - t;
+  if (diffMs < 0) return '방금';
+  const sec = Math.floor(diffMs / 1000);
+  if (sec < 60) return '방금';
+  const min = Math.floor(sec / 60);
+  if (min < 60) return `${min}분 전`;
+  const hr = Math.floor(min / 60);
+  if (hr < 24) return `${hr}시간 전`;
+  const day = Math.floor(hr / 24);
+  if (day < 7) return `${day}일 전`;
+  const wk = Math.floor(day / 7);
+  if (wk < 5) return `${wk}주 전`;
+  const mo = Math.floor(day / 30);
+  if (mo < 12) return `${mo}개월 전`;
+  return `${Math.floor(day / 365)}년 전`;
+}

@@ -135,8 +135,27 @@ def main():
             margins = (fin_an.get("margins") or {}) if not fin_an.get("error") else {}
             growth = (fin_an.get("yoy_growth_pct") or {}) if not fin_an.get("error") else {}
 
+            # 뉴스 구조화 + 중복 제거 (제목 정규화 기준)
+            news_items_list = []
             if picks and not picks[0].get("error"):
-                news_summary = "\n".join(f"• [{p.get('impact','-')}] {p.get('title','')}" for p in picks)
+                seen = set()
+                for p in picks:
+                    title = (p.get("title") or "").strip()
+                    if not title:
+                        continue
+                    norm = "".join(ch for ch in title if ch.isalnum())[:60].lower()
+                    if norm in seen:
+                        continue
+                    seen.add(norm)
+                    news_items_list.append({
+                        "title": title,
+                        "link": p.get("link"),
+                        "pub_date": p.get("pub_date"),
+                        "impact": p.get("impact") or "중립",
+                    })
+                news_summary = "\n".join(
+                    f"• [{ni['impact']}] {ni['title']}" for ni in news_items_list
+                ) if news_items_list else "최신 뉴스 부족"
             else:
                 news_summary = "최신 뉴스 부족"
 
@@ -146,6 +165,7 @@ def main():
                 "grade": r["grade"],
                 "score": r["score"],
                 "news_summary": news_summary,
+                "news_items": news_items_list or None,
                 "financials": {
                     "per": None if mm.get("error") else mm.get("per"),
                     "pbr": None if mm.get("error") else mm.get("pbr"),
