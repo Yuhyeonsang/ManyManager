@@ -620,6 +620,29 @@ class StockDataCollector:
                         mm["dividend_yield_pct"] = pk["div_yield_pct"]
                         mm["dividend_yield_source"] = "pykrx"
 
+        # pykrx 까지도 못 채우면 Naver Finance 페이지 스크래핑 (최후 수단)
+        if stock_code and isinstance(mm, dict) and _NAVER_AVAILABLE:
+            still_need = mm.get("per") is None or mm.get("pbr") is None
+            if still_need and hasattr(_naver, "get_summary"):
+                try:
+                    ns = _naver.get_summary(stock_code)
+                    if ns:
+                        if mm.get("per") is None and ns.get("per") is not None:
+                            mm["per"] = ns["per"]
+                            mm["per_source"] = "naver_scrape"
+                        if mm.get("pbr") is None and ns.get("pbr") is not None:
+                            mm["pbr"] = ns["pbr"]
+                            mm["pbr_source"] = "naver_scrape"
+                        if mm.get("eps") is None and ns.get("eps") is not None:
+                            mm["eps"] = ns["eps"]
+                        if mm.get("bps") is None and ns.get("bps") is not None:
+                            mm["bps"] = ns["bps"]
+                        if mm.get("dividend_yield_pct") is None and ns.get("dividend_yield_pct") is not None:
+                            mm["dividend_yield_pct"] = ns["dividend_yield_pct"]
+                            mm["dividend_yield_source"] = "naver_scrape"
+                except Exception as e:
+                    log.debug(f"Naver summary fallback 실패 ({stock_code}): {e}")
+
         if fin and "ratios" in fin and isinstance(mm, dict):
             r = fin["ratios"]
             if mm.get("roe_pct") is None and r.get("roe_pct") is not None:
