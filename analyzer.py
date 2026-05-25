@@ -455,6 +455,121 @@ class InvestmentGrader:
         }
  
  
+# ─────────────────────────────────────────────
+# 룰 기반 재무 해석문 — PER/PBR/ROE/부채비율 보고 자연어 한 줄씩
+# ─────────────────────────────────────────────
+def _interpret_financials(market_metrics, margins, growth, debt_pct):
+    """재무 숫자 → 사용자 친화적 해석 문장 리스트.
+    데이터 없으면 빈 리스트."""
+    out = []
+    mm = market_metrics or {}
+    per = mm.get("per")
+    pbr = mm.get("pbr")
+    roe = mm.get("roe_pct")
+
+    # PER
+    if per is not None:
+        try:
+            p = float(per)
+            if p < 0:
+                out.append(f"PER {p:.1f}배 — 적자 상태로 PER 의미 제한적")
+            elif p < 10:
+                out.append(f"PER {p:.1f}배 — 시장 평균보다 저평가 (가치주 영역)")
+            elif p < 20:
+                out.append(f"PER {p:.1f}배 — 시장 평균 수준의 밸류에이션")
+            elif p < 40:
+                out.append(f"PER {p:.1f}배 — 성장주 영역, 실적 뒷받침 필요")
+            else:
+                out.append(f"PER {p:.1f}배 — 매우 고평가 구간, 신중한 접근 필요")
+        except Exception:
+            pass
+
+    # PBR
+    if pbr is not None:
+        try:
+            b = float(pbr)
+            if b < 1.0:
+                out.append(f"PBR {b:.2f}배 — 청산가치 이하 (저PBR, 가치 매력)")
+            elif b < 2.0:
+                out.append(f"PBR {b:.2f}배 — 무난한 자산 대비 가격")
+            elif b < 5.0:
+                out.append(f"PBR {b:.2f}배 — 자산 대비 다소 비싼 편")
+            else:
+                out.append(f"PBR {b:.2f}배 — 성장주/브랜드 프리미엄 반영")
+        except Exception:
+            pass
+
+    # ROE
+    if roe is not None:
+        try:
+            r = float(roe)
+            if r < 0:
+                out.append(f"ROE {r:.1f}% — 자기자본 손실 (적자 또는 자본 잠식 주의)")
+            elif r < 5:
+                out.append(f"ROE {r:.1f}% — 자본 수익성 낮음")
+            elif r < 10:
+                out.append(f"ROE {r:.1f}% — 평균 수준의 자본 효율")
+            elif r < 20:
+                out.append(f"ROE {r:.1f}% — 우수한 자본 효율")
+            else:
+                out.append(f"ROE {r:.1f}% — 매우 우수 (지속 가능성 확인 필요)")
+        except Exception:
+            pass
+
+    # 영업이익률
+    op = (margins or {}).get("operating_margin_pct")
+    if op is not None:
+        try:
+            o = float(op)
+            if o < 0:
+                out.append(f"영업이익률 {o:.1f}% — 영업적자 상태")
+            elif o < 5:
+                out.append(f"영업이익률 {o:.1f}% — 마진 박한 수준")
+            elif o < 15:
+                out.append(f"영업이익률 {o:.1f}% — 적정 수익성")
+            else:
+                out.append(f"영업이익률 {o:.1f}% — 높은 수익성 (사업 경쟁력 강함)")
+        except Exception:
+            pass
+
+    # 매출 성장률
+    rg = (growth or {}).get("revenue")
+    if rg is not None:
+        try:
+            v = float(rg)
+            if v < -10:
+                out.append(f"매출 {v:+.1f}% — 큰 폭 감소 (산업/제품 사이클 확인 필요)")
+            elif v < 0:
+                out.append(f"매출 {v:+.1f}% — 정체/약한 감소")
+            elif v < 10:
+                out.append(f"매출 {v:+.1f}% — 안정적 성장")
+            elif v < 30:
+                out.append(f"매출 {v:+.1f}% — 견조한 성장세")
+            else:
+                out.append(f"매출 {v:+.1f}% — 폭발적 성장 (지속성 확인)")
+        except Exception:
+            pass
+
+    # 부채비율
+    if debt_pct is not None:
+        try:
+            d = float(debt_pct)
+            if d < 50:
+                out.append(f"부채비율 {d:.1f}% — 매우 안정 (자기자본 충분)")
+            elif d < 100:
+                out.append(f"부채비율 {d:.1f}% — 양호한 재무 구조")
+            elif d < 200:
+                out.append(f"부채비율 {d:.1f}% — 다소 높음 (이자비용 부담 체크)")
+            elif d < 400:
+                out.append(f"부채비율 {d:.1f}% — 부채 많음 (위험도 ↑)")
+            else:
+                out.append(f"부채비율 {d:.1f}% — 매우 높음 (금융업 등 특수 업종은 정상)")
+        except Exception:
+            pass
+
+    return out
+
+
 class ReportBuilder:
     """선별 뉴스 + 계산 수치 + 추론 관련주 + 투자 등급 → 클로드 웹 붙여넣기 텍스트."""
  
@@ -528,6 +643,18 @@ class ReportBuilder:
             )
             if fin_an.get("debt_to_equity_pct") is not None:
                 L.append(f"  - 부채비율: {fin_an['debt_to_equity_pct']}%")
+
+            # ★ 룰 기반 재무 해석 한 단락 추가 — 사용자가 숫자만 보고 헷갈리지 않게
+            interp = _interpret_financials(
+                market_metrics=(bundle or {}).get("market_metrics") or {},
+                margins=m,
+                growth=g,
+                debt_pct=fin_an.get("debt_to_equity_pct"),
+            )
+            if interp:
+                L.append("  - 해석:")
+                for line in interp:
+                    L.append(f"     · {line}")
  
         # [3] 뉴스
         L.append("\n[3] 핵심 뉴스 (Gemini 선별)")
@@ -584,9 +711,12 @@ class ReportBuilder:
         L.append(
             "  위 [1~5] 데이터를 바탕으로 다음을 정리해줘:\n"
             "  (1) 파이썬 1차 등급에 동의하는지, 반대라면 어떤 축의 가중치를 다르게 보는지.\n"
-            "  (2) [4]번 관련주 후보 중 실제 수혜 강도가 가장 큰 Top3와 그 이유.\n"
-            "  (3) 단기(1~2주) / 중기(1~3개월) 매매 시나리오 및 손절·익절 가이드.\n"
-            "  (4) 본 종목이 흔들릴 수 있는 거시·산업 리스크 3가지."
+            "  (2) [3]번 뉴스 링크들을 각각 열어 읽고, 종목 주가에 미칠 단기/중기 영향도\n"
+            "      (강/중/약 + 호재/악재) 와 핵심 메시지 한 줄을 뉴스마다 정리.\n"
+            "  (3) [4]번 관련주 후보 중 실제 수혜 강도가 가장 큰 Top3와 그 이유.\n"
+            "  (4) [2]번 재무 지표를 동종 업계 평균과 비교해 강점/약점 2개씩.\n"
+            "  (5) 단기(1~2주) / 중기(1~3개월) 매매 시나리오 및 손절·익절 가이드.\n"
+            "  (6) 본 종목이 흔들릴 수 있는 거시·산업 리스크 3가지."
         )
         L.append("=" * 60)
         return "\n".join(L)
@@ -614,6 +744,73 @@ class HybridAnalyzer:
         self.claude_threshold = claude_threshold
 
     def analyze(
+        self,
+        ticker: str,
+        bundle: Dict,
+        company_name: Optional[str] = None,
+    ) -> Dict:
+        report_text = self.builder.build(
+            ticker=ticker, bundle=bundle, company_name=company_name,
+        )
+        prompt = (
+            "아래 종목 리포트를 분석해 한국어 JSON 객체만 출력해. 다른 텍스트/마크다운 금지.\n\n"
+            "JSON 스키마:\n"
+            "{\n"
+            '  "importance": 0~10 정수,\n'
+            '  "sentiment": "bullish"|"bearish"|"neutral",\n'
+            '  "action": "BUY"|"HOLD"|"WATCH"|"AVOID",\n'
+            '  "confidence": 0~10 정수,\n'
+            '  "key_drivers": ["3개, 각 30자 이내"],\n'
+            '  "risk_factors": ["2~3개, 각 30자 이내"],\n'
+            '  "short_term": "1주~1개월 전망 (60자 이내)",\n'
+            '  "mid_term": "3~6개월 전망 (60자 이내)",\n'
+            '  "comment": "종합 코멘트 (200자 이내)"\n'
+            "}\n\n"
+            f"[리포트]\n{report_text}"
+        )
+        verdict = self.gemini.call_json(prompt, temperature=0.3)
+        verdict["mode"] = "hybrid_gemini"
+        verdict["model"] = self.gemini.model
+        verdict["ticker"] = ticker
+        verdict["name"] = company_name
+        verdict["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        verdict["report_text"] = report_text
+
+        try:
+            importance = float(verdict.get("importance", 0))
+        except (TypeError, ValueError):
+            importance = 0.0
+
+        if importance >= self.claude_threshold:
+            verdict["needs_claude_review"] = True
+            verdict["claude_prompt"] = ManualClaudeAnalyzer.build_prompt(
+                report_text=report_text,
+                ticker=ticker,
+                company_name=company_name,
+                extra_context=(
+                    "[Gemini 1차 자동 판정 — 너가 검증·심화할 베이스]\n"
+                    + json.dumps(
+                        {k: v for k, v in verdict.items()
+                         if k not in ("claude_prompt", "report_text")},
+                        ensure_ascii=False, indent=2, default=str,
+                    )
+                ),
+            )
+        else:
+            verdict["needs_claude_review"] = False
+        return verdict
+
+
+# ─────────────────────────────────────────────
+# 모드 2: ManualClaudeAnalyzer
+#   Gemini 종합 판정 호출 안 함. 클로드용 프롬프트만 만들어줌.
+#   (ReportBuilder 가 이미 호출하는 GeminiNewsFilter/RelatedStockInferer 는 그대로 사용 — 무료 한도 안에서 1차 가공만)
+# ─────────────────────────────────────────────
+class ManualClaudeAnalyzer:
+    def __init__(self, builder: Optional[ReportBuilder] = None):
+        self.builder = builder or ReportBuilder()
+
+    def make_paste(
         self,
         ticker: str,
         bundle: Dict,
