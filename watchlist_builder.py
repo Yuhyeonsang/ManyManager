@@ -121,10 +121,42 @@ def _ticker_to_entry(ticker: str) -> Optional[Dict]:
 # ─────────────────────────────────────────────
 # 뉴스 → 종목 추론
 # ─────────────────────────────────────────────
+def _get_recent_codes(db_path: Optional[str], cooldown: int = 2) -> set:
+    """최근 cooldown 사이클에 등장한 종목 코드 집합 반환. db_path 없으면 빈 셋."""
+    if not db_path:
+        return set()
+    try:
+        _ensure_settings_table(db_path)
+        raw = get_setting(db_path, "recent_watchlist_codes", "[]")
+        history: List[List[str]] = json.loads(raw)  # [[codes_cycle_n], [codes_cycle_n-1], ...]
+        recent: set = set()
+        for cycle in history[:cooldown]:
+            recent.update(cycle)
+        return recent
+    except Exception:
+        return set()
+
+
+def _save_recent_codes(db_path: Optional[str], codes: List[str], max_history: int = 4) -> None:
+    """현재 사이클 코드를 history 앞에 prepend하고 max_history 사이클만 유지."""
+    if not db_path:
+        return
+    try:
+        raw = get_setting(db_path, "recent_watchlist_codes", "[]")
+        history: List[List[str]] = json.loads(raw)
+        history.insert(0, codes)
+        history = history[:max_history]
+        set_setting(db_path, "recent_watchlist_codes", json.dumps(history))
+    except Exception:
+        pass
+
+
 def build_news_inferred(
     queries: List[str],
     limit: int = 10,
     news_per_query: int = 5,
+    db_path: Optional[str] = None,
+    cooldown_cycles: int = 2,
 ) -> List[Dict]:
     if not queries:
         return []
@@ -142,9 +174,12 @@ def build_news_inferred(
     if not all_items:
         return []
 
-    candidates = inferer.infer_related_stocks(all_items, max_candidates=limit * 2)
+    candidates = inferer.infer_related_stocks(all_items, max_candidates=limit * 3)
     if not candidates or (candidates and candidates[0].get("error")):
         return []
+
+    # 최근 사이클에 등장한 종목 제외 (쿨다운)
+    recent_codes = _get_recent_codes(db_path, cooldown=cooldown_cycles)
 
     out: List[Dict] = []
     seen = set()
@@ -154,17 +189,22 @@ def build_news_inferred(
             entry = _ticker_to_entry(c["ticker"])
         if not entry and c.get("name"):
             entry = _name_to_entry(c["name"])
-        if entry and entry["code"] not in seen:
-            seen.add(entry["code"])
-            entry["news_inference"] = {
-                "reason": c.get("reason", ""),
-                "expected_impact": c.get("expected_impact", "중립"),
-                "value_chain": c.get("value_chain", ""),
-                "confidence": c.get("confidence", "중"),
-            }
-            out.append(entry)
-            if len(out) >= limit:
-                break
+        if not entry:
+            continue
+        code = entry["code"]
+        if code in seen or code in recent_codes:
+            continue
+        seen.add(code)
+        entry["news_inference"] = {
+            "reason": c.get("reason", ""),
+            "expected_impact": c.get("expected_impact", "중립"),
+            "value_chain": c.get("value_chain", ""),
+            "confidence": c.get("confidence", "중"),
+        }
+        out.append(entry)
+        if len(out) >= limit:
+            break
+
     return out
 
 
@@ -211,9 +251,18 @@ def build_watchlist(
 
     total = kr_limit + us_limit
 
+    def _finish(result: List[Dict]) -> List[Dict]:
+        """결과를 자르고 최근 등장 기록을 DB에 저장."""
+        final = result[:total]
+        codes = [e.get("code", "") for e in final if e.get("code")]
+        if codes:
+            _save_recent_codes(db_path, codes)
+        return final
+
     # ⭐ 핫 뉴스 기반 — 시장 전체에서 영향력 있는 뉴스 → 종목 추론
     if mode == "news_hot":
-        return build_news_inferred(HOT_MARKET_QUERIES, limit=total)[:total]
+        return _finish(build_news_inferred(
+            HOT_MARKET_QUERIES, limit=total, db_path=db_path))
 
     # 카테고리 기반
     if mode == "news_categories":
@@ -226,7 +275,7 @@ def build_watchlist(
         queries: List[str] = []
         for cat in active_cats:
             queries.extend(DEFAULT_CATEGORIES.get(cat, [cat]))
-        return build_news_inferred(queries, limit=total)[:total]
+        return _finish(build_news_inferred(queries, limit=total, db_path=db_path))
 
     # 키워드 기반
     if mode == "news_keywords":
@@ -237,7 +286,7 @@ def build_watchlist(
             keywords = []
         if not keywords:
             return []
-        return build_news_inferred(keywords, limit=total)[:total]
+        return _finish(build_news_inferred(keywords, limit=total, db_path=db_path))
 
     # 거래대금 기반 — 가장 단순, 항상 동작 (Pi 3B+ 권장)
     if mode == "volume":

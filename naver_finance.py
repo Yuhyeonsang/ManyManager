@@ -162,6 +162,44 @@ def get_summary(code):
         "bps": _by_id("_bps"),
         "dividend_yield_pct": _by_id("_dvd_yld_for_yr"),
     }
+
+    # ★ 재무 분석 탭 API에서 영업이익률·ROE·매출성장률 추가 시도
+    try:
+        fin_r = requests.get(
+            f"https://finance.naver.com/item/coinfo.naver?code={c}&target=finsum_more",
+            headers=_HEADERS, timeout=10,
+        )
+        if fin_r.status_code == 200:
+            if fin_r.encoding and fin_r.encoding.lower() in ("iso-8859-1", "ascii"):
+                fin_r.encoding = fin_r.apparent_encoding or "euc-kr"
+            fin_html = fin_r.text
+
+            # 영업이익률: 테이블에서 "영업이익률" 행의 최신 값
+            m_op = re.search(
+                r'영업이익률[^<]*</th>.*?<td[^>]*>\s*([0-9,.\-]+)\s*</td>',
+                fin_html, re.S,
+            )
+            if m_op:
+                out["operating_margin_pct"] = _p(m_op.group(1))
+
+            # ROE: "ROE" 행
+            m_roe = re.search(
+                r'>ROE[^<]*</th>.*?<td[^>]*>\s*([0-9,.\-]+)\s*</td>',
+                fin_html, re.S,
+            )
+            if m_roe:
+                out["roe_pct"] = _p(m_roe.group(1))
+
+            # 매출액 증가율
+            m_rev = re.search(
+                r'매출액\s*증가율[^<]*</th>.*?<td[^>]*>\s*([0-9,.\-]+)\s*</td>',
+                fin_html, re.S,
+            )
+            if m_rev:
+                out["revenue_growth_pct"] = _p(m_rev.group(1))
+    except Exception as e:
+        logger.debug("Naver finsum fail (%s): %s", code, e)
+
     if any(v is not None for v in out.values()):
         logger.info("Naver summary OK %s: %s", code, out)
         return out

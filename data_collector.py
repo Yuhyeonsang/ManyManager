@@ -377,13 +377,34 @@ class StockDataCollector:
                         "error": f"dart {data.get('status')}: {data.get('message')}",
                     }
 
+            # DART account_nm 은 회사마다 표현이 다름 (손실 포함, 수익 표현 등)
+            # 우선순위: 앞쪽 키가 먼저 매칭되면 뒤쪽 변형은 무시됨 (result에 이미 있으면 skip)
             targets = {
+                # 매출
                 "매출액": "revenue",
+                "수익(매출액)": "revenue",
+                "매출": "revenue",
+                "영업수익": "revenue",
+                "수익": "revenue",
+                # 영업이익
                 "영업이익": "operating_income",
+                "영업이익(손실)": "operating_income",
+                "영업손익": "operating_income",
+                # 당기순이익
                 "당기순이익": "net_income",
+                "당기순이익(손실)": "net_income",
+                "당기순손익": "net_income",
+                "분기순이익": "net_income",
+                "반기순이익": "net_income",
+                "분기순이익(손실)": "net_income",
+                "반기순이익(손실)": "net_income",
+                # 자산/부채/자본
                 "자산총계": "total_assets",
+                "자산 총계": "total_assets",
                 "부채총계": "total_liabilities",
+                "부채 총계": "total_liabilities",
                 "자본총계": "total_equity",
+                "자본 총계": "total_equity",
             }
 
             def to_num(s: str) -> Optional[int]:
@@ -621,9 +642,15 @@ class StockDataCollector:
                         mm["dividend_yield_source"] = "pykrx"
 
         # pykrx 까지도 못 채우면 Naver Finance 페이지 스크래핑 (최후 수단)
-        if stock_code and isinstance(mm, dict) and _NAVER_AVAILABLE:
-            still_need = mm.get("per") is None or mm.get("pbr") is None
-            if still_need and hasattr(_naver, "get_summary"):
+        # ★ PER/PBR뿐 아니라 영업이익률·ROE·매출성장률도 Naver에서 채움
+        if stock_code and isinstance(mm, dict) and _NAVER_AVAILABLE and hasattr(_naver, "get_summary"):
+            need_basic = mm.get("per") is None or mm.get("pbr") is None
+            need_margins = (
+                mm.get("operating_margin_pct") is None
+                or mm.get("roe_pct") is None
+                or mm.get("revenue_growth_pct") is None
+            )
+            if need_basic or need_margins:
                 try:
                     ns = _naver.get_summary(stock_code)
                     if ns:
@@ -640,6 +667,16 @@ class StockDataCollector:
                         if mm.get("dividend_yield_pct") is None and ns.get("dividend_yield_pct") is not None:
                             mm["dividend_yield_pct"] = ns["dividend_yield_pct"]
                             mm["dividend_yield_source"] = "naver_scrape"
+                        # ★ 추가: 영업이익률·ROE·매출성장률
+                        if mm.get("operating_margin_pct") is None and ns.get("operating_margin_pct") is not None:
+                            mm["operating_margin_pct"] = ns["operating_margin_pct"]
+                            mm["operating_margin_source"] = "naver_scrape"
+                        if mm.get("roe_pct") is None and ns.get("roe_pct") is not None:
+                            mm["roe_pct"] = ns["roe_pct"]
+                            mm["roe_source"] = "naver_scrape"
+                        if mm.get("revenue_growth_pct") is None and ns.get("revenue_growth_pct") is not None:
+                            mm["revenue_growth_pct"] = ns["revenue_growth_pct"]
+                            mm["revenue_growth_source"] = "naver_scrape"
                 except Exception as e:
                     log.debug(f"Naver summary fallback 실패 ({stock_code}): {e}")
 
@@ -980,8 +1017,6 @@ def get_hot_stocks_mixed(kr_limit: int = 6, us_limit: int = 4) -> List[Dict]:
     return get_hot_stocks_kr(kr_limit) + get_hot_stocks_us(us_limit)
 
 
-# ─────────────────────────────────────────────
-# monitor_loop.py 가 호출하는 모듈 레벨 헬퍼
 # ─────────────────────────────────────────────
 # monitor_loop.py 가 호출하는 모듈 레벨 헬퍼
 # ─────────────────────────────────────────────

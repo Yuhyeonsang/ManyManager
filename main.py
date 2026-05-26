@@ -372,6 +372,21 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
         log.warning(f"Gemini news filter failed for {ticker}: {e}")
         picks, sent_score, sent_counts = [], 0.0, {"긍정": 0, "부정": 0, "중립": 0}
 
+    # ★ picks가 없거나 에러면 raw 뉴스 상위 3개를 중립으로 직접 표시
+    if (not picks or picks[0].get("error")) and items:
+        picks = [
+            {
+                "title": it.get("title", ""),
+                "link": it.get("link"),
+                "pub_date": it.get("pub_date"),
+                "impact": "중립",
+                "reason": "raw_fallback",
+            }
+            for it in items[:3]
+            if it.get("title")
+        ]
+        sent_score, sent_counts = 0.0, {"긍정": 0, "부정": 0, "중립": len(picks)}
+
     verdict = grader.grade(price_an, fin_an, sent_score, sent_counts)
 
     # 한 줄 요약
@@ -846,6 +861,64 @@ def stock_report(ticker: str, refresh: bool = False):
         return report
 
 
+def _build_beginner_prompt(report_text: str, name: str, ticker: str) -> str:
+    """리포트 원문을 초보 투자자용 Claude 질문 프롬프트로 감쌈."""
+    return f"""당신은 친절한 주식 투자 선생님입니다.
+주식을 처음 접하는 초보 투자자가 쉽게 이해할 수 있도록 아래 종목 리포트를 분석해주세요.
+어려운 금융 용어는 반드시 쉬운 말로 풀어서 설명하고, 숫자가 좋은지 나쁜지 꼭 판단해주세요.
+
+[분석 종목] {name} ({ticker})
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+아래 리포트를 보고 다음 3가지를 순서대로 설명해주세요:
+
+【1】 📰 뉴스 해설
+뉴스가 있다면 각각 아래 형식으로 설명해주세요:
+  ① 이 뉴스가 무슨 일인지 쉬운 말로 2~3줄 설명
+  ② 이 뉴스가 이 회사 주가에 좋은 소식인지 나쁜 소식인지, 그 이유
+
+【2】 📊 재무 수치 쉬운 설명
+아래 수치들이 리포트에 있다면 각각 설명해주세요 (없으면 "데이터 없음" 표시):
+
+  ▸ PER (주가수익비율)
+    - 이게 뭔지: 예) "현재 주가가 1년 순이익의 몇 배냐를 나타냄"
+    - 현재 수치가 높은지 낮은지, 왜 그게 좋은지/나쁜지
+    - 이 종목 PER은 어떤 수준인지
+
+  ▸ PBR (주가순자산비율)
+    - 이게 뭔지: 예) "회사 장부상 가치 대비 주가가 몇 배냐"
+    - 현재 수치의 의미
+
+  ▸ ROE (자기자본이익률)
+    - 이게 뭔지: 예) "회사가 주주 돈으로 얼마나 이익을 냈는지"
+    - 현재 수치가 괜찮은 수준인지
+
+  ▸ 매출 성장률
+    - 이게 뭔지
+    - 현재 방향이 좋은지 나쁜지
+
+  ▸ 영업이익률
+    - 이게 뭔지: 예) "물건을 팔아서 실제로 얼마나 남기는지"
+    - 이 회사가 돈을 잘 버는 편인지
+
+  ▸ 부채비율
+    - 이게 뭔지
+    - 지금 수치가 위험한 수준인지, 업종 특성도 감안해서
+
+【3】 💡 초보자를 위한 최종 의견
+  - 지금 이 종목, 어떻게 판단하나요? (매수 유망 / 관망 / 위험 중 하나 + 이유)
+  - 이 회사에서 가장 기대되는 점 딱 1가지
+  - 꼭 조심해야 할 점 딱 1가지
+  - 한 줄 요약 (20자 이내)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[📋 리포트 원문]
+{report_text}
+"""
+
+
 @app.get("/api/stocks/{ticker}/clipboard", response_model=ClipboardText)
 def stock_clipboard(ticker: str, refresh: bool = False):
     """Claude 웹에 그대로 붙여넣을 텍스트. 백그라운드 캐시 무조건 반환 (TTL 무시).
@@ -877,45 +950,19 @@ def stock_clipboard(ticker: str, refresh: bool = False):
                 news_query=entry["name"],
                 stock_code=entry["code"],
             )
-            text = report_builder.build(
+            report_text = report_builder.build(
                 ticker=entry["ticker"],
                 bundle=bundle,
                 company_name=entry["name"],
                 top_k_news=3,
                 max_related=8,
             )
+            text = _build_beginner_prompt(report_text, entry["name"], entry["ticker"])
             cache_set(cache_key, {"text": text})
             return ClipboardText(text=text)
         except Exception as e:
             log.exception(f"clipboard failed for {ticker}")
             raise HTTPException(500, f"clipboard build failed: {e}")
-
-
-# ─────────────────────────────────────────────
-# 안전장치 진단 엔드포인트
-# ─────────────────────────────────────────────
-@app.get("/api/safety/stats")
-def safety_stats():
-    """rate limiter / DB cleaner / keyed lock 현재 상태."""
-    return {
-        "gemini_limiter": gemini_limiter.stats(),
-        "db_cleaner": db_cleaner.stats(),
-        "keyed_lock": keyed_lock.stats(),
-        "cache_settings": {
-            "hot_stocks_ttl_sec": HOT_STOCKS_CACHE_TTL_SEC,
-            "report_ttl_sec": REPORT_CACHE_TTL_SEC,
-        },
-    }
-
-
-@app.post("/api/safety/cleanup-cache")
-def safety_cleanup_cache():
-    """report_cache 만료 행 즉시 청소 (관리자용)."""
-    deleted = db_cleaner.force_clean(
-        DB_PATH,
-        max(REPORT_CACHE_TTL_SEC, HOT_STOCKS_CACHE_TTL_SEC) * 6,
-    )
-    return {"deleted": deleted, "ok": True}
 
 
 # ─────────────────────────────────────────────
