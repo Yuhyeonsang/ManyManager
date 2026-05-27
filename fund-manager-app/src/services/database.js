@@ -1,38 +1,45 @@
-// SQLite 로컬 캐시 — 인터넷이 끊겨도 마지막에 받아온 리포트를 볼 수 있게 함
-// expo-sqlite v14 의 신규 비동기 API 사용
-
+// SQLite 로컬 캐시 (expo-sqlite v16)
 import * as SQLite from 'expo-sqlite';
 
-let dbInstance = null;
+// Promise 싱글톤 — 동시 다중 호출 시 DB가 두 번 초기화되는 race condition 방지
+let dbPromise = null;
 
-async function getDB() {
-  if (!dbInstance) {
-    dbInstance = await SQLite.openDatabaseAsync('fundmanager.db');
-    await dbInstance.execAsync(`
-      PRAGMA journal_mode = WAL;
-      CREATE TABLE IF NOT EXISTS hot_stocks (
-        ticker TEXT PRIMARY KEY,
-        payload TEXT NOT NULL,
-        cached_at INTEGER NOT NULL
+function getDB() {
+  if (!dbPromise) {
+    dbPromise = SQLite.openDatabaseAsync('fundmanager.db').then(async (db) => {
+      await db.execAsync(
+        'PRAGMA journal_mode = WAL;' +
+        'CREATE TABLE IF NOT EXISTS hot_stocks (' +
+          'ticker TEXT PRIMARY KEY,' +
+          'payload TEXT NOT NULL,' +
+          'cached_at INTEGER NOT NULL' +
+        ');' +
+        'CREATE TABLE IF NOT EXISTS reports (' +
+          'ticker TEXT PRIMARY KEY,' +
+          'payload TEXT NOT NULL,' +
+          'cached_at INTEGER NOT NULL' +
+        ');' +
+        'CREATE TABLE IF NOT EXISTS settings (' +
+          'key TEXT PRIMARY KEY,' +
+          'value TEXT NOT NULL' +
+        ');' +
+        'CREATE TABLE IF NOT EXISTS favorites (' +
+          'ticker TEXT PRIMARY KEY,' +
+          'name TEXT NOT NULL,' +
+          'added_at INTEGER NOT NULL' +
+        ');'
       );
-      CREATE TABLE IF NOT EXISTS reports (
-        ticker TEXT PRIMARY KEY,
-        payload TEXT NOT NULL,
-        cached_at INTEGER NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS settings (
-        key   TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      );
-      CREATE TABLE IF NOT EXISTS favorites (
-        ticker    TEXT PRIMARY KEY,
-        name      TEXT NOT NULL,
-        added_at  INTEGER NOT NULL
-      );
-    `);
+      return db;
+    }).catch((e) => {
+      // 초기화 실패 시 다음 호출에서 재시도할 수 있도록 초기화
+      dbPromise = null;
+      throw e;
+    });
   }
-  return dbInstance;
+  return dbPromise;
 }
+
+// ─── 핫 종목 캐시 ───────────────────────────────────
 
 export async function cacheHotStocks(stocks) {
   const db = await getDB();
@@ -56,6 +63,8 @@ export async function getCachedHotStocks() {
   return rows.map((r) => JSON.parse(r.payload));
 }
 
+// ─── 리포트 캐시 ────────────────────────────────────
+
 export async function cacheReport(report) {
   const db = await getDB();
   await db.runAsync(
@@ -78,6 +87,8 @@ export async function clearCache() {
   const db = await getDB();
   await db.execAsync('DELETE FROM hot_stocks; DELETE FROM reports;');
 }
+
+// ─── 설정값 ─────────────────────────────────────────
 
 export async function getSetting(key, defaultValue = null) {
   try {
@@ -106,9 +117,7 @@ export async function deleteSetting(key) {
   await db.runAsync('DELETE FROM settings WHERE key = ?;', [key]);
 }
 
-// ─────────────────────────────────────────────
-// 관심종목 (Favorites)
-// ─────────────────────────────────────────────
+// ─── 관심종목 ────────────────────────────────────────
 
 export async function addFavorite(ticker, name) {
   const db = await getDB();
