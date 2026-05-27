@@ -13,19 +13,61 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import GradeBadge from '../components/GradeBadge';
 import { fetchStockReport, fetchClipboardText } from '../services/api';
-import { cacheReport, getCachedReport } from '../services/database';
+import {
+  cacheReport,
+  getCachedReport,
+  addFavorite,
+  removeFavorite,
+  isFavorite,
+} from '../services/database';
 import {
   copyToClipboard,
   formatReportForClipboard,
 } from '../utils/clipboard';
 
-export default function DetailScreen({ route }) {
+export default function DetailScreen({ route, navigation }) {
   const { ticker } = route.params;
   const [report, setReport] = useState(null);
   const [loading, setLoading] = useState(true);
   const [offline, setOffline] = useState(false);
   const [copying, setCopying] = useState(false);
+  const [favorited, setFavorited] = useState(false);
   const insets = useSafeAreaInsets();
+
+  // 관심종목 상태 초기 로드
+  useEffect(() => {
+    isFavorite(ticker).then(setFavorited).catch(() => {});
+  }, [ticker]);
+
+  const handleToggleFavorite = useCallback(async () => {
+    try {
+      if (favorited) {
+        await removeFavorite(ticker);
+        setFavorited(false);
+      } else {
+        const name = report?.name ?? ticker;
+        await addFavorite(ticker, name);
+        setFavorited(true);
+      }
+    } catch (e) {
+      console.warn('관심종목 토글 실패', e?.message);
+    }
+  }, [favorited, ticker, report]);
+
+  // 헤더 우측 별 버튼 등록 (favorited 상태 변할 때마다 갱신)
+  useEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <Pressable
+          onPress={handleToggleFavorite}
+          hitSlop={12}
+          style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1, marginRight: 4 }]}
+        >
+          <Text style={{ fontSize: 22 }}>{favorited ? '⭐' : '☆'}</Text>
+        </Pressable>
+      ),
+    });
+  }, [navigation, handleToggleFavorite, favorited]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -59,12 +101,10 @@ export default function DetailScreen({ route }) {
     if (!report) return;
     setCopying(true);
     try {
-      // 1순위: 서버가 정리해 둔 텍스트 사용 (있으면 가장 깔끔)
       let text;
       try {
         text = await fetchClipboardText(ticker);
       } catch {
-        // 서버 엔드포인트가 없거나 오프라인이면 클라이언트에서 직접 포맷팅
         text = formatReportForClipboard(report);
       }
       await copyToClipboard(text);
@@ -109,7 +149,7 @@ export default function DetailScreen({ route }) {
         {offline && (
           <View style={styles.offlineBanner}>
             <Text style={styles.offlineText}>
-              ⚠ 오프라인 — 마지막에 저장된 리포트입니다
+              오프라인 — 마지막에 저장된 리포트입니다
             </Text>
           </View>
         )}
@@ -130,7 +170,7 @@ export default function DetailScreen({ route }) {
           </Text>
         </View>
 
-        <Section title="📰 AI 뉴스 요약">
+        <Section title="AI 뉴스 요약">
           {Array.isArray(report.news_items) && report.news_items.length > 0 ? (
             report.news_items.map((item, idx) => (
               <NewsRow
@@ -146,20 +186,12 @@ export default function DetailScreen({ route }) {
           )}
         </Section>
 
-        <Section title="📊 주요 재무 수치">
+        <Section title="주요 재무 수치">
           <FinancialRow label="PER" value={f.per} suffix="배" />
           <FinancialRow label="PBR" value={f.pbr} suffix="배" />
           <FinancialRow label="ROE" value={f.roe} suffix="%" />
-          <FinancialRow
-            label="매출 성장률"
-            value={f.revenue_growth}
-            suffix="%"
-          />
-          <FinancialRow
-            label="영업이익률"
-            value={f.operating_margin}
-            suffix="%"
-          />
+          <FinancialRow label="매출 성장률" value={f.revenue_growth} suffix="%" />
+          <FinancialRow label="영업이익률" value={f.operating_margin} suffix="%" />
           <FinancialRow label="부채비율" value={f.debt_ratio} suffix="%" />
         </Section>
 
@@ -189,7 +221,7 @@ export default function DetailScreen({ route }) {
             <ActivityIndicator color="#FFFFFF" />
           ) : (
             <Text style={styles.copyBtnText}>
-              📋 텍스트 리포트 복사 (Claude 웹에 붙여넣기)
+              텍스트 리포트 복사 (Claude 웹에 붙여넣기)
             </Text>
           )}
         </Pressable>
@@ -218,9 +250,6 @@ function FinancialRow({ label, value, suffix }) {
   );
 }
 
-// ─────────────────────────────────────────────
-// 뉴스 한 줄 — 탭하면 링크 열림, "N시간 전" 표시
-// ─────────────────────────────────────────────
 function NewsRow({ item, isLast }) {
   const url = (item.link || '').trim();
   const hasLink = !!url;
@@ -263,7 +292,7 @@ function NewsRow({ item, isLast }) {
         {item.title}
       </Text>
       {hasLink ? (
-        <Text style={styles.newsLink}>탭하여 원문 보기 ›</Text>
+        <Text style={styles.newsLink}>탭하여 원문 보기</Text>
       ) : null}
     </Pressable>
   );
@@ -280,7 +309,6 @@ function impactBadgeStyle(impact) {
   }
 }
 
-// pub_date (RFC 2822 또는 ISO) → 현재 시각 기준 상대 시간
 function formatRelativeTime(pubDate) {
   if (!pubDate) return '';
   const t = Date.parse(pubDate);
@@ -301,6 +329,7 @@ function formatRelativeTime(pubDate) {
   if (mo < 12) return `${mo}개월 전`;
   return `${Math.floor(day / 365)}년 전`;
 }
+
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F1F5F9' },
   center: {
@@ -382,7 +411,6 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
   },
-  // 뉴스 카드
   newsRow: {
     paddingVertical: 10,
     paddingHorizontal: 2,
@@ -422,4 +450,3 @@ const styles = StyleSheet.create({
     fontWeight: '600',
   },
 });
-

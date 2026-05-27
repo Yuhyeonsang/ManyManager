@@ -24,14 +24,16 @@ async function getDB() {
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS favorites (
+        ticker    TEXT PRIMARY KEY,
+        name      TEXT NOT NULL,
+        added_at  INTEGER NOT NULL
+      );
     `);
   }
   return dbInstance;
 }
 
-/**
- * 핫 종목 리스트 캐시 저장
- */
 export async function cacheHotStocks(stocks) {
   const db = await getDB();
   const now = Date.now();
@@ -46,9 +48,6 @@ export async function cacheHotStocks(stocks) {
   });
 }
 
-/**
- * 캐시된 핫 종목 리스트 가져오기 (오프라인 폴백용)
- */
 export async function getCachedHotStocks() {
   const db = await getDB();
   const rows = await db.getAllAsync(
@@ -57,9 +56,6 @@ export async function getCachedHotStocks() {
   return rows.map((r) => JSON.parse(r.payload));
 }
 
-/**
- * 종목 상세 리포트 캐시 저장
- */
 export async function cacheReport(report) {
   const db = await getDB();
   await db.runAsync(
@@ -68,9 +64,6 @@ export async function cacheReport(report) {
   );
 }
 
-/**
- * 캐시된 리포트 가져오기
- */
 export async function getCachedReport(ticker) {
   const db = await getDB();
   const row = await db.getFirstAsync(
@@ -81,22 +74,11 @@ export async function getCachedReport(ticker) {
   return { ...JSON.parse(row.payload), _cachedAt: row.cached_at };
 }
 
-/**
- * 캐시 전체 비우기 (디버깅용)
- */
 export async function clearCache() {
   const db = await getDB();
   await db.execAsync('DELETE FROM hot_stocks; DELETE FROM reports;');
 }
 
-// ─────────────────────────────────────────────
-// 설정값 (key-value) 영구 저장
-//   - base_url 같은 사용자 설정을 .apk 재빌드 없이 바꿀 수 있게 함
-// ─────────────────────────────────────────────
-
-/**
- * 설정값 가져오기 (없으면 defaultValue 반환)
- */
 export async function getSetting(key, defaultValue = null) {
   try {
     const db = await getDB();
@@ -111,9 +93,6 @@ export async function getSetting(key, defaultValue = null) {
   }
 }
 
-/**
- * 설정값 저장
- */
 export async function setSetting(key, value) {
   const db = await getDB();
   await db.runAsync(
@@ -122,10 +101,41 @@ export async function setSetting(key, value) {
   );
 }
 
-/**
- * 설정값 삭제 (= 기본값으로 복원)
- */
 export async function deleteSetting(key) {
   const db = await getDB();
   await db.runAsync('DELETE FROM settings WHERE key = ?;', [key]);
+}
+
+// ─────────────────────────────────────────────
+// 관심종목 (Favorites)
+// ─────────────────────────────────────────────
+
+export async function addFavorite(ticker, name) {
+  const db = await getDB();
+  await db.runAsync(
+    'INSERT OR REPLACE INTO favorites (ticker, name, added_at) VALUES (?, ?, ?);',
+    [ticker, name, Date.now()]
+  );
+}
+
+export async function removeFavorite(ticker) {
+  const db = await getDB();
+  await db.runAsync('DELETE FROM favorites WHERE ticker = ?;', [ticker]);
+}
+
+export async function getFavorites() {
+  const db = await getDB();
+  const rows = await db.getAllAsync(
+    'SELECT ticker, name, added_at FROM favorites ORDER BY added_at DESC;'
+  );
+  return rows;
+}
+
+export async function isFavorite(ticker) {
+  const db = await getDB();
+  const row = await db.getFirstAsync(
+    'SELECT ticker FROM favorites WHERE ticker = ?;',
+    [ticker]
+  );
+  return !!row;
 }
