@@ -11,7 +11,13 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import StockCard from '../components/StockCard';
 import { fetchHotStocks } from '../services/api';
-import { cacheHotStocks, getCachedHotStocks } from '../services/database';
+import {
+  cacheHotStocks,
+  getCachedHotStocks,
+  getFavorites,
+  addFavorite,
+  removeFavorite,
+} from '../services/database';
 
 export default function DashboardScreen({ navigation }) {
   const [stocks, setStocks] = useState([]);
@@ -19,6 +25,15 @@ export default function DashboardScreen({ navigation }) {
   const [refreshing, setRefreshing] = useState(false);
   const [offline, setOffline] = useState(false);
   const [error, setError] = useState(null);
+  const [favSet, setFavSet] = useState(new Set());
+
+  // 관심종목 Set 로드
+  const loadFavs = useCallback(async () => {
+    try {
+      const favs = await getFavorites();
+      setFavSet(new Set(favs.map((f) => f.ticker)));
+    } catch {}
+  }, []);
 
   const load = useCallback(async ({ pullToRefresh = false } = {}) => {
     if (pullToRefresh) setRefreshing(true);
@@ -29,7 +44,6 @@ export default function DashboardScreen({ navigation }) {
       const data = await fetchHotStocks();
       setStocks(data);
       setOffline(false);
-      // 성공 시 SQLite 에 캐싱
       cacheHotStocks(data).catch((e) => console.warn('cache 실패', e));
     } catch (e) {
       console.warn('서버 통신 실패, 캐시 사용', e?.message);
@@ -41,7 +55,7 @@ export default function DashboardScreen({ navigation }) {
         } else {
           setError('서버에 연결할 수 없고, 저장된 데이터도 없습니다.');
         }
-      } catch (dbErr) {
+      } catch {
         setError('데이터를 불러오지 못했습니다.');
       }
     } finally {
@@ -52,7 +66,25 @@ export default function DashboardScreen({ navigation }) {
 
   useEffect(() => {
     load();
-  }, [load]);
+    loadFavs();
+  }, [load, loadFavs]);
+
+  // 관심 탭에서 돌아올 때 favSet 갱신
+  useEffect(() => {
+    const unsub = navigation.addListener('focus', loadFavs);
+    return unsub;
+  }, [navigation, loadFavs]);
+
+  const handleFavoriteToggle = useCallback(async (stock) => {
+    const ticker = stock.ticker;
+    if (favSet.has(ticker)) {
+      await removeFavorite(ticker);
+      setFavSet((prev) => { const s = new Set(prev); s.delete(ticker); return s; });
+    } else {
+      await addFavorite(ticker, stock.name);
+      setFavSet((prev) => new Set(prev).add(ticker));
+    }
+  }, [favSet]);
 
   if (loading) {
     return (
@@ -68,11 +100,10 @@ export default function DashboardScreen({ navigation }) {
       {offline && (
         <View style={styles.offlineBanner}>
           <Text style={styles.offlineText}>
-            ⚠ 오프라인 모드 — 마지막에 저장된 데이터를 보고 있습니다
+            오프라인 모드 — 마지막에 저장된 데이터를 보고 있습니다
           </Text>
         </View>
       )}
-
       {error && (
         <View style={styles.errorBox}>
           <Text style={styles.errorText}>{error}</Text>
@@ -86,6 +117,8 @@ export default function DashboardScreen({ navigation }) {
         renderItem={({ item }) => (
           <StockCard
             stock={item}
+            isFavorited={favSet.has(item.ticker)}
+            onFavoriteToggle={handleFavoriteToggle}
             onPress={() =>
               navigation.navigate('Detail', {
                 ticker: item.ticker,

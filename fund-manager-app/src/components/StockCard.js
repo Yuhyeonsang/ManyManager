@@ -2,7 +2,7 @@ import React from 'react';
 import { Pressable, View, Text, StyleSheet } from 'react-native';
 import GradeBadge from './GradeBadge';
 
-export default function StockCard({ stock, onPress }) {
+export default function StockCard({ stock, onPress, isFavorited, onFavoriteToggle }) {
   const changeColor = (stock.change_pct ?? 0) >= 0 ? '#DC2626' : '#2563EB';
   const sign = (stock.change_pct ?? 0) >= 0 ? '+' : '';
 
@@ -16,7 +16,18 @@ export default function StockCard({ stock, onPress }) {
           <Text style={styles.name}>{stock.name}</Text>
           <Text style={styles.ticker}>{stock.ticker}</Text>
         </View>
-        <GradeBadge grade={stock.grade} />
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <GradeBadge grade={stock.grade} />
+          {onFavoriteToggle && (
+            <Pressable
+              onPress={(e) => { e.stopPropagation?.(); onFavoriteToggle(stock); }}
+              hitSlop={10}
+              style={({ pressed }) => [styles.starBtn, pressed && { opacity: 0.5 }]}
+            >
+              <Text style={styles.starIcon}>{isFavorited ? '⭐' : '☆'}</Text>
+            </Pressable>
+          )}
+        </View>
       </View>
 
       <View style={[styles.row, { marginTop: 12 }]}>
@@ -29,8 +40,7 @@ export default function StockCard({ stock, onPress }) {
         <View style={{ alignItems: 'flex-end' }}>
           <Text style={styles.priceLabel}>등락률</Text>
           <Text style={[styles.change, { color: changeColor }]}>
-            {sign}
-            {Number(stock.change_pct ?? 0).toFixed(2)}%
+            {sign}{Number(stock.change_pct ?? 0).toFixed(2)}%
           </Text>
         </View>
       </View>
@@ -75,6 +85,8 @@ const styles = StyleSheet.create({
   },
   name: { fontSize: 17, fontWeight: '700', color: '#0F172A' },
   ticker: { fontSize: 12, color: '#64748B', marginTop: 2 },
+  starBtn: { padding: 2 },
+  starIcon: { fontSize: 20 },
   priceLabel: { fontSize: 11, color: '#94A3B8' },
   price: { fontSize: 16, fontWeight: '600', color: '#0F172A', marginTop: 2 },
   change: { fontSize: 16, fontWeight: '700', marginTop: 2 },
