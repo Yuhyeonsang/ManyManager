@@ -598,7 +598,37 @@ class StockDataCollector:
         fin = self.get_financial_statements(stock_code, year) if stock_code else None
         mm = self.get_market_metrics(ticker)
 
-        # KR 종목이고 yfinance 가 PER/PBR/시총을 못 채웠으면 KRX 직통 폴백
+        # ★ KR 종목: 네이버 금융을 1순위로 — yfinance 한국 데이터 부정확 문제 해결
+        if stock_code and isinstance(mm, dict) and _NAVER_AVAILABLE and hasattr(_naver, "get_summary"):
+            try:
+                ns = _naver.get_summary(stock_code)
+                if ns:
+                    if ns.get("per") is not None:
+                        mm["per"] = ns["per"]
+                        mm["per_source"] = "naver_scrape"
+                    if ns.get("pbr") is not None:
+                        mm["pbr"] = ns["pbr"]
+                        mm["pbr_source"] = "naver_scrape"
+                    if ns.get("eps") is not None:
+                        mm["eps"] = ns["eps"]
+                    if ns.get("bps") is not None:
+                        mm["bps"] = ns["bps"]
+                    if ns.get("dividend_yield_pct") is not None:
+                        mm["dividend_yield_pct"] = ns["dividend_yield_pct"]
+                        mm["dividend_yield_source"] = "naver_scrape"
+                    if ns.get("operating_margin_pct") is not None:
+                        mm["operating_margin_pct"] = ns["operating_margin_pct"]
+                        mm["operating_margin_source"] = "naver_scrape"
+                    if ns.get("roe_pct") is not None:
+                        mm["roe_pct"] = ns["roe_pct"]
+                        mm["roe_source"] = "naver_scrape"
+                    if ns.get("revenue_growth_pct") is not None:
+                        mm["revenue_growth_pct"] = ns["revenue_growth_pct"]
+                        mm["revenue_growth_source"] = "naver_scrape"
+            except Exception as e:
+                log.debug(f"Naver summary 1순위 실패 ({stock_code}): {e}")
+
+        # KR 종목이고 네이버에서도 PER/PBR/시총을 못 채웠으면 KRX 직통 폴백
         if stock_code and isinstance(mm, dict):
             need_krx = (
                 mm.get("market_cap") is None
@@ -1010,6 +1040,7 @@ def get_hot_stocks_us(limit: int = 5) -> List[Dict]:
         "ticker": s["code"],
         "region": "US",
     } for s in pool[:limit]]
+
 
 
 def get_hot_stocks_mixed(kr_limit: int = 6, us_limit: int = 4) -> List[Dict]:
