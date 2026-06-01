@@ -166,3 +166,56 @@ export async function searchStocks(query, limit = 20) {
   });
   return data;
 }
+
+// ─────────────────────────────────────────────
+// 자동매매 API
+// ─────────────────────────────────────────────
+
+export async function analyzeTradeImage(imageUri, mimeType = 'image/jpeg') {
+  const baseUrl = await getEffectiveBaseURL();
+  if (!baseUrl) throw new Error('서버 URL을 먼저 설정하세요.');
+  const form = new FormData();
+  form.append('file', { uri: imageUri, type: mimeType, name: 'condition.jpg' });
+  const resp = await fetch(`${baseUrl}/api/auto-trade/analyze-image`, {
+    method: 'POST',
+    headers: { 'ngrok-skip-browser-warning': 'true' },
+    body: form,
+  });
+  if (!resp.ok) {
+    const err = await resp.text();
+    throw new Error(`분석 실패 (${resp.status}): ${err}`);
+  }
+  return resp.json();
+}
+
+export async function startAutoTrade(conditions, tradeMode = 'paper') {
+  const c = await getClient();
+  const { data } = await c.post('/api/auto-trade/start', { conditions, trade_mode: tradeMode });
+  return data;
+}
+
+export async function stopAutoTrade() {
+  const c = await getClient();
+  const { data } = await c.post('/api/auto-trade/stop');
+  return data;
+}
+
+export async function getAutoTradeStatus() {
+  const c = await getClient();
+  const { data } = await c.get('/api/auto-trade/status');
+  return data;
+}
+
+// ─────────────────────────────────────────────
+// 백테스트 API
+// ─────────────────────────────────────────────
+
+export async function runBacktest(conditions, periodDays = 90, initialCash = 10000000) {
+  const c = await getClient();
+  const { data } = await c.post('/api/backtest/run', {
+    conditions,
+    period_days: periodDays,
+    initial_cash: initialCash,
+  }, { timeout: 120000 });
+  return data;
+}

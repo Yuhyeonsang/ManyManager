@@ -18,7 +18,8 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from fastapi import FastAPI, HTTPException
+import base64
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -993,8 +994,107 @@ def safety_cleanup_cache():
 
 
 # ─────────────────────────────────────────────
-# 직접 실행 (python main.py)
+# 자동매매 엔드포인트
 # ─────────────────────────────────────────────
+try:
+    import auto_trader
+    _AUTO_TRADER_AVAILABLE = True
+except ImportError:
+    _AUTO_TRADER_AVAILABLE = False
+    log.warning("auto_trader 모듈 없음 — 자동매매 비활성화")
+
+
+class AutoTradeStartRequest(BaseModel):
+    conditions: dict
+    trade_mode: str = "paper"  # "real" | "paper"  기본값=모의투자
+
+
+@app.post("/api/auto-trade/analyze-image")
+async def auto_trade_analyze_image(file: UploadFile = File(...)):
+    """
+    이미지 업로드 → Gemini Vision으로 매수/매도 조건 추출.
+    반환: { summary, buy_conditions, sell_conditions, check_interval_minutes }
+    """
+    if not _AUTO_TRADER_AVAILABLE:
+        raise HTTPException(503, "auto_trader 모듈 없음")
+    try:
+        image_bytes = await file.read()
+        image_b64 = base64.b64encode(image_bytes).decode("utf-8")
+        mime = file.content_type or "image/jpeg"
+        conditions = auto_trader.analyze_image_conditions(image_b64, mime)
+        auto_trader.set_conditions_image_text(conditions.get("summary", ""))
+        return {"ok": True, "conditions": conditions}
+    except Exception as e:
+        log.exception("이미지 분석 실패")
+        raise HTTPException(500, f"이미지 분석 실패: {e}")
+
+
+@app.post("/api/auto-trade/start")
+def auto_trade_start(req: AutoTradeStartRequest):
+    """조건을 받아 자동매매 루프 시작."""
+    if not _AUTO_TRADER_AVAILABLE:
+        raise HTTPException(503, "auto_trader 모듈 없음")
+    started = auto_trader.start_trading(req.conditions, trade_mode=req.trade_mode)
+    if not started:
+        raise HTTPException(409, "이미 실행 중입니다")
+    mode_label = "모의투자" if req.trade_mode == "paper" else "실전투자"
+    return {"ok": True, "message": f"자동매매 시작 ({mode_label})"}
+
+
+@app.post("/api/auto-trade/stop")
+def auto_trade_stop():
+    """자동매매 루프 정지."""
+    if not _AUTO_TRADER_AVAILABLE:
+        raise HTTPException(503, "auto_trader 모듈 없음")
+    stopped = auto_trader.stop_trading()
+    return {"ok": True, "stopped": stopped}
+
+
+@app.get("/api/auto-trade/status")
+def auto_trade_status():
+    if not _AUTO_TRADER_AVAILABLE:
+        return {"available": False}
+    return {"available": True, **auto_trader.get_status()}
+
+
+
+# ─────────────────────────────────────────────
+# 백테스트 엔드포인트
+# ─────────────────────────────────────────────
+try:
+    import backtester as _backtester
+    _BACKTESTER_AVAILABLE = True
+except ImportError:
+    _BACKTESTER_AVAILABLE = False
+    log.warning("backtester 모듈 없음")
+
+
+class BacktestRequest(BaseModel):
+    conditions: dict
+    period_days: int = 90
+    initial_cash: float = 10_000_000
+
+
+@app.post("/api/backtest/run")
+def backtest_run(req: BacktestRequest):
+    """
+    조건 + 기간을 받아 과거 데이터로 백테스트 실행.
+    period_days: 90 / 180 / 365
+    initial_cash: 초기 자본 (원)
+    """
+    if not _BACKTESTER_AVAILABLE:
+        raise HTTPException(503, "backtester 모듈 없음")
+    try:
+        result = _backtester.run_backtest(
+            conditions=req.conditions,
+            period_days=req.period_days,
+            initial_cash=req.initial_cash,
+        )
+        return result
+    except Exception as e:
+        log.exception("백테스트 실패")
+        raise HTTPException(500, f"백테스트 실패: {e}")
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

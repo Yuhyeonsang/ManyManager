@@ -10,6 +10,8 @@ import FavoritesScreen from './src/screens/FavoritesScreen';
 import DetailScreen from './src/screens/DetailScreen';
 import SearchScreen from './src/screens/SearchScreen';
 import SettingsScreen from './src/screens/SettingsScreen';
+import AutoTradeScreen from './src/screens/AutoTradeScreen';
+import BacktestScreen from './src/screens/BacktestScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -45,6 +47,20 @@ export default function App() {
                   style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
                 >
                   <Text style={{ color: '#F8FAFC', fontSize: 18 }}>{'🔍'}</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => navigation.navigate('Backtest')}
+                  hitSlop={12}
+                  style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
+                >
+                  <Text style={{ color: '#F8FAFC', fontSize: 18 }}>{'📈'}</Text>
+                </Pressable>
+                <Pressable
+                  onPress={() => navigation.navigate('AutoTrade')}
+                  hitSlop={12}
+                  style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
+                >
+                  <Text style={{ color: '#F8FAFC', fontSize: 18 }}>{'🤖'}</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => navigation.navigate('Settings')}
@@ -89,6 +105,16 @@ export default function App() {
           name="Settings"
           component={SettingsScreen}
           options={{ title: '서버 설정' }}
+        />
+        <Stack.Screen
+          name="Backtest"
+          component={BacktestScreen}
+          options={{ title: '📈 백테스트' }}
+        />
+        <Stack.Screen
+          name="AutoTrade"
+          component={AutoTradeScreen}
+          options={{ title: '🤖 자동매매' }}
         />
       </Stack.Navigator>
     </NavigationContainer>
