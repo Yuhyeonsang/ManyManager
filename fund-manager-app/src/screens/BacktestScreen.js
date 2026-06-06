@@ -32,6 +32,7 @@ export default function BacktestScreen() {
   const [result,    setResult]      = useState(null);
   const [period,    setPeriod]      = useState(90);
   const [cashInput, setCashInput]   = useState('10000000');
+  const [condExpanded, setCondExpanded] = useState(false);
 
   // ── 이미지 선택 & 분석 ──────────────────────
   const pickImage = async (fromCamera = false) => {
@@ -225,13 +226,55 @@ export default function BacktestScreen() {
 
         {/* ── 추출된 조건 요약 ── */}
         {conditions && (
-          <View style={styles.condSummaryCard}>
-            <Text style={styles.condSummaryTitle}>📋 추출된 조건</Text>
+          <TouchableOpacity
+            style={styles.condSummaryCard}
+            onPress={() => setCondExpanded(v => !v)}
+            activeOpacity={0.8}
+          >
+            <View style={styles.condSummaryHeader}>
+              <Text style={styles.condSummaryTitle}>📋 추출된 조건</Text>
+              <Text style={styles.condToggleIcon}>{condExpanded ? '▲' : '▼'}</Text>
+            </View>
             <Text style={styles.condSummaryText}>{conditions.summary}</Text>
             <Text style={styles.condSummaryMeta}>
-              매수 {conditions.buy_conditions?.length ?? 0}건 · 매도 {conditions.sell_conditions?.length ?? 0}건
+              매수 {conditions.buy_conditions?.length ?? 0}건 · 매도 {conditions.sell_conditions?.length ?? 0}건 · 탭하면 상세보기
             </Text>
-          </View>
+
+            {condExpanded && (
+              <View style={styles.condDetail}>
+                {conditions.buy_conditions?.length > 0 && (
+                  <>
+                    <Text style={styles.condDetailHeader}>🟢 매수 조건</Text>
+                    {conditions.buy_conditions.map((c, i) => (
+                      <View key={i} style={styles.condDetailRow}>
+                        <Text style={styles.condDetailName}>{c.name || c.ticker || '-'}</Text>
+                        <Text style={styles.condDetailCond}>조건: {c.condition}</Text>
+                        <Text style={styles.condDetailMeta}>
+                          수량 {c.qty}주 · {c.price_type === 'market' ? '시장가' : '지정가'}
+                          {c.ticker ? ` · ${c.ticker}` : ''}
+                        </Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+                {conditions.sell_conditions?.length > 0 && (
+                  <>
+                    <Text style={[styles.condDetailHeader, { color: '#DC2626' }]}>🔴 매도 조건</Text>
+                    {conditions.sell_conditions.map((c, i) => (
+                      <View key={i} style={styles.condDetailRow}>
+                        <Text style={styles.condDetailName}>{c.name || c.ticker || '-'}</Text>
+                        <Text style={styles.condDetailCond}>조건: {c.condition}</Text>
+                        <Text style={styles.condDetailMeta}>
+                          수량 {c.qty}주 · {c.price_type === 'market' ? '시장가' : '지정가'}
+                          {c.ticker ? ` · ${c.ticker}` : ''}
+                        </Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+              </View>
+            )}
+          </TouchableOpacity>
         )}
 
         {/* ── 초기 자본 입력 ── */}
@@ -328,9 +371,17 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff', borderRadius: 10, padding: 14, marginTop: 12,
     borderLeftWidth: 3, borderLeftColor: '#6366F1',
   },
-  condSummaryTitle: { fontSize: 13, fontWeight: '700', color: '#6366F1', marginBottom: 4 },
+  condSummaryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  condSummaryTitle: { fontSize: 13, fontWeight: '700', color: '#6366F1' },
+  condToggleIcon:   { fontSize: 12, color: '#6366F1' },
   condSummaryText:  { fontSize: 13, color: '#334155' },
   condSummaryMeta:  { fontSize: 12, color: '#94A3B8', marginTop: 6 },
+  condDetail:       { marginTop: 12, borderTopWidth: 1, borderTopColor: '#E2E8F0', paddingTop: 10 },
+  condDetailHeader: { fontSize: 13, fontWeight: '700', color: '#16A34A', marginBottom: 6, marginTop: 4 },
+  condDetailRow:    { backgroundColor: '#F8FAFC', borderRadius: 8, padding: 10, marginBottom: 6 },
+  condDetailName:   { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  condDetailCond:   { fontSize: 12, color: '#475569', marginTop: 2 },
+  condDetailMeta:   { fontSize: 11, color: '#94A3B8', marginTop: 2 },
 
   cashRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
   cashBtn: {
