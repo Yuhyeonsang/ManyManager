@@ -107,7 +107,9 @@ def run_backtest(conditions: dict, period_days: int = 90,
     # 모든 종목 수집
     tickers = {}
     for c in buy_conds + sell_conds:
-        t = c.get("ticker")
+        t = c.get("ticker") or c.get("name")  # name 폴백: AI가 ticker 대신 name에 종목코드 넣는 경우 대응
+        if t and isinstance(t, str):
+            t = t.strip().upper()
         if t:
             if t.isdigit() and len(t) == 6:
                 yf_ticker = t + ".KS"
