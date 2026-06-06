@@ -614,4 +614,4 @@ def get_status() -> dict:
 def set_conditions_image_text(text: str):
     """이미지 분석 결과 텍스트 저장."""
     with _lock:
-        _
+        _state["conditions_image"] = text
