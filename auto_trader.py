@@ -353,18 +353,18 @@ def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -
 
 종목코드가 이미지에 없으면 종목명으로 유추하세요. 비중/수량 정보가 전혀 없으면 null."""
 
-    # 1순위: Groq vision
+    # 1순위: Gemini (이미지 분석 정확도 우선)
     try:
-        result = _analyze_with_groq(image_base64, mime_type, prompt)
-        result["_provider"] = "groq"
+        result = _analyze_with_gemini(image_base64, mime_type, prompt)
+        result["_provider"] = "gemini"
         return result
-    except Exception as groq_err:
+    except Exception as gemini_err:
         import logging
-        logging.getLogger("auto_trader").warning(f"Groq vision 실패 → Gemini fallback: {groq_err}")
+        logging.getLogger("auto_trader").warning(f"Gemini vision 실패 → Groq fallback: {gemini_err}")
 
-    # 2순위: Gemini fallback
-    result = _analyze_with_gemini(image_base64, mime_type, prompt)
-    result["_provider"] = "gemini"
+    # 2순위: Groq fallback
+    result = _analyze_with_groq(image_base64, mime_type, prompt)
+    result["_provider"] = "groq"
     return result
 
 
