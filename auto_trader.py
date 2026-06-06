@@ -303,17 +303,39 @@ def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -
    예) "TP3 +350% 전량매도 & 데드크로스 전량매도" → sell_conditions 2개로 분리
 2. 조건이 수량(주)이 아니라 포트폴리오 비중(%)이면 weight_pct 필드 사용.
    예) "TQQQ 30% 비중으로 매수" → weight_pct: 30
-3. 매도 조건의 수량이 "보유수량의 X%"이면 sell_pct: X, sell_mode: "current"
-   "최초 매수수량의 X%"이면 sell_pct: X, sell_mode: "initial_qty"
-   "전량"이면 sell_pct: 100
-4. 참조 지수(예: QQQ 고점 대비 -X%)로 다른 종목(예: TQQQ) 매수 조건을 판단하면
+3. 참조 지수(예: QQQ 고점 대비 -X%)로 다른 종목(예: TQQQ) 매수 조건을 판단하면
    ref_ticker에 QQQ 기입, ticker에 실제 매수할 종목(TQQQ) 기입.
-5. 매수/매도/락 조건을 절대 섞지 마세요. 매수는 buy_conditions, 매도는 sell_conditions,
+4. 매수/매도/락 조건을 절대 섞지 마세요. 매수는 buy_conditions, 매도는 sell_conditions,
    신규매수 금지/강제청산은 lock_conditions에만 넣으세요.
-6. 복합 AND 조건(예: "고점 대비 -22% AND 200일선 대비 -7% 이하")은
+5. 복합 AND 조건(예: "고점 대비 -22% AND 200일선 대비 -7% 이하")은
    sub_conditions 배열에 각 조건을 따로 나열하고 condition_logic: "AND" 설정.
-7. RSI 과매도 시 '비중 추가'는 weight_mode: "add"로 설정.
-8. 이미지에 있는 수치(%, 일수, 배수)를 절대 바꾸지 마세요.
+6. RSI 과매도 시 '비중 추가'는 weight_mode: "add"로 설정.
+7. 이미지에 있는 수치(%, 일수, 배수)를 절대 바꾸지 마세요.
+
+=== TP(익절) 조건 파싱 규칙 (매우 중요) ===
+TP 조건에는 두 가지 숫자가 있습니다. 절대 혼동하지 마세요:
+  A) 수익률 기준 (condition에 기입): "수익률 +X% 도달 시" 의 X
+  B) 매도 비율 (sell_pct에 기입): "보유수량의 Y% 매도" 의 Y
+
+예시:
+  "TP1: 수익률 +15% 달성 시, 최초수량의 50% 매도"
+  → condition: "TP1 +15% 도달 시", sell_pct: 50, sell_mode: "initial_qty"
+
+  "TP2: 수익률 +100% 달성 시, 최초수량의 35% 매도"
+  → condition: "TP2 +100% 도달 시", sell_pct: 35, sell_mode: "initial_qty"
+  ※ 수익률 100%와 매도비율 35%를 절대 혼동하지 마세요!
+
+  "TP3: 수익률 +350% 달성 시, 남은 전량 매도"
+  → condition: "TP3 +350% 도달 시", sell_pct: 100, sell_mode: "current"
+
+=== 골든크로스(GC) 풀매수 규칙 ===
+"골든크로스 발생 시 잔여 현금 100% 전액 투입"은 buy_conditions에 추가:
+  → condition: "골든크로스 발생", weight_pct: 100, weight_mode: "add", label: "GC 풀매수"
+
+=== RSI 과매도 비중 추가 규칙 ===
+"RSI 35 이하 시 +10% 비중 추가", "RSI 25 이하 시 +15% 비중 추가"는 각각 별도 항목:
+  → condition: "RSI < 35", weight_pct: 10, weight_mode: "add"
+  → condition: "RSI < 25", weight_pct: 15, weight_mode: "add"
 
 === JSON 스키마 ===
 {
@@ -592,4 +614,4 @@ def get_status() -> dict:
 def set_conditions_image_text(text: str):
     """이미지 분석 결과 텍스트 저장."""
     with _lock:
-        _state["conditions_image"] = text
+        _
