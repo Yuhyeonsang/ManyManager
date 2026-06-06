@@ -255,46 +255,103 @@ def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -
     """
     이미지에서 매수/매도 조건 추출.
     Groq vision 우선 → 실패 시 Gemini fallback.
-    반환 형태:
+
+    반환 형태 (포트폴리오 비중 기반 전략 지원):
     {
-      "summary": "조건 요약 텍스트",
+      "summary": "조건 전체 요약 텍스트",
+      "strategy_type": "weight_based" | "qty_based",
       "buy_conditions": [
-        {"ticker": "005930", "name": "삼성전자", "condition": "RSI < 30", "qty": 10}
+        {
+          "ticker": "TQQQ",
+          "name": "ProShares UltraPro QQQ",
+          "condition": "QQQ 고점 대비 -10% 이하",
+          "ref_ticker": "QQQ",           # 조건 판단에 쓰는 참조 종목 (없으면 null)
+          "weight_pct": 30,              # 목표 포트폴리오 비중 %
+          "weight_mode": "target",       # "target"=목표비중, "add"=현재에 추가
+          "condition_logic": "AND",      # 복합조건일 때 AND/OR
+          "sub_conditions": [            # 복합조건이면 분리해서 나열
+            "QQQ 고점 대비 -10% 이하"
+          ],
+          "label": "Dip1"               # 조건 이름/라벨 (있으면)
+        }
       ],
       "sell_conditions": [
-        {"ticker": "005930", "name": "삼성전자", "condition": "수익률 > 5%", "qty": "all"}
+        {
+          "ticker": "TQQQ",
+          "name": "ProShares UltraPro QQQ",
+          "condition": "수익률 +15% 달성",
+          "sell_pct": 50,                # 보유 수량 중 매도 비율 % (100=전량)
+          "sell_mode": "initial_qty",    # "initial_qty"=최초매수 기준, "current"=현재보유 기준
+          "label": "TP1"
+        }
+      ],
+      "lock_conditions": [              # 신규매수 금지 조건 (락)
+        {
+          "condition": "QQQ 고점 대비 -40% 이하",
+          "action": "lock_buy"           # "lock_buy"=매수잠금, "liquidate"=전량청산+잠금
+        }
       ],
       "check_interval_minutes": 5
     }
     """
-    prompt = """이 이미지는 주식 자동매매 조건표입니다.
-이미지에 적힌 매수/매도 조건을 정확히 읽고 아래 JSON 형식으로 추출하세요.
-반드시 JSON만 출력하고 다른 텍스트는 쓰지 마세요.
+    prompt = """이 이미지는 주식/ETF 자동매매 전략 조건표입니다.
+이미지에 적힌 모든 조건을 빠짐없이 정확하게 읽고 아래 JSON 형식으로 추출하세요.
+반드시 JSON만 출력하고 다른 텍스트는 절대 쓰지 마세요.
 
+=== 핵심 규칙 ===
+1. 하나의 카드/박스에 여러 조건이 섞여 있으면 각각 별도 항목으로 분리하세요.
+   예) "TP3 +350% 전량매도 & 데드크로스 전량매도" → sell_conditions 2개로 분리
+2. 조건이 수량(주)이 아니라 포트폴리오 비중(%)이면 weight_pct 필드 사용.
+   예) "TQQQ 30% 비중으로 매수" → weight_pct: 30
+3. 매도 조건의 수량이 "보유수량의 X%"이면 sell_pct: X, sell_mode: "current"
+   "최초 매수수량의 X%"이면 sell_pct: X, sell_mode: "initial_qty"
+   "전량"이면 sell_pct: 100
+4. 참조 지수(예: QQQ 고점 대비 -X%)로 다른 종목(예: TQQQ) 매수 조건을 판단하면
+   ref_ticker에 QQQ 기입, ticker에 실제 매수할 종목(TQQQ) 기입.
+5. 매수/매도/락 조건을 절대 섞지 마세요. 매수는 buy_conditions, 매도는 sell_conditions,
+   신규매수 금지/강제청산은 lock_conditions에만 넣으세요.
+6. 복합 AND 조건(예: "고점 대비 -22% AND 200일선 대비 -7% 이하")은
+   sub_conditions 배열에 각 조건을 따로 나열하고 condition_logic: "AND" 설정.
+7. RSI 과매도 시 '비중 추가'는 weight_mode: "add"로 설정.
+8. 이미지에 있는 수치(%, 일수, 배수)를 절대 바꾸지 마세요.
+
+=== JSON 스키마 ===
 {
-  "summary": "조건 전체 요약 (한국어 1~2문장)",
+  "summary": "전략 전체 요약 (한국어 2~3문장)",
+  "strategy_type": "weight_based",
   "buy_conditions": [
     {
-      "ticker": "종목코드(예:005930 또는 AAPL)",
+      "ticker": "종목코드(예: TQQQ, AAPL, 005930)",
       "name": "종목명",
-      "condition": "매수 조건 설명",
-      "qty": 매수수량(숫자),
-      "price_type": "market(시장가) 또는 limit(지정가)"
+      "condition": "조건 전체 설명 (이미지 그대로)",
+      "ref_ticker": "참조종목코드 또는 null",
+      "weight_pct": 목표비중숫자(없으면 null),
+      "weight_mode": "target 또는 add",
+      "condition_logic": "AND 또는 OR 또는 null",
+      "sub_conditions": ["조건1", "조건2"],
+      "label": "조건 라벨명 또는 null"
     }
   ],
   "sell_conditions": [
     {
       "ticker": "종목코드",
       "name": "종목명",
-      "condition": "매도 조건 설명",
-      "qty": 매도수량(숫자 또는 all),
-      "price_type": "market 또는 limit"
+      "condition": "조건 전체 설명 (이미지 그대로)",
+      "sell_pct": 매도비율숫자(0~100),
+      "sell_mode": "current 또는 initial_qty",
+      "label": "TP1 등 라벨 또는 null"
+    }
+  ],
+  "lock_conditions": [
+    {
+      "condition": "락 발동 조건 설명",
+      "action": "lock_buy 또는 liquidate"
     }
   ],
   "check_interval_minutes": 조건체크주기(기본5)
 }
 
-종목코드가 없으면 null로 두세요. 수량이 명시되지 않으면 1로 설정하세요."""
+종목코드가 이미지에 없으면 종목명으로 유추하세요. 비중/수량 정보가 전혀 없으면 null."""
 
     # 1순위: Groq vision
     try:
@@ -498,7 +555,6 @@ def start_trading(conditions: dict, trade_mode: str = None) -> bool:
         _state["error"] = None
         if trade_mode in ("real", "paper"):
             _state["trade_mode"] = trade_mode
-            # 토큰 캐시 초기화 (모드 바뀌면 새 토큰 필요)
             _state["token"] = None
             _state["token_expires"] = None
 

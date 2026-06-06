@@ -237,7 +237,8 @@ export default function BacktestScreen() {
             </View>
             <Text style={styles.condSummaryText}>{conditions.summary}</Text>
             <Text style={styles.condSummaryMeta}>
-              매수 {conditions.buy_conditions?.length ?? 0}건 · 매도 {conditions.sell_conditions?.length ?? 0}건 · 탭하면 상세보기
+              매수 {conditions.buy_conditions?.length ?? 0}건 · 매도 {conditions.sell_conditions?.length ?? 0}건
+              {conditions.lock_conditions?.length > 0 ? ` · 락 ${conditions.lock_conditions.length}건` : ''} · 탭하면 상세보기
             </Text>
 
             {condExpanded && (
@@ -247,10 +248,20 @@ export default function BacktestScreen() {
                     <Text style={styles.condDetailHeader}>🟢 매수 조건</Text>
                     {conditions.buy_conditions.map((c, i) => (
                       <View key={i} style={styles.condDetailRow}>
-                        <Text style={styles.condDetailName}>{c.name || c.ticker || '-'}</Text>
+                        <Text style={styles.condDetailName}>
+                          {c.label ? `[${c.label}] ` : ''}{c.name || c.ticker || '-'}
+                          {c.ref_ticker ? ` (기준: ${c.ref_ticker})` : ''}
+                        </Text>
                         <Text style={styles.condDetailCond}>조건: {c.condition}</Text>
+                        {c.sub_conditions?.length > 1 && (
+                          <Text style={styles.condDetailMeta}>
+                            ▸ {c.sub_conditions.join(` ${c.condition_logic || 'AND'} `)}
+                          </Text>
+                        )}
                         <Text style={styles.condDetailMeta}>
-                          수량 {c.qty}주 · {c.price_type === 'market' ? '시장가' : '지정가'}
+                          {c.weight_pct != null
+                            ? `목표비중 ${c.weight_pct}% (${c.weight_mode === 'add' ? '추가' : '타겟'})`
+                            : c.qty != null ? `${c.qty}주` : ''}
                           {c.ticker ? ` · ${c.ticker}` : ''}
                         </Text>
                       </View>
@@ -262,11 +273,28 @@ export default function BacktestScreen() {
                     <Text style={[styles.condDetailHeader, { color: '#DC2626' }]}>🔴 매도 조건</Text>
                     {conditions.sell_conditions.map((c, i) => (
                       <View key={i} style={styles.condDetailRow}>
-                        <Text style={styles.condDetailName}>{c.name || c.ticker || '-'}</Text>
+                        <Text style={styles.condDetailName}>
+                          {c.label ? `[${c.label}] ` : ''}{c.name || c.ticker || '-'}
+                        </Text>
                         <Text style={styles.condDetailCond}>조건: {c.condition}</Text>
                         <Text style={styles.condDetailMeta}>
-                          수량 {c.qty}주 · {c.price_type === 'market' ? '시장가' : '지정가'}
+                          {c.sell_pct != null
+                            ? `${c.sell_pct}% 매도 (${c.sell_mode === 'initial_qty' ? '최초수량 기준' : '현재보유 기준'})`
+                            : c.qty === 'all' ? '전량 매도' : c.qty != null ? `${c.qty}주` : ''}
                           {c.ticker ? ` · ${c.ticker}` : ''}
+                        </Text>
+                      </View>
+                    ))}
+                  </>
+                )}
+                {conditions.lock_conditions?.length > 0 && (
+                  <>
+                    <Text style={[styles.condDetailHeader, { color: '#F59E0B' }]}>🔒 락 조건</Text>
+                    {conditions.lock_conditions.map((c, i) => (
+                      <View key={i} style={styles.condDetailRow}>
+                        <Text style={styles.condDetailCond}>{c.condition}</Text>
+                        <Text style={styles.condDetailMeta}>
+                          {c.action === 'liquidate' ? '전량 청산 + 매수 잠금' : '신규 매수 잠금'}
                         </Text>
                       </View>
                     ))}
