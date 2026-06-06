@@ -622,6 +622,84 @@ class StockDataCollector:
             log.debug(f"TTM NI 계산 실패 ({stock_code}): {e}")
             return None
 
+    def _get_us_annual_financials(self, ticker: str) -> Dict:
+        """yfinance 연간 재무제표로 US 종목 정확한 지표 계산.
+        영업이익률·매출성장률: 연간 Income Statement 기준 (분기 왜곡 방지)
+        부채비율: (총자산-자기자본)/자기자본 = 총부채/자기자본"""
+        result: Dict = {}
+        try:
+            tk = yf.Ticker(ticker)
+
+            # 손익계산서 (연간)
+            try:
+                inc = tk.financials  # columns=연도 내림차순
+                if inc is not None and not inc.empty and inc.shape[1] >= 1:
+                    def _ival(df, *keys):
+                        for k in keys:
+                            if k in df.index:
+                                v = df.loc[k].iloc[0]
+                                try:
+                                    f = float(v)
+                                    if f == f:
+                                        return f
+                                except Exception:
+                                    pass
+                        return None
+
+                    rev = _ival(inc, "Total Revenue", "Revenue")
+                    op_inc = _ival(inc, "Operating Income", "EBIT")
+                    if rev and rev != 0 and op_inc is not None:
+                        result["operating_margin_pct"] = round(op_inc / rev * 100, 2)
+
+                    if inc.shape[1] >= 2:
+                        rev_prev = None
+                        for k in ("Total Revenue", "Revenue"):
+                            if k in inc.index:
+                                v = inc.loc[k].iloc[1]
+                                try:
+                                    f = float(v)
+                                    if f == f:
+                                        rev_prev = f
+                                        break
+                                except Exception:
+                                    pass
+                        if rev and rev_prev and rev_prev != 0:
+                            result["revenue_growth_pct"] = round((rev - rev_prev) / abs(rev_prev) * 100, 2)
+            except Exception as e:
+                log.debug(f"US income stmt 실패 ({ticker}): {e}")
+
+            # 재무상태표 (연간)
+            try:
+                bal = tk.balance_sheet
+                if bal is not None and not bal.empty and bal.shape[1] >= 1:
+                    def _bval(*keys):
+                        for k in keys:
+                            if k in bal.index:
+                                v = bal.loc[k].iloc[0]
+                                try:
+                                    f = float(v)
+                                    if f == f:
+                                        return f
+                                except Exception:
+                                    pass
+                        return None
+
+                    total_assets = _bval("Total Assets")
+                    equity = _bval(
+                        "Stockholders Equity",
+                        "Total Stockholders Equity",
+                        "Common Stock Equity",
+                    )
+                    if total_assets and equity and equity != 0:
+                        total_liab = total_assets - equity
+                        result["debt_to_equity_pct"] = round(total_liab / equity * 100, 2)
+            except Exception as e:
+                log.debug(f"US balance sheet 실패 ({ticker}): {e}")
+
+        except Exception as e:
+            log.debug(f"US annual financials 실패 ({ticker}): {e}")
+        return result
+
     def collect_all(
         self,
         ticker: str,
@@ -770,6 +848,21 @@ class StockDataCollector:
                     mm["per"] = round(mc / ttm_ni, 2)
                     mm["per_source"] = "dart_ttm"
                     log.debug(f"TTM PER 적용 ({stock_code}): mc={mc}, ttm_ni={ttm_ni}, per={mm['per']}")
+
+        # ★ US 종목: yfinance 연간 재무제표로 정확한 지표 덮어쓰기
+        # revenueGrowth(분기YoY)/operatingMargins(분기)/debtToEquity(금융부채만) 오류 수정
+        if not stock_code and isinstance(mm, dict):
+            us_fin = self._get_us_annual_financials(ticker)
+            if us_fin:
+                if us_fin.get("operating_margin_pct") is not None:
+                    mm["operating_margin_pct"] = us_fin["operating_margin_pct"]
+                    mm["operating_margin_source"] = "yf_annual"
+                if us_fin.get("revenue_growth_pct") is not None:
+                    mm["revenue_growth_pct"] = us_fin["revenue_growth_pct"]
+                    mm["revenue_growth_source"] = "yf_annual"
+                if us_fin.get("debt_to_equity_pct") is not None:
+                    mm["debt_to_equity_pct"] = us_fin["debt_to_equity_pct"]
+                    mm["debt_to_equity_source"] = "yf_annual"
 
         return {
             "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
