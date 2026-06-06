@@ -419,6 +419,11 @@ def run_backtest(conditions: dict, period_days: int = 90,
             buy_price  = holdings[ticker]["avg_price"]
             ref_ind    = _get_ref_ind(cond, date, indicators)
 
+            # TP 라벨 중복 방지 (같은 포지션에서 동일 TP는 1회만)
+            cond_label = cond.get("label")
+            if cond_label and cond_label in holdings[ticker].get("tp_triggered", set()):
+                continue
+
             if not _eval_cond_dict(cond, close_krw, indicators,
                                    buy_price=buy_price, ref_indicators=ref_ind):
                 continue
@@ -446,6 +451,9 @@ def run_backtest(conditions: dict, period_days: int = 90,
             h["qty"] -= sell_qty
             if h["qty"] <= 0:
                 del holdings[ticker]
+
+            if cond_label and ticker in holdings:
+                holdings[ticker].setdefault("tp_triggered", set()).add(cond_label)
 
             all_trade_log.append({
                 "date": day_str, "action": "매도",
@@ -519,10 +527,13 @@ def run_backtest(conditions: dict, period_days: int = 90,
                 new_avg  = (prev_avg * prev_qty + close_krw * qty) / new_qty
 
                 if ticker not in holdings:
-                    holdings[ticker] = {"qty": 0, "avg_price": 0.0, "initial_qty": qty}
+                    holdings[ticker] = {"qty": 0, "avg_price": 0.0, "initial_qty": qty, "tp_triggered": set()}
                 holdings[ticker]["qty"]       = new_qty
                 holdings[ticker]["avg_price"] = new_avg
-                if weight_mode != "add" and prev_qty == 0:
+                if prev_qty == 0:
+                    holdings[ticker]["initial_qty"] = qty
+                    holdings[ticker]["tp_triggered"] = set()  # 새 포지션 시작 시 리셋
+                elif weight_mode != "add" and prev_qty == 0:
                     holdings[ticker]["initial_qty"] = qty
 
                 all_trade_log.append({
