@@ -224,7 +224,7 @@ def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -
 
 종목코드가 없으면 null로 두세요. 수량이 명시되지 않으면 1로 설정하세요."""
 
-    model = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+    model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.5-flash")
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
     body = {
         "contents": [{
