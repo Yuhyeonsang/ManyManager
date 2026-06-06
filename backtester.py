@@ -235,11 +235,18 @@ def run_backtest(conditions: dict, period_days: int = 90,
       "trade_log": [ { date, action, ticker, price, qty, pnl, ... } ]
     }
     """
+    import os, re as _re
     from yahoo_direct import download_tiingo
     from data_collector import _yf_history_safe, _is_kr_ticker
 
+    # USD/KRW 환율 (.env 의 USD_KRW 또는 기본값 1450)
+    try:
+        USD_KRW = float(os.environ.get("USD_KRW", 1450))
+    except Exception:
+        USD_KRW = 1450.0
+
     end_date   = datetime.now()
-    start_date = end_date - timedelta(days=period_days + 5)  # 여유 5일
+    start_date = end_date - timedelta(days=period_days + 5)
 
     buy_conds  = conditions.get("buy_conditions", [])
     sell_conds = conditions.get("sell_conditions", [])
@@ -271,7 +278,8 @@ def run_backtest(conditions: dict, period_days: int = 90,
     portfolio_values = []
 
     cash = initial_cash
-    holdings = {}   # ticker → {"qty": n, "avg_price": p}
+    holdings = {}        # ticker → {"qty": n, "avg_price": p (KRW 기준)}
+    cond_triggered = {}  # (ticker, cond_idx) → last_triggered_date (중복 매수 방지)
 
     # 날짜별 가격 데이터 로드 — Tiingo(미국) / _yf_history_safe(국내)
     price_data = {}
@@ -301,6 +309,15 @@ def run_backtest(conditions: dict, period_days: int = 90,
             "trade_log": [],
         }
 
+    # 종목별 USD 여부 판별
+    def _is_usd(t: str) -> bool:
+        return not (t.endswith(".KS") or t.endswith(".KQ") or
+                    (t.isdigit() and len(t) == 6))
+
+    def _to_krw(price: float, t: str) -> float:
+        """USD 종목이면 환율 적용, 국내 종목은 그대로."""
+        return price * USD_KRW if _is_usd(t) else price
+
     # 공통 날짜 추출 (어느 종목이든 데이터 있는 날)
     all_dates = set()
     for df in price_data.values():
@@ -308,7 +325,6 @@ def run_backtest(conditions: dict, period_days: int = 90,
     all_dates = sorted(all_dates)
 
     # 조건에서 참조되는 크로스 티커 수집 (예: "QQQ 고점 대비" → QQQ 데이터 필요)
-    import re as _re
     ref_tickers_needed = set()
     for c in buy_conds + sell_conds:
         cond_text = c.get("condition", "")
@@ -336,12 +352,17 @@ def run_backtest(conditions: dict, period_days: int = 90,
         day_str = date.strftime("%Y-%m-%d") if hasattr(date, 'strftime') else str(date)[:10]
 
         # 매수 체크
-        for cond in buy_conds:
+        for cond_idx, cond in enumerate(buy_conds):
             ticker = (cond.get("ticker") or cond.get("name", "")).strip().upper()
             if not ticker or ticker not in price_data:
                 continue
             df = price_data[ticker]
             if date not in df.index:
+                continue
+
+            # ── 중복 매수 방지: 같은 조건이 이미 오늘 발동됐으면 skip ──
+            cond_key = (ticker, cond_idx)
+            if cond_triggered.get(cond_key) == day_str:
                 continue
 
             try:
@@ -350,6 +371,9 @@ def run_backtest(conditions: dict, period_days: int = 90,
                 continue
             if not close or close != close:
                 continue
+
+            # USD → KRW 변환
+            close_krw = _to_krw(close, tickers[ticker]["yf"])
 
             idx = df.index.get_loc(date)
             indicators = _calc_indicators(df, idx)
@@ -368,21 +392,22 @@ def run_backtest(conditions: dict, period_days: int = 90,
 
             if _eval_condition(cond_text, close, indicators, ref_indicators=ref_ind):
                 qty_raw = cond.get("qty", 1)
-                qty = max(1, int(cash // close)) if str(qty_raw) == "all" else int(qty_raw)
-                cost = close * qty
+                qty = max(1, int(cash // close_krw)) if str(qty_raw) == "all" else int(qty_raw)
+                cost = close_krw * qty
                 if cash >= cost:
                     cash -= cost
+                    cond_triggered[cond_key] = day_str  # 오늘 발동 기록
                     if ticker not in holdings:
                         holdings[ticker] = {"qty": 0, "avg_price": 0.0}
                     prev_qty = holdings[ticker]["qty"]
                     prev_avg = holdings[ticker]["avg_price"]
                     new_qty  = prev_qty + qty
-                    holdings[ticker]["avg_price"] = (prev_avg * prev_qty + close * qty) / new_qty
+                    holdings[ticker]["avg_price"] = (prev_avg * prev_qty + close_krw * qty) / new_qty
                     holdings[ticker]["qty"] = new_qty
                     all_trade_log.append({
                         "date": day_str, "action": "매수",
                         "ticker": ticker, "name": tickers[ticker]["name"],
-                        "price": round(close, 2), "qty": qty,
+                        "price": round(close_krw, 0), "qty": qty,
                         "pnl": None, "condition": cond_text,
                     })
 
@@ -404,16 +429,17 @@ def run_backtest(conditions: dict, period_days: int = 90,
             if not close or close != close:
                 continue
 
+            close_krw = _to_krw(close, tickers[ticker]["yf"])
             idx = df.index.get_loc(date)
             indicators = _calc_indicators(df, idx)
-            buy_price  = holdings[ticker]["avg_price"]
+            buy_price  = holdings[ticker]["avg_price"]  # 이미 KRW 기준
             cond_text  = cond.get("condition", "")
 
-            if _eval_condition(cond_text, close, indicators, buy_price=buy_price):
+            if _eval_condition(cond_text, close_krw, indicators, buy_price=buy_price):
                 qty_raw = cond.get("qty", 1)
                 qty = holdings[ticker]["qty"] if str(qty_raw) == "all" else min(int(qty_raw), holdings[ticker]["qty"])
-                proceeds = close * qty
-                pnl      = (close - buy_price) * qty
+                proceeds = close_krw * qty
+                pnl      = (close_krw - buy_price) * qty
                 cash    += proceeds
                 holdings[ticker]["qty"] -= qty
                 if holdings[ticker]["qty"] <= 0:
@@ -421,7 +447,7 @@ def run_backtest(conditions: dict, period_days: int = 90,
                 all_trade_log.append({
                     "date": day_str, "action": "매도",
                     "ticker": ticker, "name": tickers[ticker]["name"],
-                    "price": round(close, 2), "qty": qty,
+                    "price": round(close_krw, 0), "qty": qty,
                     "pnl": round(pnl, 0),
                     "pnl_pct": round((close - buy_price) / buy_price * 100, 2),
                     "condition": cond_text,
