@@ -1085,11 +1085,19 @@ def backtest_run(req: BacktestRequest):
     if not _BACKTESTER_AVAILABLE:
         raise HTTPException(503, "backtester 모듈 없음")
     try:
+        import json as _json
+        buy_n  = len(req.conditions.get("buy_conditions") or [])
+        sell_n = len(req.conditions.get("sell_conditions") or [])
+        lock_n = len(req.conditions.get("lock_conditions") or [])
+        stype  = req.conditions.get("strategy_type", "?")
+        log.info(f"[백테스트] type={stype} buy={buy_n} sell={sell_n} lock={lock_n} days={req.period_days} cash={req.initial_cash}")
+        log.info(f"[백테스트 buy_conds] {_json.dumps(req.conditions.get('buy_conditions', []), ensure_ascii=False)[:400]}")
         result = _backtester.run_backtest(
             conditions=req.conditions,
             period_days=req.period_days,
             initial_cash=req.initial_cash,
         )
+        log.info(f"[백테스트 결과] trades={result.get('summary',{}).get('trade_count')} return={result.get('summary',{}).get('total_return_pct')}%")
         return result
     except Exception as e:
         log.exception("백테스트 실패")
