@@ -191,9 +191,9 @@ def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -
       "check_interval_minutes": 5
     }
     """
-    gemini_key = os.getenv("GEMINI_API_KEY", "")
+    gemini_key = os.getenv("GEMINI_VISION_API_KEY") or os.getenv("GEMINI_API_KEY", "")
     if not gemini_key:
-        raise ValueError("GEMINI_API_KEY 환경변수가 없습니다.")
+        raise ValueError("GEMINI_VISION_API_KEY 또는 GEMINI_API_KEY 환경변수가 없습니다.")
 
     prompt = """이 이미지는 주식 자동매매 조건표입니다.
 이미지에 적힌 매수/매도 조건을 정확히 읽고 아래 JSON 형식으로 추출하세요.
