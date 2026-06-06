@@ -235,7 +235,7 @@ def run_backtest(conditions: dict, period_days: int = 90,
     }
     """
     from yahoo_direct import download_tiingo
-    from data_collector import _yf_history_safe
+    from data_collector import _yf_history_safe, _is_kr_ticker
 
     end_date   = datetime.now()
     start_date = end_date - timedelta(days=period_days + 5)  # 여유 5일
