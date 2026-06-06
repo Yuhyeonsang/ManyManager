@@ -433,13 +433,17 @@ class StockDataCollector:
             op = result.get("operating_income", {}).get("current")
             ni = result.get("net_income", {}).get("current")
             eq = result.get("total_equity", {}).get("current")
+            eq_prev = result.get("total_equity", {}).get("previous")
             li = result.get("total_liabilities", {}).get("current")
             assets = result.get("total_assets", {}).get("current")
+
+            # ROE: 평균자기자본 사용 (당기말+전기말)/2 — 업계 표준
+            avg_eq = (eq + eq_prev) / 2 if eq and eq_prev else eq
 
             ratios = {
                 "operating_margin_pct": round(op / rev * 100, 2) if rev and op else None,
                 "net_margin_pct": round(ni / rev * 100, 2) if rev and ni else None,
-                "roe_pct": round(ni / eq * 100, 2) if ni and eq else None,
+                "roe_pct": round(ni / avg_eq * 100, 2) if ni and avg_eq and avg_eq > 0 else None,
                 "roa_pct": round(ni / assets * 100, 2) if ni and assets else None,
                 "debt_to_equity_pct": round(li / eq * 100, 2) if li and eq else None,
             }
@@ -586,6 +590,38 @@ class StockDataCollector:
         except Exception as e:
             return {"ticker": ticker, "error": str(e)}
 
+    def _get_ttm_net_income(self, stock_code: str, annual_fin: Dict) -> Optional[float]:
+        """TTM 순이익 = (연간 NI) - (Q1 전년) + (Q1 당해).
+        Q1 당해 보고서(11013)가 있어야 의미 있음. 실패 시 None 반환."""
+        try:
+            annual_ni = annual_fin.get("indicators", {}).get("net_income", {}).get("current")
+            if not annual_ni:
+                return None
+            base_year = annual_fin.get("year", datetime.now().year - 1)
+            curr_year = datetime.now().year
+
+            # Q1 당해 (예: 2026 Q1)
+            q1_curr = self.get_financial_statements(stock_code, year=curr_year, report_code="11013")
+            if q1_curr.get("error"):
+                return None
+            q1_curr_ni = q1_curr.get("indicators", {}).get("net_income", {}).get("current")
+            if not q1_curr_ni:
+                return None
+
+            # Q1 전년 (예: 2025 Q1) — annual_fin 의 base_year 와 같은 해
+            q1_prev = self.get_financial_statements(stock_code, year=base_year, report_code="11013")
+            if q1_prev.get("error"):
+                return None
+            q1_prev_ni = q1_prev.get("indicators", {}).get("net_income", {}).get("current")
+            if not q1_prev_ni:
+                return None
+
+            ttm = annual_ni - q1_prev_ni + q1_curr_ni
+            return ttm if ttm > 0 else None
+        except Exception as e:
+            log.debug(f"TTM NI 계산 실패 ({stock_code}): {e}")
+            return None
+
     def collect_all(
         self,
         ticker: str,
@@ -724,6 +760,16 @@ class StockDataCollector:
             if mm.get("pbr") is None and mc and eq and eq > 0:
                 mm["pbr"] = round(mc / eq, 2)
                 mm["pbr_source"] = "dart_calc"
+
+        # ★ KR 종목 TTM PER: 연간NI - Q1전년 + Q1당해 → Naver/KRX PER 보다 정확
+        if stock_code and fin and not fin.get("error") and isinstance(mm, dict):
+            mc = mm.get("market_cap")
+            if mc:
+                ttm_ni = self._get_ttm_net_income(stock_code, fin)
+                if ttm_ni and ttm_ni > 0:
+                    mm["per"] = round(mc / ttm_ni, 2)
+                    mm["per_source"] = "dart_ttm"
+                    log.debug(f"TTM PER 적용 ({stock_code}): mc={mc}, ttm_ni={ttm_ni}, per={mm['per']}")
 
         return {
             "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -885,6 +931,47 @@ US_STOCK_UNIVERSE: List[Dict] = [
     {"code": "DIA", "name": "Dow ETF", "market": "NYSEARCA"},
 ]
 
+# ─────────────────────────────────────────────────────────────
+# ETF / 레버리지 / 인버스 유니버스
+# ─────────────────────────────────────────────────────────────
+US_ETF_UNIVERSE: List[Dict] = [
+    # S&P 500 계열
+    {"code": "VOO",  "name": "Vanguard S&P 500 ETF",         "market": "NYSEARCA", "type": "ETF"},
+    {"code": "IVV",  "name": "iShares S&P 500 ETF",          "market": "NYSEARCA", "type": "ETF"},
+    {"code": "SPXL", "name": "S&P 500 3x 레버리지 (SPXL)",   "market": "NYSEARCA", "type": "LEV"},
+    {"code": "UPRO", "name": "S&P 500 3x 레버리지 (UPRO)",   "market": "NYSEARCA", "type": "LEV"},
+    {"code": "SSO",  "name": "S&P 500 2x 레버리지 (SSO)",    "market": "NYSEARCA", "type": "LEV"},
+    {"code": "SPXS", "name": "S&P 500 3x 인버스 (SPXS)",     "market": "NYSEARCA", "type": "INV"},
+    {"code": "SH",   "name": "S&P 500 인버스 (SH)",           "market": "NYSEARCA", "type": "INV"},
+    # 나스닥 계열
+    {"code": "TQQQ", "name": "Nasdaq 100 3x 레버리지 (TQQQ)", "market": "NASDAQ",  "type": "LEV"},
+    {"code": "QLD",  "name": "Nasdaq 100 2x 레버리지 (QLD)",  "market": "NASDAQ",  "type": "LEV"},
+    {"code": "SQQQ", "name": "Nasdaq 100 3x 인버스 (SQQQ)",   "market": "NASDAQ",  "type": "INV"},
+    {"code": "PSQ",  "name": "Nasdaq 100 인버스 (PSQ)",        "market": "NASDAQ",  "type": "INV"},
+    # 반도체
+    {"code": "SOXX", "name": "반도체 ETF (SOXX)",              "market": "NASDAQ",  "type": "ETF"},
+    {"code": "SMH",  "name": "반도체 ETF (SMH)",               "market": "NYSEARCA", "type": "ETF"},
+    {"code": "SOXL", "name": "반도체 3x 레버리지 (SOXL)",     "market": "NYSEARCA", "type": "LEV"},
+    {"code": "SOXS", "name": "반도체 3x 인버스 (SOXS)",       "market": "NYSEARCA", "type": "INV"},
+    # 소형주/다우
+    {"code": "TNA",  "name": "Russell 2000 3x 레버리지 (TNA)", "market": "NYSEARCA", "type": "LEV"},
+    # 테크/성장
+    {"code": "XLK",  "name": "테크 섹터 ETF (XLK)",            "market": "NYSEARCA", "type": "ETF"},
+    {"code": "TECL", "name": "테크 3x 레버리지 (TECL)",        "market": "NYSEARCA", "type": "LEV"},
+    {"code": "ARKK", "name": "ARK Innovation ETF",             "market": "NYSEARCA", "type": "ETF"},
+    # 채권/금리
+    {"code": "TLT",  "name": "장기국채 ETF (TLT)",             "market": "NASDAQ",  "type": "ETF"},
+    {"code": "TMF",  "name": "장기국채 3x 레버리지 (TMF)",     "market": "NYSEARCA", "type": "LEV"},
+    {"code": "TBT",  "name": "장기국채 2x 인버스 (TBT)",       "market": "NYSEARCA", "type": "INV"},
+    # 원자재/금
+    {"code": "GLD",  "name": "금 ETF (GLD)",                   "market": "NYSEARCA", "type": "ETF"},
+    {"code": "NUGT", "name": "금광주 2x 레버리지 (NUGT)",      "market": "NYSEARCA", "type": "LEV"},
+    {"code": "USO",  "name": "원유 ETF (USO)",                 "market": "NYSEARCA", "type": "ETF"},
+    # 변동성
+    {"code": "UVXY", "name": "VIX 1.5x 레버리지 (UVXY)",      "market": "NASDAQ",  "type": "LEV"},
+    {"code": "SVXY", "name": "VIX 인버스 (SVXY)",              "market": "NYSEARCA", "type": "INV"},
+]
+
 
 def to_yf_ticker(code: str, market: str = "KR") -> str:
     """6자리 한국 코드면 .KS / 미국 코드면 그대로."""
@@ -895,25 +982,44 @@ def to_yf_ticker(code: str, market: str = "KR") -> str:
 
 
 def search_stocks(query: str, limit: int = 20) -> List[Dict]:
-    """종목 코드/이름 부분 일치 검색. 국장 + 미국 통합."""
+    """종목 코드/이름 부분 일치 검색. 국장 + 미국 + ETF/레버리지 통합.
+    유니버스에 없는 티커를 정확히 입력한 경우에도 결과를 반환한다."""
     q = (query or "").strip()
     if not q:
         return []
     qu = q.upper()
     out: List[Dict] = []
-    for s in KR_STOCK_UNIVERSE + US_STOCK_UNIVERSE:
+    seen: set = set()
+
+    all_universe = KR_STOCK_UNIVERSE + US_STOCK_UNIVERSE + US_ETF_UNIVERSE
+    for s in all_universe:
         name = s.get("name", "")
         code = s.get("code", "")
         if qu in code.upper() or q in name or qu in name.upper():
-            out.append({
-                "code": code,
-                "name": name,
-                "market": s.get("market"),
-                "ticker": to_yf_ticker(code),
-                "region": "KR" if code.isdigit() and len(code) == 6 else "US",
-            })
+            if code not in seen:
+                seen.add(code)
+                out.append({
+                    "code": code,
+                    "name": name,
+                    "market": s.get("market"),
+                    "ticker": to_yf_ticker(code),
+                    "region": "KR" if code.isdigit() and len(code) == 6 else "US",
+                    "type": s.get("type", "STOCK"),
+                })
             if len(out) >= limit:
-                break
+                return out
+
+    # 유니버스에 없는 티커를 정확히 입력한 경우 — 그대로 허용
+    # 예: "SPXL" 이 유니버스에 있으면 위에서 잡히지만, 없는 ETF도 통과
+    if not out and qu and not qu.isdigit():
+        out.append({
+            "code": qu,
+            "name": qu,
+            "market": "US",
+            "ticker": qu,
+            "region": "US",
+            "type": "UNKNOWN",
+        })
     return out
 
 

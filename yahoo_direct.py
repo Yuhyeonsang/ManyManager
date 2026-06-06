@@ -58,6 +58,54 @@ def _ensure_crumb(s: requests.Session) -> Optional[str]:
     return _crumb
 
 
+def _period_to_stooq_dates(period: str):
+    """period 문자열 → (start_str, end_str) YYYYMMDD 형식."""
+    from datetime import datetime, timedelta
+    end = datetime.now()
+    p = (period or "1mo").lower().strip()
+    if p.endswith("d"):
+        delta = timedelta(days=int(p[:-1]))
+    elif p.endswith("mo"):
+        delta = timedelta(days=int(p[:-2]) * 30)
+    elif p.endswith("y"):
+        delta = timedelta(days=int(p[:-1]) * 365)
+    else:
+        delta = timedelta(days=30)
+    start = end - delta
+    return start.strftime("%Y%m%d"), end.strftime("%Y%m%d")
+
+
+def download_stooq(ticker: str, period: str = "1mo") -> pd.DataFrame:
+    """
+    Stooq.com CSV 직통 — Yahoo 차단 시 폴백.
+    인증 불필요, Pi에서도 정상 작동.
+    """
+    import io
+    # Stooq 티커 변환: AAPL → AAPL.US, 005930.KS → 005930.KS (그대로)
+    t = ticker.upper()
+    if not ("." in t):
+        t = f"{t}.US"
+    start, end = _period_to_stooq_dates(period)
+    url = f"https://stooq.com/q/d/l/?s={t}&d1={start}&d2={end}&i=d"
+    try:
+        s = _get_session()
+        r = s.get(url, timeout=15)
+        if r.status_code != 200 or len(r.content) < 50:
+            logger.warning("stooq %s HTTP %s / 빈 응답", ticker, r.status_code)
+            return pd.DataFrame()
+        df = pd.read_csv(io.StringIO(r.text))
+        if df.empty or "Close" not in df.columns:
+            return pd.DataFrame()
+        df["Date"] = pd.to_datetime(df["Date"])
+        df = df.set_index("Date").sort_index()
+        # 컬럼명 통일
+        df = df.rename(columns={"Adj Close": "Adj Close"})
+        return df
+    except Exception as e:
+        logger.warning("stooq %s 실패: %s", ticker, e)
+        return pd.DataFrame()
+
+
 def download(
     ticker: str,
     period: str = "1mo",
@@ -65,7 +113,7 @@ def download(
 ) -> pd.DataFrame:
     """
     yfinance.download() 대체.
-    Yahoo Chart API (crumb 불필요) 직통.
+    Yahoo Chart API → 실패 시 Stooq 폴백.
 
     Returns
     -------
@@ -81,8 +129,8 @@ def download(
         r.raise_for_status()
         data = r.json()
     except Exception as e:
-        logger.warning("%s chart 요청 실패: %s", ticker, e)
-        return pd.DataFrame()
+        logger.warning("%s Yahoo chart 실패, Stooq 폴백: %s", ticker, e)
+        return download_stooq(ticker, period)
 
     try:
         result = data["chart"]["result"][0]
@@ -105,12 +153,13 @@ def download(
             index=pd.to_datetime(ts, unit="s"),
         )
         df.index.name = "Date"
-        # NaN 행 제거
         df = df.dropna(how="all")
+        if df.empty:
+            raise ValueError("Yahoo 응답은 왔으나 데이터 없음 (차단)")
         return df
-    except (KeyError, IndexError, TypeError) as e:
-        logger.warning("%s chart 파싱 실패: %s", ticker, e)
-        return pd.DataFrame()
+    except (KeyError, IndexError, TypeError, ValueError) as e:
+        logger.warning("%s Yahoo 파싱 실패, Stooq 폴백: %s", ticker, e)
+        return download_stooq(ticker, period)
 
 
 def get_quote(ticker: str) -> Dict:
