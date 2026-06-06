@@ -12,6 +12,7 @@ import {
   StyleSheet,
   ActivityIndicator,
   Alert,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -30,6 +31,7 @@ export default function BacktestScreen() {
   const [conditions, setConditions] = useState(null);
   const [result,    setResult]      = useState(null);
   const [period,    setPeriod]      = useState(90);
+  const [cashInput, setCashInput]   = useState('10000000');
 
   // ── 이미지 선택 & 분석 ──────────────────────
   const pickImage = async (fromCamera = false) => {
@@ -74,7 +76,8 @@ export default function BacktestScreen() {
     setRunning(true);
     setResult(null);
     try {
-      const data = await runBacktest(conditions, period, 10_000_000);
+      const cash = parseInt(cashInput.replace(/,/g, ''), 10) || 10_000_000;
+      const data = await runBacktest(conditions, period, cash);
       setResult(data);
     } catch (e) {
       Alert.alert('백테스트 실패', e?.message ?? String(e));
@@ -231,6 +234,30 @@ export default function BacktestScreen() {
           </View>
         )}
 
+        {/* ── 초기 자본 입력 ── */}
+        <Text style={styles.sectionTitle}>💰 초기 자본 (원)</Text>
+        <View style={styles.cashRow}>
+          {[1000000, 5000000, 10000000, 50000000].map((v) => (
+            <TouchableOpacity
+              key={v}
+              style={[styles.cashBtn, cashInput === String(v) && styles.periodBtnActive]}
+              onPress={() => setCashInput(String(v))}
+            >
+              <Text style={[styles.periodBtnText, cashInput === String(v) && styles.periodBtnTextActive]}>
+                {v >= 10000000 ? `${v/10000000}천만` : `${v/10000}만`}
+              </Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+        <TextInput
+          style={styles.cashInput}
+          value={cashInput}
+          onChangeText={setCashInput}
+          keyboardType="numeric"
+          placeholder="직접 입력 (예: 30000000)"
+          placeholderTextColor="#94A3B8"
+        />
+
         {/* ── 기간 선택 ── */}
         <Text style={styles.sectionTitle}>📅 백테스트 기간</Text>
         <View style={styles.periodRow}>
@@ -304,6 +331,16 @@ const styles = StyleSheet.create({
   condSummaryTitle: { fontSize: 13, fontWeight: '700', color: '#6366F1', marginBottom: 4 },
   condSummaryText:  { fontSize: 13, color: '#334155' },
   condSummaryMeta:  { fontSize: 12, color: '#94A3B8', marginTop: 6 },
+
+  cashRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
+  cashBtn: {
+    flex: 1, paddingVertical: 10, borderRadius: 8,
+    backgroundColor: '#fff', borderWidth: 1, borderColor: '#CBD5E1', alignItems: 'center',
+  },
+  cashInput: {
+    backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#CBD5E1',
+    paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: '#1E293B', marginBottom: 4,
+  },
 
   periodRow: { flexDirection: 'row', gap: 8 },
   periodBtn: {
