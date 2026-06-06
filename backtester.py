@@ -319,11 +319,13 @@ def run_backtest(conditions: dict, period_days: int = 90,
                 return _calc_indicators(ref_df, ref_idx)
         return None
 
-    # 공통 날짜
+    # 공통 날짜 (period_days 기간만 시뮬레이션)
+    import pandas as _pd
     all_dates = set()
     for df in price_data.values():
         all_dates.update(df.index.tolist())
-    all_dates = sorted(all_dates)
+    cutoff = _pd.Timestamp.now() - _pd.Timedelta(days=period_days + 5)
+    all_dates = sorted(d for d in all_dates if d >= cutoff)
 
     # 시뮬레이션 상태
     cash            = initial_cash
@@ -350,9 +352,13 @@ def run_backtest(conditions: dict, period_days: int = 90,
 
         total_value = _portfolio_value()
 
-        # 1. 락 조건 체크
+        # 1. 락 조건 체크 (lock_buy=당일만, liquidate=영구)
+        day_locked = buy_locked  # liquidate로 인한 영구락은 유지
         for lc in lock_conds:
             lc_text = lc.get("condition") or ""
+            # GC/DC 패턴 혼동 방지: 락 조건은 고점 대비 하락 계열만 평가
+            if not _re.search(r"고점|하락|하회|drawdown|-\d+%", lc_text):
+                continue
             lc_ref  = None
             m = _re.search(r'\b([A-Z]{2,5})\s*(고점|기준|대비)', lc_text.upper())
             if m and m.group(1) in price_data:
@@ -365,10 +371,10 @@ def run_backtest(conditions: dict, period_days: int = 90,
             triggered = _eval_condition(lc_text, 100.0, lc_ref or {}, ref_indicators=lc_ref)
             if triggered:
                 action = lc.get("action", "lock_buy")
-                if not buy_locked:
-                    log.info(f"[{day_str}] 락 발동: {lc_text}")
-                buy_locked = True
+                log.info(f"[{day_str}] 락 발동: {lc_text}")
+                day_locked = True
                 if action == "liquidate":
+                    buy_locked = True  # 영구락
                     for sym, h in list(holdings.items()):
                         if h["qty"] <= 0:
                             continue
@@ -452,7 +458,7 @@ def run_backtest(conditions: dict, period_days: int = 90,
             })
 
         # 3. 매수 조건 체크
-        if not buy_locked:
+        if not day_locked:
             total_value = _portfolio_value()
 
             for cond_idx, cond in enumerate(buy_conds):
