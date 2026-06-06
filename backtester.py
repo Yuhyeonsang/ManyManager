@@ -203,7 +203,7 @@ def _eval_cond_dict(cond_dict: dict, current_price: float,
                     ref_indicators: Optional[dict] = None) -> bool:
     sub   = cond_dict.get("sub_conditions") or []
     logic = (cond_dict.get("condition_logic") or "AND").upper()
-    main  = cond_dict.get("condition", "")
+    main  = cond_dict.get("condition") or ""
 
     if sub and len(sub) > 1:
         results = [
@@ -277,7 +277,7 @@ def run_backtest(conditions: dict, period_days: int = 90,
 
     # 조건 텍스트에서 참조 티커 추가 감지
     for c in buy_conds + sell_conds:
-        m = _re.search(r'\b([A-Z]{2,5})\s*(고점|기준|대비)', c.get("condition", "").upper())
+        m = _re.search(r'\b([A-Z]{2,5})\s*(고점|기준|대비)', (c.get("condition") or "").upper())
         if m:
             ref_t = m.group(1)
             if ref_t not in price_data:
@@ -308,7 +308,7 @@ def run_backtest(conditions: dict, period_days: int = 90,
         ref_t = (cond_dict.get("ref_ticker") or "").strip().upper()
         if not ref_t:
             m = _re.search(r'\b([A-Z]{2,5})\s*(고점|기준|대비)',
-                           cond_dict.get("condition", "").upper())
+                           (cond_dict.get("condition") or "").upper())
             if m:
                 ref_t = m.group(1)
         if ref_t and ref_t in price_data:
@@ -352,7 +352,7 @@ def run_backtest(conditions: dict, period_days: int = 90,
 
         # 1. 락 조건 체크
         for lc in lock_conds:
-            lc_text = lc.get("condition", "")
+            lc_text = lc.get("condition") or ""
             lc_ref  = None
             m = _re.search(r'\b([A-Z]{2,5})\s*(고점|기준|대비)', lc_text.upper())
             if m and m.group(1) in price_data:
@@ -447,7 +447,7 @@ def run_backtest(conditions: dict, period_days: int = 90,
                 "price": round(close_krw, 0), "qty": sell_qty,
                 "pnl": round(pnl, 0),
                 "pnl_pct": round((close_krw - buy_price) / buy_price * 100, 2),
-                "condition": cond.get("condition", ""),
+                "condition": cond.get("condition") or "",
                 "label": cond.get("label"),
             })
 
@@ -525,7 +525,7 @@ def run_backtest(conditions: dict, period_days: int = 90,
                     "price": round(close_krw, 0), "qty": qty,
                     "weight_pct": weight_pct,
                     "pnl": None,
-                    "condition": cond.get("condition", ""),
+                    "condition": cond.get("condition") or "",
                     "label": cond.get("label"),
                 })
 
