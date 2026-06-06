@@ -240,13 +240,31 @@ def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -
     data = resp.json()
 
     text = data["candidates"][0]["content"]["parts"][0]["text"]
-    # JSON 블록 추출
-    text = text.strip()
-    if text.startswith("```"):
-        lines = text.split("\n")
-        text = "\n".join(lines[1:-1])
 
-    return json.loads(text)
+    # JSON 블록 추출 — ```json ... ``` 또는 ``` ... ``` 또는 순수 JSON
+    text = text.strip()
+    if "```" in text:
+        import re
+        m = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
+        if m:
+            text = m.group(1).strip()
+
+    # { ... } 범위만 잘라내기 (앞뒤 설명 텍스트 제거)
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1:
+        text = text[start:end+1]
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        # JSON 파싱 실패 시 기본 구조 반환
+        return {
+            "summary": text[:200] if text else "조건 추출 실패",
+            "buy_conditions": [],
+            "sell_conditions": [],
+            "check_interval_minutes": 5,
+        }
 
 
 # ─────────────────────────────────────────────
