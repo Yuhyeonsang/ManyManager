@@ -95,10 +95,8 @@ def run_backtest(conditions: dict, period_days: int = 90,
       "trade_log": [ { date, action, ticker, price, qty, pnl, ... } ]
     }
     """
-    try:
-        import yfinance as yf
-    except ImportError:
-        raise RuntimeError("yfinance가 설치되지 않았습니다: pip install yfinance")
+    from yahoo_direct import download_tiingo
+    from data_collector import _yf_history_safe
 
     end_date   = datetime.now()
     start_date = end_date - timedelta(days=period_days + 5)  # 여유 5일
@@ -111,11 +109,10 @@ def run_backtest(conditions: dict, period_days: int = 90,
     for c in buy_conds + sell_conds:
         t = c.get("ticker")
         if t:
-            # 한국 종목 처리: "005930" → "005930.KS"
             if t.isdigit() and len(t) == 6:
                 yf_ticker = t + ".KS"
             elif "." not in t and len(t) <= 6 and t.isalpha():
-                yf_ticker = t           # 미국주
+                yf_ticker = t
             else:
                 yf_ticker = t
             tickers[t] = {"yf": yf_ticker, "name": c.get("name", t)}
@@ -134,19 +131,22 @@ def run_backtest(conditions: dict, period_days: int = 90,
     cash = initial_cash
     holdings = {}   # ticker → {"qty": n, "avg_price": p}
 
-    # 날짜별 가격 데이터 로드
+    # 날짜별 가격 데이터 로드 — Tiingo(미국) / _yf_history_safe(국내)
     price_data = {}
     for orig_t, info in tickers.items():
         try:
-            df = yf.download(
-                info["yf"],
-                start=start_date.strftime("%Y-%m-%d"),
-                end=end_date.strftime("%Y-%m-%d"),
-                progress=False,
-                auto_adjust=True,
-            )
+            yf_t = info["yf"]
+            is_kr = yf_t.endswith(".KS") or yf_t.endswith(".KQ")
+            period_str = f"{period_days}d"
+            if is_kr:
+                df = _yf_history_safe(yf_t, period=period_str)
+            else:
+                df = download_tiingo(yf_t, period=period_str)
+            # 컬럼 정규화
+            if not df.empty and "Close" not in df.columns:
+                df.columns = [c.capitalize() for c in df.columns]
             if df.empty:
-                log.warning(f"데이터 없음: {info['yf']}")
+                log.warning(f"데이터 없음: {yf_t}")
                 continue
             price_data[orig_t] = df
         except Exception as e:

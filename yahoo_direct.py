@@ -7,12 +7,78 @@ Pi 3B+ 환경에서 yfinance 0.2.50/0.2.54가 curl_cffi 부재로
 curl로는 HTTP 200 잘 받아지므로, 동일한 헤더로 requests 호출.
 """
 import logging
+import os
 from typing import Dict, Optional, List
 
 import requests
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────
+# Tiingo — Yahoo 차단 시 최우선 폴백
+# ─────────────────────────────────────────────────────────────
+_TIINGO_TOKEN: Optional[str] = os.environ.get("TIINGO_API_KEY")
+
+
+def download_tiingo(ticker: str, period: str = "1mo") -> pd.DataFrame:
+    """
+    Tiingo Daily API로 가격 히스토리 조회.
+    인증 필요하지만 Pi에서 정상 작동, 무료 1000회/일.
+    """
+    token = _TIINGO_TOKEN or os.environ.get("TIINGO_API_KEY")
+    if not token:
+        logger.warning("TIINGO_API_KEY 미설정 — Tiingo 폴백 비활성")
+        return pd.DataFrame()
+
+    from datetime import datetime, timedelta
+    end = datetime.now()
+    p = (period or "1mo").lower().strip()
+    if p.endswith("d"):
+        delta = timedelta(days=int(p[:-1]))
+    elif p.endswith("mo"):
+        delta = timedelta(days=int(p[:-2]) * 30)
+    elif p.endswith("y"):
+        delta = timedelta(days=int(p[:-1]) * 365)
+    else:
+        delta = timedelta(days=30)
+    start = end - delta
+
+    # Tiingo는 ETF/레버리지 포함 미국 주식 전부 지원
+    # 한국 종목(.KS/.KQ)은 미지원 → 빈 DataFrame 반환
+    t = ticker.upper().replace(".KS", "").replace(".KQ", "")
+    if ticker.upper().endswith((".KS", ".KQ")):
+        return pd.DataFrame()
+
+    url = f"https://api.tiingo.com/tiingo/daily/{t}/prices"
+    params = {
+        "startDate": start.strftime("%Y-%m-%d"),
+        "endDate": end.strftime("%Y-%m-%d"),
+        "token": token,
+    }
+    try:
+        r = requests.get(url, params=params, timeout=15)
+        if r.status_code != 200:
+            logger.warning("Tiingo %s HTTP %s", ticker, r.status_code)
+            return pd.DataFrame()
+        data = r.json()
+        if not data:
+            return pd.DataFrame()
+        df = pd.DataFrame(data)
+        df["date"] = pd.to_datetime(df["date"]).dt.tz_localize(None)
+        df = df.set_index("date").sort_index()
+        df = df.rename(columns={
+            "adjClose": "Close",
+            "adjOpen": "Open",
+            "adjHigh": "High",
+            "adjLow": "Low",
+            "adjVolume": "Volume",
+        })
+        cols = [c for c in ["Open", "High", "Low", "Close", "Volume"] if c in df.columns]
+        return df[cols].dropna(how="all")
+    except Exception as e:
+        logger.warning("Tiingo %s 실패: %s", ticker, e)
+        return pd.DataFrame()
 
 # 헤더 — curl 로 HTTP 200 받았던 조합. Origin/Referer 빼야 CORS 경로 안 탐.
 _HEADERS = {
@@ -129,8 +195,8 @@ def download(
         r.raise_for_status()
         data = r.json()
     except Exception as e:
-        logger.warning("%s Yahoo chart 실패, Stooq 폴백: %s", ticker, e)
-        return download_stooq(ticker, period)
+        logger.warning("%s Yahoo chart 실패, Tiingo 폴백: %s", ticker, e)
+        return download_tiingo(ticker, period)
 
     try:
         result = data["chart"]["result"][0]
@@ -158,8 +224,8 @@ def download(
             raise ValueError("Yahoo 응답은 왔으나 데이터 없음 (차단)")
         return df
     except (KeyError, IndexError, TypeError, ValueError) as e:
-        logger.warning("%s Yahoo 파싱 실패, Stooq 폴백: %s", ticker, e)
-        return download_stooq(ticker, period)
+        logger.warning("%s Yahoo 파싱 실패, Tiingo 폴백: %s", ticker, e)
+        return download_tiingo(ticker, period)
 
 
 def get_quote(ticker: str) -> Dict:
