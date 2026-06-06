@@ -116,8 +116,9 @@ def _eval_condition(condition_str: str, current_price: float,
 
     # ── 수익률 / TP 익절 ──
     profit_patterns = [
-        r"tp\s*[+\(]?\s*(\d+(?:\.\d+)?)\s*%",          # TP+10%, TP(+10%)
-        r"[+\+]\s*(\d+(?:\.\d+)?)\s*%\s*[:\)매도]",     # +10%: 매도
+        r"tp\d*\s*[\(\s]*\+?\s*(\d+(?:\.\d+)?)\s*%",   # TP1 (+10%), TP(+10%), TP +10%
+        r"tp\s*\+?\s*(\d+(?:\.\d+)?)\s*%",              # TP+10%
+        r"\+\s*(\d+(?:\.\d+)?)\s*%\s*[:\)]\s*[^\-]",   # +10%: 매도
         r"수익률\s*[>≥]\s*(\d+(?:\.\d+)?)\s*%",
         r"수익\s*(\d+(?:\.\d+)?)\s*%\s*이상",
     ]
@@ -336,7 +337,7 @@ def run_backtest(conditions: dict, period_days: int = 90,
 
         # 매수 체크
         for cond in buy_conds:
-            ticker = cond.get("ticker")
+            ticker = (cond.get("ticker") or cond.get("name", "")).strip().upper()
             if not ticker or ticker not in price_data:
                 continue
             df = price_data[ticker]
@@ -387,7 +388,7 @@ def run_backtest(conditions: dict, period_days: int = 90,
 
         # 매도 체크
         for cond in sell_conds:
-            ticker = cond.get("ticker")
+            ticker = (cond.get("ticker") or cond.get("name", "")).strip().upper()
             if not ticker or ticker not in price_data:
                 continue
             if ticker not in holdings or holdings[ticker]["qty"] <= 0:
