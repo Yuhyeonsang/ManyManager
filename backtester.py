@@ -20,61 +20,200 @@ from typing import Optional
 log = logging.getLogger("backtester")
 
 # ─────────────────────────────────────────────
-# 조건 평가
+# 기술적 지표 계산
 # ─────────────────────────────────────────────
-def _eval_price_condition(condition_str: str, current_price: float,
-                           buy_price: Optional[float] = None) -> bool:
-    cond = condition_str.strip().lower()
+def _calc_indicators(df, idx: int) -> dict:
+    """
+    df의 idx번째 행까지 데이터로 기술적 지표 계산.
+    반환: rsi, ma20, ma50, ma200, bb_upper, bb_lower, bb_mid,
+          peak_52w, drawdown_pct, golden_cross, dead_cross
+    """
+    import numpy as np
+    closes = df["Close"].iloc[:idx+1]
+    n = len(closes)
+    result = {}
 
-    if cond in ("항상", "always", "즉시", "매일"):
+    def _ma(period):
+        if n >= period:
+            return float(closes.iloc[-period:].mean())
+        return float(closes.mean())
+
+    result["ma20"]  = _ma(20)
+    result["ma50"]  = _ma(50)
+    result["ma200"] = _ma(200)
+
+    # 볼린저밴드 (20일)
+    if n >= 20:
+        mid = closes.iloc[-20:].mean()
+        std = closes.iloc[-20:].std()
+        result["bb_mid"]   = float(mid)
+        result["bb_upper"] = float(mid + 2 * std)
+        result["bb_lower"] = float(mid - 2 * std)
+    else:
+        result["bb_mid"] = result["bb_upper"] = result["bb_lower"] = float(closes.iloc[-1])
+
+    # 52주 고점 및 고점 대비 하락률
+    peak_window = min(n, 252)
+    peak = float(closes.iloc[-peak_window:].max())
+    current = float(closes.iloc[-1])
+    result["peak_52w"]      = peak
+    result["drawdown_pct"]  = (current - peak) / peak * 100 if peak else 0.0
+
+    # RSI (14일)
+    if n >= 15:
+        deltas = closes.diff().dropna().iloc[-14:]
+        gains  = deltas.clip(lower=0).mean()
+        losses = (-deltas.clip(upper=0)).mean()
+        rs     = gains / losses if losses != 0 else 100
+        result["rsi"] = float(100 - 100 / (1 + rs))
+    else:
+        result["rsi"] = 50.0
+
+    # 골든/데드크로스: ma50 vs ma200 방향 전환
+    result["golden_cross"] = False
+    result["dead_cross"]   = False
+    if n >= 201:
+        prev_ma50  = float(closes.iloc[-51:-1].mean())
+        prev_ma200 = float(closes.iloc[-201:-1].mean())
+        cur_ma50   = result["ma50"]
+        cur_ma200  = result["ma200"]
+        if prev_ma50 <= prev_ma200 and cur_ma50 > cur_ma200:
+            result["golden_cross"] = True
+        if prev_ma50 >= prev_ma200 and cur_ma50 < cur_ma200:
+            result["dead_cross"] = True
+
+    return result
+
+
+# ─────────────────────────────────────────────
+# 조건 평가 (확장판)
+# ─────────────────────────────────────────────
+def _eval_condition(condition_str: str, current_price: float,
+                    indicators: dict,
+                    buy_price: Optional[float] = None,
+                    ref_indicators: Optional[dict] = None) -> bool:
+    """
+    자연어 조건 문자열을 해석해 True/False 반환.
+
+    지원 조건:
+      항상 / always / 즉시
+      수익률 > X% / TP+X% / +X%
+      손절 -X% / 손실률 > X%
+      고점 대비 -X% / 고점 대비 X% 하락
+      X일선 대비 -Y% 이하 / X일 이동평균 이하
+      RSI < X / RSI > X
+      골든크로스 / GC / 데드크로스 / DC
+      볼린저 상단 이탈 / 볼린저 하단 이탈
+      현재가 < X / price > X
+    """
+    import re
+    cond = condition_str.strip()
+    cond_l = cond.lower()
+
+    # 항상 실행
+    if cond_l in ("항상", "always", "즉시", "매일"):
         return True
 
-    # 수익률 조건 (보유 중일 때만)
-    if ("수익률" in cond or "익절" in cond) and buy_price:
-        try:
-            pct = (current_price - buy_price) / buy_price * 100
-            if ">=" in cond:
-                threshold = float(cond.split(">=")[1].replace("%", "").strip())
-                return pct >= threshold
-            elif ">" in cond:
-                threshold = float(cond.split(">")[1].replace("%", "").strip())
-                return pct > threshold
-        except Exception:
-            pass
+    # ── 수익률 / TP 익절 ──
+    profit_patterns = [
+        r"tp\s*[+\(]?\s*(\d+(?:\.\d+)?)\s*%",          # TP+10%, TP(+10%)
+        r"[+\+]\s*(\d+(?:\.\d+)?)\s*%\s*[:\)매도]",     # +10%: 매도
+        r"수익률\s*[>≥]\s*(\d+(?:\.\d+)?)\s*%",
+        r"수익\s*(\d+(?:\.\d+)?)\s*%\s*이상",
+    ]
+    if buy_price:
+        ret_pct = (current_price - buy_price) / buy_price * 100
+        for pat in profit_patterns:
+            m = re.search(pat, cond_l)
+            if m:
+                threshold = float(m.group(1))
+                return ret_pct >= threshold
 
-    # 손실률 조건
-    if ("손실률" in cond or "손절" in cond) and buy_price:
-        try:
-            pct = (current_price - buy_price) / buy_price * 100
-            if ">=" in cond:
-                threshold = float(cond.split(">=")[1].replace("%", "").strip())
-                return pct <= -threshold
-            elif ">" in cond:
-                threshold = float(cond.split(">")[1].replace("%", "").strip())
-                return pct < -threshold
-        except Exception:
-            pass
+    # ── 손절 / 손실 ──
+    loss_patterns = [
+        r"손절\s*-?\s*(\d+(?:\.\d+)?)\s*%",
+        r"손실률?\s*[>≥]\s*(\d+(?:\.\d+)?)\s*%",
+        r"-\s*(\d+(?:\.\d+)?)\s*%\s*(손절|스탑|stop)",
+    ]
+    if buy_price:
+        ret_pct = (current_price - buy_price) / buy_price * 100
+        for pat in loss_patterns:
+            m = re.search(pat, cond_l)
+            if m:
+                threshold = float(m.group(1))
+                return ret_pct <= -threshold
 
-    # 현재가 비교
-    for keyword in ["현재가", "price", "가격", "종가"]:
-        if keyword in cond:
+    # ── 고점 대비 하락 ──
+    # ref_indicators: 다른 종목(예: QQQ) 기준일 때
+    ind = ref_indicators if ref_indicators else indicators
+    dd_patterns = [
+        r"고점\s*대비\s*-\s*(\d+(?:\.\d+)?)\s*%",
+        r"고점\s*대비\s*(\d+(?:\.\d+)?)\s*%\s*하락",
+        r"-\s*(\d+(?:\.\d+)?)\s*%\s*하락",
+    ]
+    for pat in dd_patterns:
+        m = re.search(pat, cond_l)
+        if m:
+            threshold = -float(m.group(1))
+            return ind.get("drawdown_pct", 0) <= threshold
+
+    # ── 이동평균 관련 ──
+    # "200일선 대비 -7% 이하"
+    ma_pct_m = re.search(r"(\d+)일선?\s*대비\s*-?\s*(\d+(?:\.\d+)?)\s*%\s*(이하|아래|미만)", cond_l)
+    if ma_pct_m:
+        period  = int(ma_pct_m.group(1))
+        pct     = float(ma_pct_m.group(2))
+        ma_key  = f"ma{period}"
+        ma_val  = ind.get(ma_key, indicators.get(ma_key))
+        if ma_val:
+            return current_price <= ma_val * (1 - pct / 100)
+
+    # "200일선 이하 / 아래"
+    ma_below_m = re.search(r"(\d+)일선?\s*(이하|아래|미만|하회)", cond_l)
+    if ma_below_m:
+        period = int(ma_below_m.group(1))
+        ma_val = indicators.get(f"ma{period}")
+        if ma_val:
+            return current_price < ma_val
+
+    # "이전 고점 돌파 / 고점 돌파"
+    if re.search(r"고점\s*돌파|신고가", cond_l):
+        return current_price >= indicators.get("peak_52w", current_price)
+
+    # ── RSI ──
+    rsi_m = re.search(r"rsi\s*([<>≤≥]=?)\s*(\d+(?:\.\d+)?)", cond_l)
+    if rsi_m:
+        op, val = rsi_m.group(1), float(rsi_m.group(2))
+        rsi = indicators.get("rsi", 50)
+        if "<=" in op or "≤" in op: return rsi <= val
+        if ">=" in op or "≥" in op: return rsi >= val
+        if "<"  in op: return rsi < val
+        if ">"  in op: return rsi > val
+
+    # ── 골든크로스 / 데드크로스 ──
+    if re.search(r"골든\s*크로스|golden\s*cross|\bgc\b", cond_l):
+        return indicators.get("golden_cross", False)
+    if re.search(r"데드\s*크로스|dead\s*cross|\bdc\b", cond_l):
+        return indicators.get("dead_cross", False)
+
+    # ── 볼린저밴드 ──
+    if re.search(r"볼린저.*(상단|상향)\s*(이탈|돌파|초과)", cond_l):
+        return current_price >= indicators.get("bb_upper", current_price + 1)
+    if re.search(r"볼린저.*(하단|하향)\s*(이탈|터치|이하|붕괴)", cond_l):
+        return current_price <= indicators.get("bb_lower", current_price - 1)
+
+    # ── 현재가 단순 비교 ──
+    for kw in ["현재가", "price", "가격", "종가"]:
+        if kw in cond_l:
             try:
-                if "<=" in cond:
-                    t = float(cond.split("<=")[1].strip().replace(",", ""))
-                    return current_price <= t
-                elif ">=" in cond:
-                    t = float(cond.split(">=")[1].strip().replace(",", ""))
-                    return current_price >= t
-                elif "<" in cond:
-                    t = float(cond.split("<")[1].strip().replace(",", ""))
-                    return current_price < t
-                elif ">" in cond:
-                    t = float(cond.split(">")[1].strip().replace(",", ""))
-                    return current_price > t
+                if "<=" in cond: return current_price <= float(re.search(r"<=\s*([\d,]+)", cond).group(1).replace(",",""))
+                if ">=" in cond: return current_price >= float(re.search(r">=\s*([\d,]+)", cond).group(1).replace(",",""))
+                if "<"  in cond: return current_price <  float(re.search(r"<\s*([\d,]+)",  cond).group(1).replace(",",""))
+                if ">"  in cond: return current_price >  float(re.search(r">\s*([\d,]+)",  cond).group(1).replace(",",""))
             except Exception:
                 pass
 
-    # RSI, MACD 등 미지원 → False
+    log.debug("미지원 조건 (건너뜀): %s", condition_str)
     return False
 
 
@@ -167,6 +306,30 @@ def run_backtest(conditions: dict, period_days: int = 90,
         all_dates.update(df.index.tolist())
     all_dates = sorted(all_dates)
 
+    # 조건에서 참조되는 크로스 티커 수집 (예: "QQQ 고점 대비" → QQQ 데이터 필요)
+    import re as _re
+    ref_tickers_needed = set()
+    for c in buy_conds + sell_conds:
+        cond_text = c.get("condition", "")
+        # "QQQ 고점 대비", "SPY 기준" 등 패턴 감지
+        m = _re.search(r'\b([A-Z]{2,5})\s*(고점|기준|대비)', cond_text.upper())
+        if m:
+            ref_t = m.group(1)
+            if ref_t not in price_data:
+                ref_tickers_needed.add(ref_t)
+
+    # 참조 티커 데이터 추가 로드
+    for ref_t in ref_tickers_needed:
+        try:
+            ref_df = download_tiingo(ref_t, period=f"{period_days + 10}d")
+            if ref_df.empty and _is_kr_ticker(ref_t + ".KS"):
+                ref_df = _yf_history_safe(ref_t + ".KS", period=f"{period_days + 10}d")
+            if not ref_df.empty:
+                price_data[ref_t] = ref_df
+                log.info(f"참조 티커 로드: {ref_t}")
+        except Exception as e:
+            log.warning(f"참조 티커 로드 실패 ({ref_t}): {e}")
+
     # ── 날짜별 시뮬레이션 ──
     for date in all_dates:
         day_str = date.strftime("%Y-%m-%d") if hasattr(date, 'strftime') else str(date)[:10]
@@ -184,33 +347,43 @@ def run_backtest(conditions: dict, period_days: int = 90,
                 close = float(df.loc[date, "Close"])
             except Exception:
                 continue
-            if not close or close != close:  # NaN 체크
+            if not close or close != close:
                 continue
 
-            if _eval_price_condition(cond.get("condition", ""), close):
+            idx = df.index.get_loc(date)
+            indicators = _calc_indicators(df, idx)
+
+            # 참조 티커 지표 (예: QQQ 기준)
+            cond_text = cond.get("condition", "")
+            ref_ind = None
+            m = _re.search(r'\b([A-Z]{2,5})\s*(고점|기준|대비)', cond_text.upper())
+            if m and m.group(1) in price_data:
+                ref_t = m.group(1)
+                ref_df = price_data[ref_t]
+                ref_dates = ref_df.index[ref_df.index <= date]
+                if len(ref_dates):
+                    ref_idx = ref_df.index.get_loc(ref_dates[-1])
+                    ref_ind = _calc_indicators(ref_df, ref_idx)
+
+            if _eval_condition(cond_text, close, indicators, ref_indicators=ref_ind):
                 qty_raw = cond.get("qty", 1)
-                qty = 1 if str(qty_raw) == "all" else int(qty_raw)
+                qty = max(1, int(cash // close)) if str(qty_raw) == "all" else int(qty_raw)
                 cost = close * qty
                 if cash >= cost:
                     cash -= cost
                     if ticker not in holdings:
-                        holdings[ticker] = {"qty": 0, "avg_price": 0.0, "trades": []}
+                        holdings[ticker] = {"qty": 0, "avg_price": 0.0}
                     prev_qty = holdings[ticker]["qty"]
                     prev_avg = holdings[ticker]["avg_price"]
                     new_qty  = prev_qty + qty
                     holdings[ticker]["avg_price"] = (prev_avg * prev_qty + close * qty) / new_qty
                     holdings[ticker]["qty"] = new_qty
-                    entry = {
-                        "date": day_str,
-                        "action": "매수",
-                        "ticker": ticker,
-                        "name": tickers[ticker]["name"],
-                        "price": round(close, 2),
-                        "qty": qty,
-                        "pnl": None,
-                        "condition": cond.get("condition", ""),
-                    }
-                    all_trade_log.append(entry)
+                    all_trade_log.append({
+                        "date": day_str, "action": "매수",
+                        "ticker": ticker, "name": tickers[ticker]["name"],
+                        "price": round(close, 2), "qty": qty,
+                        "pnl": None, "condition": cond_text,
+                    })
 
         # 매도 체크
         for cond in sell_conds:
@@ -230,28 +403,28 @@ def run_backtest(conditions: dict, period_days: int = 90,
             if not close or close != close:
                 continue
 
-            buy_price = holdings[ticker]["avg_price"]
-            if _eval_price_condition(cond.get("condition", ""), close, buy_price):
+            idx = df.index.get_loc(date)
+            indicators = _calc_indicators(df, idx)
+            buy_price  = holdings[ticker]["avg_price"]
+            cond_text  = cond.get("condition", "")
+
+            if _eval_condition(cond_text, close, indicators, buy_price=buy_price):
                 qty_raw = cond.get("qty", 1)
                 qty = holdings[ticker]["qty"] if str(qty_raw) == "all" else min(int(qty_raw), holdings[ticker]["qty"])
                 proceeds = close * qty
-                pnl = (close - buy_price) * qty
-                cash += proceeds
+                pnl      = (close - buy_price) * qty
+                cash    += proceeds
                 holdings[ticker]["qty"] -= qty
                 if holdings[ticker]["qty"] <= 0:
                     del holdings[ticker]
-                entry = {
-                    "date": day_str,
-                    "action": "매도",
-                    "ticker": ticker,
-                    "name": tickers[ticker]["name"],
-                    "price": round(close, 2),
-                    "qty": qty,
+                all_trade_log.append({
+                    "date": day_str, "action": "매도",
+                    "ticker": ticker, "name": tickers[ticker]["name"],
+                    "price": round(close, 2), "qty": qty,
                     "pnl": round(pnl, 0),
                     "pnl_pct": round((close - buy_price) / buy_price * 100, 2),
-                    "condition": cond.get("condition", ""),
-                }
-                all_trade_log.append(entry)
+                    "condition": cond_text,
+                })
 
         # 포트폴리오 평가액 기록
         holding_value = 0
