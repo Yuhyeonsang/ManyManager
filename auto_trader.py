@@ -174,11 +174,87 @@ def place_order(ticker: str, order_type: str, qty: int, price: int = 0) -> dict:
     return result
 
 # ─────────────────────────────────────────────
-# Gemini Vision으로 이미지 분석
+# Vision 이미지 분석 — Groq 우선, 실패 시 Gemini fallback
 # ─────────────────────────────────────────────
+def _parse_vision_text(text: str) -> dict:
+    """LLM 응답 텍스트에서 JSON 추출 (Groq/Gemini 공통)."""
+    import re
+    text = text.strip()
+    if "```" in text:
+        m = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
+        if m:
+            text = m.group(1).strip()
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1:
+        text = text[start:end+1]
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return {
+            "summary": text[:200] if text else "조건 추출 실패",
+            "buy_conditions": [],
+            "sell_conditions": [],
+            "check_interval_minutes": 5,
+        }
+
+
+def _analyze_with_groq(image_base64: str, mime_type: str, prompt: str) -> dict:
+    """Groq vision 모델로 이미지 분석. 실패 시 예외 발생."""
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    if not groq_key:
+        raise ValueError("GROQ_API_KEY 없음")
+    model = os.getenv("GROQ_VISION_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    body = {
+        "model": model,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{image_base64}"}}
+            ]
+        }],
+        "temperature": 0.1,
+        "max_tokens": 1024,
+    }
+    resp = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+        json=body,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    text = resp.json()["choices"][0]["message"]["content"]
+    return _parse_vision_text(text)
+
+
+def _analyze_with_gemini(image_base64: str, mime_type: str, prompt: str) -> dict:
+    """Gemini Vision으로 이미지 분석. 실패 시 예외 발생."""
+    gemini_key = os.getenv("GEMINI_VISION_API_KEY") or os.getenv("GEMINI_API_KEY", "")
+    if not gemini_key:
+        raise ValueError("GEMINI_API_KEY 없음")
+    model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash")
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    body = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
+                {"inline_data": {"mime_type": mime_type, "data": image_base64}}
+            ]
+        }],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024}
+    }
+    resp = requests.post(url, params={"key": gemini_key}, json=body, timeout=30)
+    resp.raise_for_status()
+    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+    return _parse_vision_text(text)
+
+
 def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -> dict:
     """
     이미지에서 매수/매도 조건 추출.
+    Groq vision 우선 → 실패 시 Gemini fallback.
     반환 형태:
     {
       "summary": "조건 요약 텍스트",
@@ -191,10 +267,6 @@ def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -
       "check_interval_minutes": 5
     }
     """
-    gemini_key = os.getenv("GEMINI_VISION_API_KEY") or os.getenv("GEMINI_API_KEY", "")
-    if not gemini_key:
-        raise ValueError("GEMINI_VISION_API_KEY 또는 GEMINI_API_KEY 환경변수가 없습니다.")
-
     prompt = """이 이미지는 주식 자동매매 조건표입니다.
 이미지에 적힌 매수/매도 조건을 정확히 읽고 아래 JSON 형식으로 추출하세요.
 반드시 JSON만 출력하고 다른 텍스트는 쓰지 마세요.
@@ -224,47 +296,20 @@ def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -
 
 종목코드가 없으면 null로 두세요. 수량이 명시되지 않으면 1로 설정하세요."""
 
-    model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
-    body = {
-        "contents": [{
-            "parts": [
-                {"text": prompt},
-                {"inline_data": {"mime_type": mime_type, "data": image_base64}}
-            ]
-        }],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024}
-    }
-    resp = requests.post(url, params={"key": gemini_key}, json=body, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-
-    text = data["candidates"][0]["content"]["parts"][0]["text"]
-
-    # JSON 블록 추출 — ```json ... ``` 또는 ``` ... ``` 또는 순수 JSON
-    text = text.strip()
-    if "```" in text:
-        import re
-        m = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
-        if m:
-            text = m.group(1).strip()
-
-    # { ... } 범위만 잘라내기 (앞뒤 설명 텍스트 제거)
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1:
-        text = text[start:end+1]
-
+    # 1순위: Groq vision
     try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        # JSON 파싱 실패 시 기본 구조 반환
-        return {
-            "summary": text[:200] if text else "조건 추출 실패",
-            "buy_conditions": [],
-            "sell_conditions": [],
-            "check_interval_minutes": 5,
-        }
+        result = _analyze_with_groq(image_base64, mime_type, prompt)
+        result["_provider"] = "groq"
+        return result
+    except Exception as groq_err:
+        import logging
+        logging.getLogger("auto_trader").warning(f"Groq vision 실패 → Gemini fallback: {groq_err}")
+
+    # 2순위: Gemini fallback
+    result = _analyze_with_gemini(image_base64, mime_type, prompt)
+    result["_provider"] = "gemini"
+    return result
+
 
 
 # ─────────────────────────────────────────────
