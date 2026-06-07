@@ -258,11 +258,13 @@ export default function BacktestScreen() {
     );
   };
 
-  // ── 자동완성 드롭다운 (타이핑 시 필터) ──
-  const AutoSuggest = ({ query, items, onSelect }) => {
-    if (!query || query.trim().length === 0) return null;
-    const q = query.trim().toLowerCase();
-    const filtered = items.filter(t => t.toLowerCase().includes(q));
+  // ── 자동완성 드롭다운 ────────────────────
+  // showAll=true → 빈 값일 때도 전체 표시 (티커용)
+  // showAll=false → 타이핑 시만 표시 (조건 텍스트용)
+  const AutoSuggest = ({ query, items, onSelect, showAll = false }) => {
+    const q = (query || '').trim().toLowerCase();
+    if (!showAll && q.length === 0) return null;
+    const filtered = q.length === 0 ? items : items.filter(t => t.toLowerCase().includes(q));
     if (filtered.length === 0) return null;
     return (
       <View style={styles.suggestBox}>
@@ -287,24 +289,22 @@ export default function BacktestScreen() {
 
     return (
       <Modal visible transparent animationType="slide" onRequestClose={() => setEditModal(v => ({ ...v, visible: false }))}>
+        {/* Android는 KAV 비활성 - 시스템이 windowSoftInput 처리 */}
         <KeyboardAvoidingView
           style={{ flex: 1, justifyContent: 'flex-end' }}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          behavior="padding"
+          enabled={Platform.OS === 'ios'}
         >
-          {/* 배경 탭으로 닫기 */}
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setEditModal(v => ({ ...v, visible: false }))} />
 
           <View style={styles.modalBox}>
-            {/* 타이틀 */}
             <Text style={styles.modalTitle}>
               {isNew ? '➕ 조건 추가' : '✏️ 조건 수정'}
               {type === 'buy' ? ' (매수)' : type === 'sell' ? ' (매도)' : ' (락)'}
             </Text>
 
-            {/* 에러 */}
             {editError && <View style={styles.modalError}><Text style={styles.modalErrorText}>⚠️ {editError}</Text></View>}
 
-            {/* 스크롤 필드 영역 */}
             <ScrollView
               style={styles.modalScroll}
               contentContainerStyle={{ paddingBottom: 8 }}
@@ -314,29 +314,59 @@ export default function BacktestScreen() {
               {(type === 'buy' || type === 'sell') && (
                 <>
                   <Text style={styles.modalLabel}>라벨</Text>
-                  <TextInput style={styles.modalInput} value={data.label ?? ''} onChangeText={v => setField('label', v)} placeholder="예: Dip 1 (선택)" placeholderTextColor="#94A3B8" />
+                  <TextInput
+                    style={styles.modalInput}
+                    value={data.label ?? ''}
+                    onChangeText={v => setField('label', v)}
+                    placeholder="예: Dip 1 (선택)"
+                    placeholderTextColor="#94A3B8"
+                  />
+                  {/* 이전에 쓴 라벨이 있으면 자동완성 */}
+                  <AutoSuggest
+                    query={data.label}
+                    items={[...knownLabels]}
+                    onSelect={v => setField('label', v)}
+                    showAll={false}
+                  />
 
                   <Text style={styles.modalLabel}>티커 <Text style={styles.modalLabelRequired}>*</Text></Text>
                   <TextInput
                     style={[styles.modalInput, !data.ticker && editError ? styles.modalInputErr : null]}
                     value={data.ticker ?? ''}
                     onChangeText={v => { setField('ticker', v); if (!data.name) setField('name', v); }}
-                    placeholder="예: TQQQ"
+                    placeholder="예: TQQQ — 탭하면 목록, 타이핑하면 검색"
                     placeholderTextColor="#94A3B8"
                     autoCapitalize="characters"
                   />
-                  <ChipRow items={knownTickers} selected={data.ticker} onSelect={v => { setField('ticker', v); if (!data.name) setField('name', v); }} />
+                  <AutoSuggest
+                    query={data.ticker}
+                    items={knownTickers}
+                    onSelect={v => { setField('ticker', v); setField('name', v); }}
+                    showAll
+                  />
 
                   <Text style={styles.modalLabel}>종목명</Text>
-                  <TextInput style={styles.modalInput} value={data.name ?? ''} onChangeText={v => setField('name', v)} placeholder="예: TQQQ (티커와 동일하면 생략가능)" placeholderTextColor="#94A3B8" />
+                  <TextInput style={styles.modalInput} value={data.name ?? ''} onChangeText={v => setField('name', v)} placeholder="티커와 같으면 생략 가능" placeholderTextColor="#94A3B8" />
                 </>
               )}
 
               {type === 'buy' && (
                 <>
                   <Text style={styles.modalLabel}>기준 티커 (선택)</Text>
-                  <TextInput style={styles.modalInput} value={data.ref_ticker ?? ''} onChangeText={v => setField('ref_ticker', v)} placeholder="예: QQQ" placeholderTextColor="#94A3B8" autoCapitalize="characters" />
-                  <ChipRow items={knownTickers} selected={data.ref_ticker} onSelect={v => setField('ref_ticker', v)} />
+                  <TextInput
+                    style={styles.modalInput}
+                    value={data.ref_ticker ?? ''}
+                    onChangeText={v => setField('ref_ticker', v)}
+                    placeholder="예: QQQ — 탭하면 목록"
+                    placeholderTextColor="#94A3B8"
+                    autoCapitalize="characters"
+                  />
+                  <AutoSuggest
+                    query={data.ref_ticker}
+                    items={knownTickers}
+                    onSelect={v => setField('ref_ticker', v)}
+                    showAll
+                  />
                 </>
               )}
 
@@ -359,7 +389,7 @@ export default function BacktestScreen() {
                 <>
                   <Text style={styles.modalLabel}>목표 비중 (%)</Text>
                   <TextInput style={styles.modalInput} value={String(data.weight_pct ?? '')} onChangeText={v => setField('weight_pct', v === '' ? '' : Number(v))} keyboardType="numeric" placeholder="예: 30" placeholderTextColor="#94A3B8" />
-                  <ChipRow items={['10', '15', '20', '30', '50', '70', '100']} selected={String(data.weight_pct ?? '')} onSelect={v => setField('weight_pct', Number(v))} />
+                  <AutoSuggest query={String(data.weight_pct ?? '')} items={['10', '15', '20', '30', '50', '70', '100']} onSelect={v => setField('weight_pct', Number(v))} showAll />
 
                   <Text style={styles.modalLabel}>비중 모드</Text>
                   <View style={styles.toggleRow}>
@@ -376,7 +406,7 @@ export default function BacktestScreen() {
                 <>
                   <Text style={styles.modalLabel}>매도 비율 (%)</Text>
                   <TextInput style={styles.modalInput} value={String(data.sell_pct ?? '')} onChangeText={v => setField('sell_pct', v === '' ? '' : Number(v))} keyboardType="numeric" placeholder="예: 50 (100이면 전량)" placeholderTextColor="#94A3B8" />
-                  <ChipRow items={['25', '50', '75', '100']} selected={String(data.sell_pct ?? '')} onSelect={v => setField('sell_pct', Number(v))} />
+                  <AutoSuggest query={String(data.sell_pct ?? '')} items={['25', '50', '75', '100']} onSelect={v => setField('sell_pct', Number(v))} showAll />
 
                   <Text style={styles.modalLabel}>매도 기준</Text>
                   <View style={styles.toggleRow}>
