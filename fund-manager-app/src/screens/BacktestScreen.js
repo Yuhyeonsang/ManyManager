@@ -240,7 +240,7 @@ export default function BacktestScreen() {
   const returnColor = (pct) => pct > 0 ? '#16A34A' : pct < 0 ? '#DC2626' : '#64748B';
   const formatMoney = (n) => n >= 0 ? `+${n.toLocaleString()}원` : `${n.toLocaleString()}원`;
 
-  // ── 칩 선택 컴포넌트 ─────────────────────
+  // ── 칩 선택 컴포넌트 (가로 스크롤) ───────
   const ChipRow = ({ items, onSelect, selected }) => {
     if (!items || items.length === 0) return null;
     return (
@@ -255,6 +255,27 @@ export default function BacktestScreen() {
           </TouchableOpacity>
         ))}
       </ScrollView>
+    );
+  };
+
+  // ── 자동완성 드롭다운 (타이핑 시 필터) ──
+  const AutoSuggest = ({ query, items, onSelect }) => {
+    if (!query || query.trim().length === 0) return null;
+    const q = query.trim().toLowerCase();
+    const filtered = items.filter(t => t.toLowerCase().includes(q));
+    if (filtered.length === 0) return null;
+    return (
+      <View style={styles.suggestBox}>
+        {filtered.map((item, i) => (
+          <TouchableOpacity
+            key={i}
+            style={[styles.suggestItem, i < filtered.length - 1 && styles.suggestItemBorder]}
+            onPress={() => onSelect(item)}
+          >
+            <Text style={styles.suggestText}>{item}</Text>
+          </TouchableOpacity>
+        ))}
+      </View>
     );
   };
 
@@ -324,14 +345,13 @@ export default function BacktestScreen() {
                 style={[styles.modalInput, styles.modalInputMulti, !data.condition && editError ? styles.modalInputErr : null]}
                 value={data.condition ?? ''}
                 onChangeText={v => setField('condition', v)}
-                placeholder="예: QQQ 고점 대비 -10% 하락 시"
+                placeholder="앞글자 치면 자동완성 (예: 고점, RSI, 골든)"
                 placeholderTextColor="#94A3B8"
                 multiline
               />
-              <Text style={styles.condHint}>💡 아래 템플릿을 탭하면 자동입력 (직접 수정도 가능)</Text>
-              <ChipRow
+              <AutoSuggest
+                query={data.condition}
                 items={CONDITION_TEMPLATES[type] || []}
-                selected={data.condition}
                 onSelect={v => setField('condition', v)}
               />
 
@@ -760,6 +780,24 @@ const styles = StyleSheet.create({
   modalInputErr: { borderColor: '#DC2626' },
 
   condHint: { fontSize: 11, color: '#94A3B8', marginTop: 6, marginBottom: 2 },
+
+  // 자동완성 드롭다운
+  suggestBox: {
+    backgroundColor: '#fff',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 10,
+    marginTop: 4,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  suggestItem: { paddingHorizontal: 14, paddingVertical: 12 },
+  suggestItemBorder: { borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  suggestText: { fontSize: 13, color: '#1E293B' },
 
   // 칩
   chipScroll: { marginTop: 6, marginBottom: 2 },
