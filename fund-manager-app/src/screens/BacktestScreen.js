@@ -13,6 +13,10 @@ import {
   ActivityIndicator,
   Alert,
   TextInput,
+  Image,
+  Modal,
+  KeyboardAvoidingView,
+  Platform,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -25,6 +29,11 @@ const PERIODS = [
   { label: '1년',   days: 365 },
 ];
 
+// 새 조건 기본 템플릿
+const emptyBuy  = () => ({ label: '', name: '', ticker: '', ref_ticker: '', condition: '', weight_pct: '', weight_mode: 'add' });
+const emptySell = () => ({ label: '', name: '', ticker: '', condition: '', sell_pct: '', sell_mode: 'initial_qty' });
+const emptyLock = () => ({ condition: '', action: 'liquidate' });
+
 export default function BacktestScreen() {
   const [analyzing, setAnalyzing]   = useState(false);
   const [running,   setRunning]     = useState(false);
@@ -33,6 +42,14 @@ export default function BacktestScreen() {
   const [period,    setPeriod]      = useState(90);
   const [cashInput, setCashInput]   = useState('10000000');
   const [condExpanded, setCondExpanded] = useState(false);
+
+  // 이미지
+  const [imageUri, setImageUri]     = useState(null);
+  const [analyzeError, setAnalyzeError] = useState(null);
+  const [imageModalVisible, setImageModalVisible] = useState(false);
+
+  // 조건 편집 모달
+  const [editModal, setEditModal] = useState({ visible: false, type: null, index: null, data: null });
 
   // ── 이미지 선택 & 분석 ──────────────────────
   const pickImage = async (fromCamera = false) => {
@@ -45,7 +62,7 @@ export default function BacktestScreen() {
 
     const { status } = await permFn();
     if (status !== 'granted') {
-      Alert.alert('권한 필요', '사진 접근 권한이 필요합니다.');
+      setAnalyzeError('사진 접근 권한이 필요합니다.');
       return;
     }
 
@@ -53,16 +70,23 @@ export default function BacktestScreen() {
     if (res.canceled) return;
 
     setAnalyzing(true);
+    setAnalyzeError(null);
     setResult(null);
+    const asset = res.assets[0];
+    setImageUri(asset.uri);
+
     try {
-      const asset = res.assets[0];
-      const ext   = asset.uri.split('.').pop().toLowerCase();
-      const mime  = ext === 'png' ? 'image/png' : 'image/jpeg';
-      const data  = await analyzeTradeImage(asset.uri, mime);
+      const ext  = asset.uri.split('.').pop().toLowerCase();
+      const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
+      const data = await analyzeTradeImage(asset.uri, mime);
       setConditions(data.conditions);
-      Alert.alert('분석 완료', `📋 ${data.conditions.summary}`);
+      setCondExpanded(true);
     } catch (e) {
-      Alert.alert('분석 실패', e?.message ?? String(e));
+      setAnalyzeError(e?.message ?? String(e));
+      // 이미지는 유지, 조건만 없는 상태 → 수동으로 조건 추가 가능하도록
+      if (!conditions) {
+        setConditions({ summary: '수동 입력', buy_conditions: [], sell_conditions: [], lock_conditions: [] });
+      }
     } finally {
       setAnalyzing(false);
     }
@@ -71,7 +95,7 @@ export default function BacktestScreen() {
   // ── 백테스트 실행 ──────────────────────────
   const doBacktest = async () => {
     if (!conditions) {
-      Alert.alert('조건 없음', '먼저 이미지를 업로드해서 조건을 분석하세요.');
+      Alert.alert('조건 없음', '먼저 이미지를 업로드하거나 조건을 입력하세요.');
       return;
     }
     setRunning(true);
@@ -87,6 +111,50 @@ export default function BacktestScreen() {
     }
   };
 
+  // ── 조건 CRUD ────────────────────────────
+  const openEdit = (type, index) => {
+    const list =
+      type === 'buy'  ? conditions.buy_conditions  :
+      type === 'sell' ? conditions.sell_conditions :
+      conditions.lock_conditions;
+    setEditModal({ visible: true, type, index, data: { ...list[index] } });
+  };
+
+  const openAdd = (type) => {
+    const data = type === 'buy' ? emptyBuy() : type === 'sell' ? emptySell() : emptyLock();
+    setEditModal({ visible: true, type, index: null, data });
+  };
+
+  const saveEdit = () => {
+    const { type, index, data } = editModal;
+    setConditions(prev => {
+      const key = type === 'buy' ? 'buy_conditions' : type === 'sell' ? 'sell_conditions' : 'lock_conditions';
+      const list = [...(prev[key] || [])];
+      if (index === null) list.push(data);
+      else list[index] = data;
+      return { ...prev, [key]: list };
+    });
+    setEditModal({ visible: false, type: null, index: null, data: null });
+  };
+
+  const deleteCondition = (type, index) => {
+    Alert.alert('삭제', '이 조건을 삭제할까요?', [
+      { text: '취소', style: 'cancel' },
+      { text: '삭제', style: 'destructive', onPress: () => {
+        setConditions(prev => {
+          const key = type === 'buy' ? 'buy_conditions' : type === 'sell' ? 'sell_conditions' : 'lock_conditions';
+          const list = [...(prev[key] || [])];
+          list.splice(index, 1);
+          return { ...prev, [key]: list };
+        });
+      }},
+    ]);
+  };
+
+  const updateEditField = (field, value) => {
+    setEditModal(prev => ({ ...prev, data: { ...prev.data, [field]: value } }));
+  };
+
   // ── 색상 헬퍼 ─────────────────────────────
   const returnColor = (pct) => {
     if (pct > 0) return '#16A34A';
@@ -95,9 +163,196 @@ export default function BacktestScreen() {
   };
 
   const formatMoney = (n) =>
-    n >= 0
-      ? `+${n.toLocaleString()}원`
-      : `${n.toLocaleString()}원`;
+    n >= 0 ? `+${n.toLocaleString()}원` : `${n.toLocaleString()}원`;
+
+  // ── 조건 편집 모달 렌더 ───────────────────
+  const renderEditModal = () => {
+    if (!editModal.visible || !editModal.data) return null;
+    const { type, data } = editModal;
+    const isNew = editModal.index === null;
+
+    return (
+      <Modal visible transparent animationType="slide" onRequestClose={() => setEditModal(v => ({ ...v, visible: false }))}>
+        <KeyboardAvoidingView style={styles.modalOverlay} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>
+              {isNew ? '➕ 조건 추가' : '✏️ 조건 수정'}
+              {type === 'buy' ? ' (매수)' : type === 'sell' ? ' (매도)' : ' (락)'}
+            </Text>
+
+            {(type === 'buy' || type === 'sell') && (
+              <>
+                <Text style={styles.modalLabel}>라벨 (예: Dip 1)</Text>
+                <TextInput style={styles.modalInput} value={data.label ?? ''} onChangeText={v => updateEditField('label', v)} placeholder="선택" placeholderTextColor="#94A3B8" />
+                <Text style={styles.modalLabel}>종목명</Text>
+                <TextInput style={styles.modalInput} value={data.name ?? ''} onChangeText={v => updateEditField('name', v)} placeholder="예: TQQQ" placeholderTextColor="#94A3B8" />
+                <Text style={styles.modalLabel}>티커</Text>
+                <TextInput style={styles.modalInput} value={data.ticker ?? ''} onChangeText={v => updateEditField('ticker', v)} placeholder="예: TQQQ" placeholderTextColor="#94A3B8" />
+              </>
+            )}
+
+            {type === 'buy' && (
+              <>
+                <Text style={styles.modalLabel}>기준 티커 (선택, 예: QQQ)</Text>
+                <TextInput style={styles.modalInput} value={data.ref_ticker ?? ''} onChangeText={v => updateEditField('ref_ticker', v)} placeholder="없으면 비워두세요" placeholderTextColor="#94A3B8" />
+              </>
+            )}
+
+            <Text style={styles.modalLabel}>조건 내용</Text>
+            <TextInput
+              style={[styles.modalInput, styles.modalInputMulti]}
+              value={data.condition ?? ''}
+              onChangeText={v => updateEditField('condition', v)}
+              placeholder="예: QQQ 고점 대비 -10% 하락 시"
+              placeholderTextColor="#94A3B8"
+              multiline
+            />
+
+            {type === 'buy' && (
+              <>
+                <Text style={styles.modalLabel}>목표 비중 (%)</Text>
+                <TextInput style={styles.modalInput} value={String(data.weight_pct ?? '')} onChangeText={v => updateEditField('weight_pct', v === '' ? '' : Number(v))} keyboardType="numeric" placeholder="예: 30" placeholderTextColor="#94A3B8" />
+              </>
+            )}
+
+            {type === 'sell' && (
+              <>
+                <Text style={styles.modalLabel}>매도 비율 (%)</Text>
+                <TextInput style={styles.modalInput} value={String(data.sell_pct ?? '')} onChangeText={v => updateEditField('sell_pct', v === '' ? '' : Number(v))} keyboardType="numeric" placeholder="예: 50 (100이면 전량)" placeholderTextColor="#94A3B8" />
+              </>
+            )}
+
+            {type === 'lock' && (
+              <>
+                <Text style={styles.modalLabel}>액션</Text>
+                <View style={styles.toggleRow}>
+                  {['liquidate', 'lock'].map(a => (
+                    <TouchableOpacity
+                      key={a}
+                      style={[styles.toggleBtn, data.action === a && styles.toggleBtnActive]}
+                      onPress={() => updateEditField('action', a)}
+                    >
+                      <Text style={[styles.toggleBtnText, data.action === a && styles.toggleBtnTextActive]}>
+                        {a === 'liquidate' ? '전량 청산+잠금' : '신규 매수 잠금'}
+                      </Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              </>
+            )}
+
+            <View style={styles.modalBtns}>
+              <TouchableOpacity style={styles.modalCancel} onPress={() => setEditModal(v => ({ ...v, visible: false }))}>
+                <Text style={styles.modalCancelText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalSave} onPress={saveEdit}>
+                <Text style={styles.modalSaveText}>저장</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    );
+  };
+
+  // ── 조건 상세 렌더 ────────────────────────
+  const renderConditionDetail = () => (
+    <View style={styles.condDetail}>
+      {/* 매수 */}
+      <View style={styles.condSectionHeader}>
+        <Text style={styles.condDetailHeader}>🟢 매수 조건</Text>
+        <TouchableOpacity style={styles.addBtn} onPress={() => openAdd('buy')}>
+          <Text style={styles.addBtnText}>➕ 추가</Text>
+        </TouchableOpacity>
+      </View>
+      {(conditions.buy_conditions?.length === 0) && <Text style={styles.emptyText}>조건 없음</Text>}
+      {conditions.buy_conditions?.map((c, i) => (
+        <View key={i} style={styles.condDetailRow}>
+          <View style={styles.condDetailContent}>
+            <Text style={styles.condDetailName}>
+              {c.label ? `[${c.label}] ` : ''}{c.name || c.ticker || '-'}
+              {c.ref_ticker ? ` (기준: ${c.ref_ticker})` : ''}
+            </Text>
+            <Text style={styles.condDetailCond}>조건: {c.condition}</Text>
+            <Text style={styles.condDetailMeta}>
+              {c.weight_pct != null
+                ? `목표비중 ${c.weight_pct}% (${c.weight_mode === 'add' ? '추가' : '타겟'})`
+                : c.qty != null ? `${c.qty}주` : ''}
+              {c.ticker ? ` · ${c.ticker}` : ''}
+            </Text>
+          </View>
+          <View style={styles.condActions}>
+            <TouchableOpacity style={styles.condEditBtn} onPress={() => openEdit('buy', i)}>
+              <Text style={styles.condEditBtnText}>✏️</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.condDelBtn} onPress={() => deleteCondition('buy', i)}>
+              <Text style={styles.condDelBtnText}>🗑️</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ))}
+
+      {/* 매도 */}
+      <View style={styles.condSectionHeader}>
+        <Text style={[styles.condDetailHeader, { color: '#DC2626' }]}>🔴 매도 조건</Text>
+        <TouchableOpacity style={styles.addBtn} onPress={() => openAdd('sell')}>
+          <Text style={styles.addBtnText}>➕ 추가</Text>
+        </TouchableOpacity>
+      </View>
+      {(conditions.sell_conditions?.length === 0) && <Text style={styles.emptyText}>조건 없음</Text>}
+      {conditions.sell_conditions?.map((c, i) => (
+        <View key={i} style={styles.condDetailRow}>
+          <View style={styles.condDetailContent}>
+            <Text style={styles.condDetailName}>
+              {c.label ? `[${c.label}] ` : ''}{c.name || c.ticker || '-'}
+            </Text>
+            <Text style={styles.condDetailCond}>조건: {c.condition}</Text>
+            <Text style={styles.condDetailMeta}>
+              {c.sell_pct != null
+                ? `${c.sell_pct}% 매도 (${c.sell_mode === 'initial_qty' ? '최초수량 기준' : '현재보유 기준'})`
+                : c.qty === 'all' ? '전량 매도' : c.qty != null ? `${c.qty}주` : ''}
+              {c.ticker ? ` · ${c.ticker}` : ''}
+            </Text>
+          </View>
+          <View style={styles.condActions}>
+            <TouchableOpacity style={styles.condEditBtn} onPress={() => openEdit('sell', i)}>
+              <Text style={styles.condEditBtnText}>✏️</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.condDelBtn} onPress={() => deleteCondition('sell', i)}>
+              <Text style={styles.condDelBtnText}>🗑️</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ))}
+
+      {/* 락 */}
+      <View style={styles.condSectionHeader}>
+        <Text style={[styles.condDetailHeader, { color: '#F59E0B' }]}>🔒 락 조건</Text>
+        <TouchableOpacity style={styles.addBtn} onPress={() => openAdd('lock')}>
+          <Text style={styles.addBtnText}>➕ 추가</Text>
+        </TouchableOpacity>
+      </View>
+      {(conditions.lock_conditions?.length === 0) && <Text style={styles.emptyText}>조건 없음</Text>}
+      {conditions.lock_conditions?.map((c, i) => (
+        <View key={i} style={styles.condDetailRow}>
+          <View style={styles.condDetailContent}>
+            <Text style={styles.condDetailCond}>{c.condition}</Text>
+            <Text style={styles.condDetailMeta}>
+              {c.action === 'liquidate' ? '전량 청산 + 매수 잠금' : '신규 매수 잠금'}
+            </Text>
+          </View>
+          <View style={styles.condActions}>
+            <TouchableOpacity style={styles.condEditBtn} onPress={() => openEdit('lock', i)}>
+              <Text style={styles.condEditBtnText}>✏️</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.condDelBtn} onPress={() => deleteCondition('lock', i)}>
+              <Text style={styles.condDelBtnText}>🗑️</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ))}
+    </View>
+  );
 
   // ── 요약 카드 ─────────────────────────────
   const renderSummary = () => {
@@ -111,7 +366,6 @@ export default function BacktestScreen() {
     }
     return (
       <>
-        {/* 수익률 빅 카드 */}
         <View style={[styles.bigCard, { borderColor: returnColor(s.total_return_pct) }]}>
           <Text style={styles.bigCardLabel}>총 수익률</Text>
           <Text style={[styles.bigCardValue, { color: returnColor(s.total_return_pct) }]}>
@@ -121,21 +375,11 @@ export default function BacktestScreen() {
             {formatMoney(s.total_pnl)}
           </Text>
         </View>
-
-        {/* 지표 그리드 */}
         <View style={styles.metricGrid}>
           <MetricBox label="최종 평가액" value={`${s.final_value?.toLocaleString()}원`} />
           <MetricBox label="총 거래횟수" value={`${s.trade_count}회`} />
-          <MetricBox
-            label="승률"
-            value={`${s.win_rate}%`}
-            valueColor={s.win_rate >= 50 ? '#16A34A' : '#DC2626'}
-          />
-          <MetricBox
-            label="최대 낙폭(MDD)"
-            value={`-${s.mdd_pct}%`}
-            valueColor="#DC2626"
-          />
+          <MetricBox label="승률" value={`${s.win_rate}%`} valueColor={s.win_rate >= 50 ? '#16A34A' : '#DC2626'} />
+          <MetricBox label="최대 낙폭(MDD)" value={`-${s.mdd_pct}%`} valueColor="#DC2626" />
           <MetricBox label="테스트 기간" value={`${s.period_days}일`} />
           <MetricBox label="초기 자본" value={`${s.initial_cash?.toLocaleString()}원`} />
         </View>
@@ -143,28 +387,22 @@ export default function BacktestScreen() {
     );
   };
 
-  // ── 종목별 결과 ───────────────────────────
   const renderPerStock = () => (
     <>
       <Text style={styles.sectionTitle}>📊 종목별 결과</Text>
-      {result.per_stock.length === 0 && (
-        <Text style={styles.emptyText}>체결된 매도 거래가 없습니다.</Text>
-      )}
+      {result.per_stock.length === 0 && <Text style={styles.emptyText}>체결된 매도 거래가 없습니다.</Text>}
       {result.per_stock.map((s) => (
         <View key={s.ticker} style={styles.stockRow}>
           <View style={styles.stockInfo}>
             <Text style={styles.stockName}>{s.name}</Text>
             <Text style={styles.stockMeta}>{s.ticker} · {s.trade_count}회 거래 · 승률 {s.win_rate}%</Text>
           </View>
-          <Text style={[styles.stockPnl, { color: returnColor(s.pnl) }]}>
-            {formatMoney(s.pnl)}
-          </Text>
+          <Text style={[styles.stockPnl, { color: returnColor(s.pnl) }]}>{formatMoney(s.pnl)}</Text>
         </View>
       ))}
     </>
   );
 
-  // ── 거래 내역 ─────────────────────────────
   const renderTradeLog = () => (
     <>
       <Text style={styles.sectionTitle}>📜 거래 내역</Text>
@@ -180,12 +418,10 @@ export default function BacktestScreen() {
           </Text>
           <View style={styles.logInfo}>
             <Text style={styles.logName}>{t.name} ({t.ticker})</Text>
-            <Text style={styles.logMeta}>
-              {t.price?.toLocaleString()}원 · {t.qty}주 · {t.date}
-            </Text>
+            <Text style={styles.logMeta}>{t.price?.toLocaleString()}원 · {t.qty}주 · {t.date}</Text>
             {t.pnl != null && (
               <Text style={[styles.logPnl, { color: returnColor(t.pnl) }]}>
-                {formatMoney(t.pnl)}  ({t.pnl_pct > 0 ? '+' : ''}{t.pnl_pct}%)
+                {formatMoney(t.pnl)} ({t.pnl_pct > 0 ? '+' : ''}{t.pnl_pct}%)
               </Text>
             )}
           </View>
@@ -203,26 +439,45 @@ export default function BacktestScreen() {
 
         {/* ── 이미지 업로드 ── */}
         <Text style={styles.sectionTitle}>📸 조건 이미지 등록</Text>
-        <View style={styles.imageButtons}>
-          <TouchableOpacity
-            style={[styles.imgBtn, analyzing && styles.btnDisabled]}
-            onPress={() => pickImage(false)}
-            disabled={analyzing}
-          >
-            {analyzing
-              ? <ActivityIndicator color="#fff" />
-              : <Text style={styles.imgBtnText}>📁 갤러리</Text>
-            }
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.imgBtn, styles.imgBtnSec, analyzing && styles.btnDisabled]}
-            onPress={() => pickImage(true)}
-            disabled={analyzing}
-          >
-            <Text style={[styles.imgBtnText, { color: '#6366F1' }]}>📷 카메라</Text>
-          </TouchableOpacity>
+        <View style={styles.imageRow}>
+          <View style={styles.imageButtons}>
+            <TouchableOpacity
+              style={[styles.imgBtn, analyzing && styles.btnDisabled]}
+              onPress={() => pickImage(false)}
+              disabled={analyzing}
+            >
+              {analyzing
+                ? <ActivityIndicator color="#fff" />
+                : <Text style={styles.imgBtnText}>📁 갤러리</Text>
+              }
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.imgBtn, styles.imgBtnSec, analyzing && styles.btnDisabled]}
+              onPress={() => pickImage(true)}
+              disabled={analyzing}
+            >
+              <Text style={[styles.imgBtnText, { color: '#6366F1' }]}>📷 카메라</Text>
+            </TouchableOpacity>
+          </View>
+
+          {/* 썸네일 */}
+          {imageUri && (
+            <TouchableOpacity onPress={() => setImageModalVisible(true)} style={styles.thumbnail}>
+              <Image source={{ uri: imageUri }} style={styles.thumbnailImg} />
+              <Text style={styles.thumbnailLabel}>원본 보기</Text>
+            </TouchableOpacity>
+          )}
         </View>
+
         {analyzing && <Text style={styles.subText}>AI가 조건 분석 중...</Text>}
+
+        {/* 인라인 에러 */}
+        {analyzeError && (
+          <View style={styles.inlineError}>
+            <Text style={styles.inlineErrorText}>⚠️ 분석 실패: {analyzeError}</Text>
+            <Text style={styles.inlineErrorSub}>이미지는 저장됐습니다. 아래에서 조건을 직접 수정하세요.</Text>
+          </View>
+        )}
 
         {/* ── 추출된 조건 요약 ── */}
         {conditions && (
@@ -241,67 +496,7 @@ export default function BacktestScreen() {
               {conditions.lock_conditions?.length > 0 ? ` · 락 ${conditions.lock_conditions.length}건` : ''} · 탭하면 상세보기
             </Text>
 
-            {condExpanded && (
-              <View style={styles.condDetail}>
-                {conditions.buy_conditions?.length > 0 && (
-                  <>
-                    <Text style={styles.condDetailHeader}>🟢 매수 조건</Text>
-                    {conditions.buy_conditions.map((c, i) => (
-                      <View key={i} style={styles.condDetailRow}>
-                        <Text style={styles.condDetailName}>
-                          {c.label ? `[${c.label}] ` : ''}{c.name || c.ticker || '-'}
-                          {c.ref_ticker ? ` (기준: ${c.ref_ticker})` : ''}
-                        </Text>
-                        <Text style={styles.condDetailCond}>조건: {c.condition}</Text>
-                        {c.sub_conditions?.length > 1 && (
-                          <Text style={styles.condDetailMeta}>
-                            ▸ {c.sub_conditions.join(` ${c.condition_logic || 'AND'} `)}
-                          </Text>
-                        )}
-                        <Text style={styles.condDetailMeta}>
-                          {c.weight_pct != null
-                            ? `목표비중 ${c.weight_pct}% (${c.weight_mode === 'add' ? '추가' : '타겟'})`
-                            : c.qty != null ? `${c.qty}주` : ''}
-                          {c.ticker ? ` · ${c.ticker}` : ''}
-                        </Text>
-                      </View>
-                    ))}
-                  </>
-                )}
-                {conditions.sell_conditions?.length > 0 && (
-                  <>
-                    <Text style={[styles.condDetailHeader, { color: '#DC2626' }]}>🔴 매도 조건</Text>
-                    {conditions.sell_conditions.map((c, i) => (
-                      <View key={i} style={styles.condDetailRow}>
-                        <Text style={styles.condDetailName}>
-                          {c.label ? `[${c.label}] ` : ''}{c.name || c.ticker || '-'}
-                        </Text>
-                        <Text style={styles.condDetailCond}>조건: {c.condition}</Text>
-                        <Text style={styles.condDetailMeta}>
-                          {c.sell_pct != null
-                            ? `${c.sell_pct}% 매도 (${c.sell_mode === 'initial_qty' ? '최초수량 기준' : '현재보유 기준'})`
-                            : c.qty === 'all' ? '전량 매도' : c.qty != null ? `${c.qty}주` : ''}
-                          {c.ticker ? ` · ${c.ticker}` : ''}
-                        </Text>
-                      </View>
-                    ))}
-                  </>
-                )}
-                {conditions.lock_conditions?.length > 0 && (
-                  <>
-                    <Text style={[styles.condDetailHeader, { color: '#F59E0B' }]}>🔒 락 조건</Text>
-                    {conditions.lock_conditions.map((c, i) => (
-                      <View key={i} style={styles.condDetailRow}>
-                        <Text style={styles.condDetailCond}>{c.condition}</Text>
-                        <Text style={styles.condDetailMeta}>
-                          {c.action === 'liquidate' ? '전량 청산 + 매수 잠금' : '신규 매수 잠금'}
-                        </Text>
-                      </View>
-                    ))}
-                  </>
-                )}
-              </View>
-            )}
+            {condExpanded && renderConditionDetail()}
           </TouchableOpacity>
         )}
 
@@ -369,6 +564,25 @@ export default function BacktestScreen() {
         )}
 
       </ScrollView>
+
+      {/* ── 원본 이미지 풀스크린 모달 ── */}
+      <Modal visible={imageModalVisible} transparent animationType="fade" onRequestClose={() => setImageModalVisible(false)}>
+        <View style={styles.imageModalOverlay}>
+          <TouchableOpacity style={styles.imageModalClose} onPress={() => setImageModalVisible(false)}>
+            <Text style={styles.imageModalCloseText}>✕ 닫기</Text>
+          </TouchableOpacity>
+          {imageUri && (
+            <Image
+              source={{ uri: imageUri }}
+              style={styles.imageModalImg}
+              resizeMode="contain"
+            />
+          )}
+        </View>
+      </Modal>
+
+      {/* ── 조건 편집 모달 ── */}
+      {renderEditModal()}
     </SafeAreaView>
   );
 }
@@ -388,13 +602,26 @@ const styles = StyleSheet.create({
 
   sectionTitle: { fontSize: 15, fontWeight: '700', color: '#1E293B', marginTop: 20, marginBottom: 10 },
 
-  imageButtons: { flexDirection: 'row', gap: 10 },
-  imgBtn: { flex: 1, backgroundColor: '#6366F1', padding: 14, borderRadius: 10, alignItems: 'center' },
+  // 이미지 영역
+  imageRow: { flexDirection: 'row', gap: 10, alignItems: 'flex-start' },
+  imageButtons: { flex: 1, gap: 10 },
+  imgBtn: { backgroundColor: '#6366F1', padding: 14, borderRadius: 10, alignItems: 'center' },
   imgBtnSec: { backgroundColor: '#fff', borderWidth: 1.5, borderColor: '#6366F1' },
   imgBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
   subText: { textAlign: 'center', color: '#6366F1', marginTop: 8, fontSize: 13 },
   btnDisabled: { opacity: 0.5 },
 
+  // 썸네일
+  thumbnail: { alignItems: 'center', gap: 4 },
+  thumbnailImg: { width: 72, height: 72, borderRadius: 10, borderWidth: 2, borderColor: '#6366F1' },
+  thumbnailLabel: { fontSize: 11, color: '#6366F1', fontWeight: '600' },
+
+  // 인라인 에러
+  inlineError: { backgroundColor: '#FEE2E2', borderRadius: 10, padding: 12, marginTop: 10 },
+  inlineErrorText: { color: '#DC2626', fontWeight: '700', fontSize: 13 },
+  inlineErrorSub: { color: '#991B1B', fontSize: 12, marginTop: 4 },
+
+  // 조건 카드
   condSummaryCard: {
     backgroundColor: '#fff', borderRadius: 10, padding: 14, marginTop: 12,
     borderLeftWidth: 3, borderLeftColor: '#6366F1',
@@ -405,12 +632,25 @@ const styles = StyleSheet.create({
   condSummaryText:  { fontSize: 13, color: '#334155' },
   condSummaryMeta:  { fontSize: 12, color: '#94A3B8', marginTop: 6 },
   condDetail:       { marginTop: 12, borderTopWidth: 1, borderTopColor: '#E2E8F0', paddingTop: 10 },
-  condDetailHeader: { fontSize: 13, fontWeight: '700', color: '#16A34A', marginBottom: 6, marginTop: 4 },
-  condDetailRow:    { backgroundColor: '#F8FAFC', borderRadius: 8, padding: 10, marginBottom: 6 },
-  condDetailName:   { fontSize: 13, fontWeight: '700', color: '#1E293B' },
-  condDetailCond:   { fontSize: 12, color: '#475569', marginTop: 2 },
-  condDetailMeta:   { fontSize: 11, color: '#94A3B8', marginTop: 2 },
 
+  condSectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, marginTop: 4 },
+  condDetailHeader: { fontSize: 13, fontWeight: '700', color: '#16A34A' },
+  addBtn: { backgroundColor: '#EEF2FF', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
+  addBtnText: { fontSize: 12, color: '#6366F1', fontWeight: '600' },
+
+  condDetailRow: { backgroundColor: '#F8FAFC', borderRadius: 8, padding: 10, marginBottom: 6, flexDirection: 'row', alignItems: 'flex-start' },
+  condDetailContent: { flex: 1 },
+  condDetailName: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  condDetailCond: { fontSize: 12, color: '#475569', marginTop: 2 },
+  condDetailMeta: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+
+  condActions: { flexDirection: 'row', gap: 6, marginLeft: 8, alignItems: 'center' },
+  condEditBtn: { backgroundColor: '#EEF2FF', borderRadius: 6, padding: 6 },
+  condEditBtnText: { fontSize: 14 },
+  condDelBtn: { backgroundColor: '#FEE2E2', borderRadius: 6, padding: 6 },
+  condDelBtnText: { fontSize: 14 },
+
+  // 자본/기간
   cashRow: { flexDirection: 'row', gap: 8, marginBottom: 8 },
   cashBtn: {
     flex: 1, paddingVertical: 10, borderRadius: 8,
@@ -420,7 +660,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff', borderRadius: 10, borderWidth: 1, borderColor: '#CBD5E1',
     paddingHorizontal: 14, paddingVertical: 12, fontSize: 15, color: '#1E293B', marginBottom: 4,
   },
-
   periodRow: { flexDirection: 'row', gap: 8 },
   periodBtn: {
     flex: 1, paddingVertical: 10, borderRadius: 8,
@@ -430,6 +669,7 @@ const styles = StyleSheet.create({
   periodBtnText:   { fontSize: 13, fontWeight: '600', color: '#475569' },
   periodBtnTextActive: { color: '#fff' },
 
+  // 실행 버튼
   runBtn: {
     marginTop: 20, backgroundColor: '#6366F1', padding: 18,
     borderRadius: 14, alignItems: 'center',
@@ -448,7 +688,6 @@ const styles = StyleSheet.create({
   bigCardLabel: { fontSize: 13, color: '#64748B', marginBottom: 4 },
   bigCardValue: { fontSize: 42, fontWeight: '900' },
   bigCardSub:   { fontSize: 16, fontWeight: '600', marginTop: 4 },
-
   metricGrid: { flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 4 },
   metricBox: {
     width: '48%', backgroundColor: '#fff', borderRadius: 10,
@@ -458,7 +697,6 @@ const styles = StyleSheet.create({
   },
   metricLabel: { fontSize: 12, color: '#94A3B8', marginBottom: 4 },
   metricValue: { fontSize: 16, fontWeight: '700', color: '#1E293B' },
-
   errorCard: { backgroundColor: '#FEE2E2', borderRadius: 10, padding: 14, marginBottom: 8 },
   errorCardText: { color: '#DC2626', fontSize: 13 },
 
@@ -486,4 +724,28 @@ const styles = StyleSheet.create({
   logMeta:   { fontSize: 11, color: '#64748B', marginTop: 2 },
   logPnl:    { fontSize: 12, fontWeight: '700', marginTop: 2 },
   emptyText: { fontSize: 13, color: '#94A3B8', textAlign: 'center', marginVertical: 8 },
+
+  // 원본 이미지 모달
+  imageModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.92)', justifyContent: 'center', alignItems: 'center' },
+  imageModalClose: { position: 'absolute', top: 50, right: 20, zIndex: 10, backgroundColor: 'rgba(255,255,255,0.2)', padding: 10, borderRadius: 8 },
+  imageModalCloseText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  imageModalImg: { width: '100%', height: '80%' },
+
+  // 편집 모달
+  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
+  modalBox: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, padding: 20, maxHeight: '85%' },
+  modalTitle: { fontSize: 16, fontWeight: '800', color: '#1E293B', marginBottom: 16 },
+  modalLabel: { fontSize: 12, fontWeight: '600', color: '#64748B', marginBottom: 4, marginTop: 10 },
+  modalInput: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: '#1E293B' },
+  modalInputMulti: { height: 80, textAlignVertical: 'top' },
+  toggleRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  toggleBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', alignItems: 'center' },
+  toggleBtnActive: { backgroundColor: '#6366F1', borderColor: '#6366F1' },
+  toggleBtnText: { fontSize: 12, fontWeight: '600', color: '#475569' },
+  toggleBtnTextActive: { color: '#fff' },
+  modalBtns: { flexDirection: 'row', gap: 10, marginTop: 20 },
+  modalCancel: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center' },
+  modalCancelText: { fontSize: 15, fontWeight: '700', color: '#64748B' },
+  modalSave: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: '#6366F1', alignItems: 'center' },
+  modalSaveText: { fontSize: 15, fontWeight: '700', color: '#fff' },
 });
