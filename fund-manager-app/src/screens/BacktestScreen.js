@@ -36,6 +36,40 @@ const PERIODS = [
 // 자주 쓰는 기본 티커 목록
 const DEFAULT_TICKERS = ['TQQQ', 'QQQ', 'SPY', 'SQQQ', 'TLT', 'GLD', 'UPRO', 'TMF', 'UVXY'];
 
+// 조건 내용 템플릿 (백엔드 regex 패턴 기반)
+const CONDITION_TEMPLATES = {
+  buy: [
+    '고점 대비 -10% 하락',
+    '고점 대비 -20% 하락',
+    '고점 대비 -30% 하락',
+    'RSI 35 이하',
+    'RSI 25 이하',
+    '골든크로스 발생',
+    '200일선 이하',
+    '200일선 대비 -7% 이하',
+    '볼린저 하단 이탈',
+    '항상',
+  ],
+  sell: [
+    'TP1 +15% 도달',
+    'TP2 +30% 도달',
+    'TP3 +50% 도달',
+    'TP4 +100% 도달',
+    '+200% 도달',
+    '+350% 도달',
+    '데드크로스 발생',
+    '손절 -10%',
+    'RSI 70 이상',
+    '볼린저 상단 돌파',
+  ],
+  lock: [
+    '극단적 하락 (-40% 이하)',
+    '고점 대비 -40% 이하',
+    'RSI 20 이하',
+    'QQQ 고점 대비 -10% 이상 반등 시',
+  ],
+};
+
 const emptyBuy  = () => ({ label: '', name: '', ticker: '', ref_ticker: '', condition: '', weight_pct: '', weight_mode: 'add' });
 const emptySell = () => ({ label: '', name: '', ticker: '', condition: '', sell_pct: '', sell_mode: 'initial_qty' });
 const emptyLock = () => ({ condition: '', action: 'liquidate' });
@@ -259,10 +293,7 @@ export default function BacktestScreen() {
               {(type === 'buy' || type === 'sell') && (
                 <>
                   <Text style={styles.modalLabel}>라벨</Text>
-                  <TextInput style={styles.modalInput} value={data.label ?? ''} onChangeText={v => setField('label', v)} placeholder="예: Dip 1" placeholderTextColor="#94A3B8" />
-                  {knownLabels.size > 0 && (
-                    <ChipRow items={[...knownLabels]} selected={data.label} onSelect={v => setField('label', v)} />
-                  )}
+                  <TextInput style={styles.modalInput} value={data.label ?? ''} onChangeText={v => setField('label', v)} placeholder="예: Dip 1 (선택)" placeholderTextColor="#94A3B8" />
 
                   <Text style={styles.modalLabel}>티커 <Text style={styles.modalLabelRequired}>*</Text></Text>
                   <TextInput
@@ -296,6 +327,12 @@ export default function BacktestScreen() {
                 placeholder="예: QQQ 고점 대비 -10% 하락 시"
                 placeholderTextColor="#94A3B8"
                 multiline
+              />
+              <Text style={styles.condHint}>💡 아래 템플릿을 탭하면 자동입력 (직접 수정도 가능)</Text>
+              <ChipRow
+                items={CONDITION_TEMPLATES[type] || []}
+                selected={data.condition}
+                onSelect={v => setField('condition', v)}
               />
 
               {type === 'buy' && (
@@ -709,18 +746,20 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingTop: 20,
     paddingBottom: Platform.OS === 'ios' ? 34 : 20,
-    maxHeight: SCREEN_H * 0.80,
-    // flex column: title + scroll + buttons
+    height: SCREEN_H * 0.78,   // 고정 높이 → 버튼 항상 하단에 보임
+    flexDirection: 'column',
   },
   modalTitle: { fontSize: 16, fontWeight: '800', color: '#1E293B', marginBottom: 8 },
   modalError: { backgroundColor: '#FEE2E2', borderRadius: 8, padding: 10, marginBottom: 8 },
   modalErrorText: { color: '#DC2626', fontSize: 13, fontWeight: '600' },
-  modalScroll: { flexShrink: 1 },   // 남은 공간만 차지, 버튼 밀어내지 않음
+  modalScroll: { flex: 1 },   // 남은 공간 전부 차지 → 버튼 위 영역
   modalLabel: { fontSize: 12, fontWeight: '600', color: '#64748B', marginBottom: 4, marginTop: 12 },
   modalLabelRequired: { color: '#DC2626' },
   modalInput: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: '#1E293B' },
   modalInputMulti: { height: 72, textAlignVertical: 'top' },
   modalInputErr: { borderColor: '#DC2626' },
+
+  condHint: { fontSize: 11, color: '#94A3B8', marginTop: 6, marginBottom: 2 },
 
   // 칩
   chipScroll: { marginTop: 6, marginBottom: 2 },
