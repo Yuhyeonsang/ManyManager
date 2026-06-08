@@ -832,3 +832,104 @@ def set_conditions_image_text(text: str):
     """이미지 분석 결과 텍스트 저장."""
     with _lock:
         _state["conditions_image"] = text
+
+
+# ─────────────────────────────────────────────
+# 이중 검증 — 추출된 조건 vs 원본 이미지/텍스트
+# ─────────────────────────────────────────────
+
+_VERIFY_PROMPT_BASE = """당신은 주식 자동매매 전략 검수 전문가입니다.
+아래 "추출된 JSON"이 원본(이미지 또는 텍스트)에 적힌 모든 조건을 얼마나 정확하게 담고 있는지 검증하세요.
+
+=== 검증 기준 ===
+1. 원본의 모든 매수/매도/락 조건이 추출됐는가?
+2. 수치(%, 일수, 배수)가 정확한가?
+3. 분할매도 비율(sell_pct), 비중(weight_pct), 참조종목(ref_ticker)이 올바른가?
+4. 빠진 조건이나 잘못 해석된 조건이 있는가?
+
+반드시 아래 JSON 형식으로만 응답하세요. 다른 텍스트 없이 JSON만 출력하세요.
+
+{
+  "match_pct": 85,
+  "total_in_source": 12,
+  "total_extracted": 10,
+  "missing": ["빠진 조건 설명1", "빠진 조건 설명2"],
+  "wrong": ["잘못 추출된 조건 설명 (원본: X, 추출: Y)"],
+  "notes": "전반적 평가 한 줄 요약"
+}
+
+=== 추출된 JSON ===
+{extracted_json}
+"""
+
+
+def verify_conditions_image(image_base64: str, mime_type: str, extracted: dict) -> dict:
+    """
+    원본 이미지 + 추출 JSON → 일치율 검증.
+    Gemini Vision으로 이미지를 다시 보면서 누락/오류 체크.
+    실패 시 {"match_pct": -1, "error": "..."} 반환.
+    """
+    try:
+        prompt = _VERIFY_PROMPT_BASE.replace(
+            "{extracted_json}", json.dumps(extracted, ensure_ascii=False, indent=2)
+        )
+        gemini_key = os.getenv("GEMINI_VISION_API_KEY") or os.getenv("GEMINI_API_KEY", "")
+        if not gemini_key:
+            raise ValueError("GEMINI_API_KEY 없음")
+        model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        body = {
+            "contents": [{
+                "parts": [
+                    {"text": prompt},
+                    {"inline_data": {"mime_type": mime_type, "data": image_base64}},
+                ]
+            }],
+            "generationConfig": {"temperature": 0.0, "maxOutputTokens": 1024},
+        }
+        resp = requests.post(url, params={"key": gemini_key}, json=body, timeout=30)
+        resp.raise_for_status()
+        text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        result = _parse_vision_text(text)
+        result["_verifier"] = "gemini-vision"
+        return result
+    except Exception as e:
+        log.warning(f"이미지 검증 실패: {e}")
+        return {"match_pct": -1, "error": str(e), "missing": [], "wrong": [], "notes": "검증 실패"}
+
+
+def verify_conditions_text(original_text: str, extracted: dict) -> dict:
+    """
+    원본 텍스트 + 추출 JSON → 일치율 검증.
+    Groq(텍스트 전용)로 독립 검증 — 추출에 쓴 모델과 다른 경로.
+    """
+    try:
+        prompt = _VERIFY_PROMPT_BASE.replace(
+            "{extracted_json}", json.dumps(extracted, ensure_ascii=False, indent=2)
+        ) + f"\n\n=== 원본 텍스트 ===\n{original_text}"
+
+        groq_key = os.getenv("GROQ_API_KEY", "")
+        if not groq_key:
+            raise ValueError("GROQ_API_KEY 없음")
+        model = os.getenv("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
+        url = "https://api.groq.com/openai/v1/chat/completions"
+        body = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.0,
+            "max_tokens": 1024,
+        }
+        resp = requests.post(
+            url,
+            headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+            json=body,
+            timeout=30,
+        )
+        resp.raise_for_status()
+        text = resp.json()["choices"][0]["message"]["content"]
+        result = _parse_vision_text(text)
+        result["_verifier"] = "groq-text"
+        return result
+    except Exception as e:
+        log.warning(f"텍스트 검증 실패: {e}")
+        return {"match_pct": -1, "error": str(e), "missing": [], "wrong": [], "notes": "검증 실패"}

@@ -1023,7 +1023,13 @@ async def auto_trade_analyze_image(file: UploadFile = File(...)):
         mime = file.content_type or "image/jpeg"
         conditions = auto_trader.analyze_image_conditions(image_b64, mime)
         auto_trader.set_conditions_image_text(conditions.get("summary", ""))
-        return {"ok": True, "conditions": conditions}
+        # 이중 검증 (실패해도 분석 결과는 반환)
+        verification = {}
+        try:
+            verification = auto_trader.verify_conditions_image(image_b64, mime, conditions)
+        except Exception as ve:
+            log.warning(f"검증 단계 실패 (무시): {ve}")
+        return {"ok": True, "conditions": conditions, "verification": verification}
     except Exception as e:
         log.exception("이미지 분석 실패")
         raise HTTPException(500, f"이미지 분석 실패: {e}")
@@ -1044,7 +1050,12 @@ async def auto_trade_analyze_text(req: dict):
     try:
         conditions = auto_trader.analyze_text_conditions(text)
         auto_trader.set_conditions_image_text(conditions.get("summary", ""))
-        return {"ok": True, "conditions": conditions}
+        verification = {}
+        try:
+            verification = auto_trader.verify_conditions_text(text, conditions)
+        except Exception as ve:
+            log.warning(f"검증 단계 실패 (무시): {ve}")
+        return {"ok": True, "conditions": conditions, "verification": verification}
     except Exception as e:
         log.exception("텍스트 분석 실패")
         raise HTTPException(500, f"텍스트 분석 실패: {e}")

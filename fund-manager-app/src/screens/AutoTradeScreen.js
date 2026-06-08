@@ -35,6 +35,8 @@ export default function AutoTradeScreen() {
   const [tradeMode, setTradeMode] = useState('paper'); // 'paper' | 'real'
   const [refreshing, setRefreshing] = useState(false);
   const [conditions, setConditions] = useState(null);
+  const [verification, setVerification] = useState(null);
+  const [showMissing, setShowMissing] = useState(false);
   const [textModalVisible, setTextModalVisible] = useState(false);
   const [pasteText, setPasteText] = useState('');
 
@@ -85,10 +87,8 @@ export default function AutoTradeScreen() {
 
       const data = await analyzeTradeImage(asset.uri, mime);
       setConditions(data.conditions);
-      Alert.alert(
-        '분석 완료',
-        `📋 ${data.conditions.summary}\n\n매수 ${data.conditions.buy_conditions?.length ?? 0}건, 매도 ${data.conditions.sell_conditions?.length ?? 0}건 추출됨`,
-      );
+      setVerification(data.verification ?? null);
+      setShowMissing(false);
     } catch (e) {
       Alert.alert('분석 실패', e?.message ?? String(e));
     } finally {
@@ -106,10 +106,8 @@ export default function AutoTradeScreen() {
     try {
       const data = await analyzeTradeText(text);
       setConditions(data.conditions);
-      Alert.alert(
-        '분석 완료',
-        `📋 ${data.conditions.summary}\n\n매수 ${data.conditions.buy_conditions?.length ?? 0}건, 매도 ${data.conditions.sell_conditions?.length ?? 0}건 추출됨`,
-      );
+      setVerification(data.verification ?? null);
+      setShowMissing(false);
     } catch (e) {
       Alert.alert('분석 실패', e?.message ?? String(e));
     } finally {
@@ -300,6 +298,63 @@ export default function AutoTradeScreen() {
             {conditions.summary && (
               <Text style={styles.summary}>{conditions.summary}</Text>
             )}
+
+            {/* ── 일치율 카드 ── */}
+            {verification && verification.match_pct >= 0 && (() => {
+              const pct = verification.match_pct ?? 0;
+              const color = pct >= 80 ? '#16A34A' : pct >= 60 ? '#D97706' : '#DC2626';
+              const bg    = pct >= 80 ? '#DCFCE7' : pct >= 60 ? '#FEF3C7' : '#FEE2E2';
+              const label = pct >= 80 ? '높음' : pct >= 60 ? '보통' : '낮음';
+              const missing  = verification.missing  ?? [];
+              const wrong    = verification.wrong    ?? [];
+              return (
+                <View style={[styles.verifyCard, { borderColor: color }]}>
+                  <View style={styles.verifyTop}>
+                    <View style={[styles.verifyCircle, { backgroundColor: bg }]}>
+                      <Text style={[styles.verifyPct, { color }]}>{pct}%</Text>
+                    </View>
+                    <View style={styles.verifyInfo}>
+                      <Text style={styles.verifyTitle}>
+                        AI 이중 검증 완료 — 일치율 <Text style={{ color }}>{label}</Text>
+                      </Text>
+                      <Text style={styles.verifyNotes}>{verification.notes}</Text>
+                      <Text style={styles.verifyMeta}>
+                        원본 {verification.total_in_source ?? '?'}건 중 {verification.total_extracted ?? '?'}건 추출
+                      </Text>
+                    </View>
+                  </View>
+
+                  {(missing.length > 0 || wrong.length > 0) && (
+                    <TouchableOpacity
+                      style={styles.verifyToggle}
+                      onPress={() => setShowMissing(v => !v)}
+                    >
+                      <Text style={[styles.verifyToggleText, { color }]}>
+                        {showMissing ? '▲ 닫기' : `▼ 누락/오류 ${missing.length + wrong.length}건 보기`}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+
+                  {showMissing && (
+                    <View style={styles.verifyDetail}>
+                      {missing.map((m, i) => (
+                        <View key={`m${i}`} style={styles.verifyItem}>
+                          <Text style={styles.verifyItemBadge}>누락</Text>
+                          <Text style={styles.verifyItemText}>{m}</Text>
+                        </View>
+                      ))}
+                      {wrong.map((w, i) => (
+                        <View key={`w${i}`} style={styles.verifyItem}>
+                          <Text style={[styles.verifyItemBadge, styles.verifyWrongBadge]}>오류</Text>
+                          <Text style={styles.verifyItemText}>{w}</Text>
+                        </View>
+                      ))}
+                    </View>
+                  )}
+                </View>
+              );
+            })()}
+
             <Text style={styles.condHeader}>
               체크 주기: {conditions.check_interval_minutes ?? 5}분마다
             </Text>
@@ -529,6 +584,36 @@ const styles = StyleSheet.create({
   textModalCancelText: { fontSize: 15, fontWeight: '700', color: '#64748B' },
   textModalConfirm: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: '#6366F1', alignItems: 'center' },
   textModalConfirmText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+
+  // 일치율 검증 카드
+  verifyCard: {
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    borderWidth: 1.5,
+    padding: 14,
+    marginBottom: 12,
+  },
+  verifyTop: { flexDirection: 'row', alignItems: 'center', gap: 14 },
+  verifyCircle: {
+    width: 64, height: 64, borderRadius: 32,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  verifyPct: { fontSize: 20, fontWeight: '800' },
+  verifyInfo: { flex: 1 },
+  verifyTitle: { fontSize: 13, fontWeight: '700', color: '#1E293B', marginBottom: 3 },
+  verifyNotes: { fontSize: 12, color: '#475569', marginBottom: 2 },
+  verifyMeta: { fontSize: 11, color: '#94A3B8' },
+  verifyToggle: { marginTop: 10, alignItems: 'center', paddingVertical: 6 },
+  verifyToggleText: { fontSize: 13, fontWeight: '600' },
+  verifyDetail: { marginTop: 8, gap: 6 },
+  verifyItem: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
+  verifyItemBadge: {
+    fontSize: 10, fontWeight: '700', color: '#D97706',
+    backgroundColor: '#FEF3C7', paddingHorizontal: 6, paddingVertical: 2,
+    borderRadius: 4, marginTop: 1,
+  },
+  verifyWrongBadge: { color: '#DC2626', backgroundColor: '#FEE2E2' },
+  verifyItemText: { fontSize: 12, color: '#475569', flex: 1 },
 
   // 거래 모드 토글
   modeRow: { flexDirection: 'row', gap: 10 },
