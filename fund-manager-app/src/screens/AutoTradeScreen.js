@@ -13,7 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import {
   analyzeTradeImage, analyzeTradeText,
-  startAutoTrade, stopAutoTrade, getAutoTradeStatus,
+  startAutoTrade, stopAutoTrade, getAutoTradeStatus, resetAutoTradeConditions,
 } from '../services/api';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
@@ -607,7 +607,33 @@ export default function AutoTradeScreen() {
             <TouchableOpacity style={styles.condSummaryCard} onPress={() => setCondExpanded(v => !v)} activeOpacity={0.8}>
               <View style={styles.condSummaryHeader}>
                 <Text style={styles.condSummaryTitle}>📋 추출된 조건</Text>
-                <Text style={styles.condToggleIcon}>{condExpanded ? '▲' : '▼'}</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <TouchableOpacity
+                    onPress={(e) => {
+                      e.stopPropagation();
+                      Alert.alert('전체 삭제', '모든 조건과 거래 로그를 초기화할까요?\n(자동매매가 실행 중이면 자동으로 정지됩니다)', [
+                        { text: '취소', style: 'cancel' },
+                        { text: '삭제', style: 'destructive', onPress: async () => {
+                          try {
+                            await resetAutoTradeConditions();
+                            setConditions(null);
+                            setVerification(null);
+                            setImageUris([]);
+                            setCondExpanded(false);
+                            await loadStatus(true);
+                          } catch (err) {
+                            Alert.alert('오류', '초기화 실패: ' + (err?.message ?? err));
+                          }
+                        }},
+                      ]);
+                    }}
+                    style={styles.resetAllBtn}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Text style={styles.resetAllBtnText}>전체 삭제</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.condToggleIcon}>{condExpanded ? '▲' : '▼'}</Text>
+                </View>
               </View>
               <Text style={styles.condSummaryText}>{conditions.summary}</Text>
               <Text style={styles.condSummaryMeta}>
@@ -760,6 +786,8 @@ const styles = StyleSheet.create({
   condSummaryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
   condSummaryTitle: { fontSize: 13, fontWeight: '700', color: '#6366F1' },
   condToggleIcon: { fontSize: 12, color: '#6366F1' },
+  resetAllBtn: { paddingHorizontal: 8, paddingVertical: 3, borderRadius: 6, backgroundColor: '#FEE2E2', borderWidth: 1, borderColor: '#FECACA' },
+  resetAllBtnText: { fontSize: 11, color: '#DC2626', fontWeight: '600' },
   condSummaryText: { fontSize: 13, color: '#334155' },
   condSummaryMeta: { fontSize: 12, color: '#94A3B8', marginTop: 6 },
   condDetail: { marginTop: 12, borderTopWidth: 1, borderTopColor: '#E2E8F0', paddingTop: 10 },

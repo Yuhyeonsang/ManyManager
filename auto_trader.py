@@ -834,6 +834,18 @@ def set_conditions_image_text(text: str):
         _state["conditions_image"] = text
 
 
+def reset_conditions():
+    """조건 전체 초기화 (실행 중이면 중지 후 초기화)."""
+    with _lock:
+        if _state["running"]:
+            _state["running"] = False
+        _state["conditions"] = None
+        _state["conditions_image"] = None
+        _state["trade_log"] = []
+        _state["last_check"] = None
+        _state["error"] = None
+
+
 # ─────────────────────────────────────────────
 # 이중 검증 — 추출된 조건 vs 원본 이미지/텍스트
 # ─────────────────────────────────────────────

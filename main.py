@@ -1089,6 +1089,14 @@ def auto_trade_status():
     return {"available": True, **auto_trader.get_status()}
 
 
+@app.post("/api/auto-trade/reset-conditions")
+def auto_trade_reset_conditions():
+    if not _AUTO_TRADER_AVAILABLE:
+        raise HTTPException(503, "auto_trader 모듈 없음")
+    auto_trader.reset_conditions()
+    return {"ok": True}
+
+
 
 # ─────────────────────────────────────────────
 # 백테스트 엔드포인트

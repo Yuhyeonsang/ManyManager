@@ -212,6 +212,12 @@ export async function getAutoTradeStatus() {
   return data;
 }
 
+export async function resetAutoTradeConditions() {
+  const c = await getClient();
+  const { data } = await c.post('/api/auto-trade/reset-conditions');
+  return data;
+}
+
 // ─────────────────────────────────────────────
 // 백테스트 API
 // ─────────────────────────────────────────────
