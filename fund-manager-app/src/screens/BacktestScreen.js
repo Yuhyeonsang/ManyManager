@@ -22,7 +22,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
-import { analyzeTradeImage, runBacktest } from '../services/api';
+import { analyzeTradeImage, analyzeTradeText, runBacktest } from '../services/api';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
 
@@ -99,6 +99,10 @@ export default function BacktestScreen() {
   const [imageUris, setImageUris]   = useState([]);
   const [analyzeError, setAnalyzeError] = useState(null);
 
+  // 텍스트 붙여넣기 모달
+  const [textModalVisible, setTextModalVisible] = useState(false);
+  const [pasteText, setPasteText] = useState('');
+
   // 갤러리 모달
   const [galleryVisible, setGalleryVisible] = useState(false);
   const [galleryIndex,   setGalleryIndex]   = useState(0);
@@ -149,6 +153,35 @@ export default function BacktestScreen() {
       const ext   = asset.uri.split('.').pop().toLowerCase();
       const mime  = ext === 'png' ? 'image/png' : 'image/jpeg';
       const data  = await analyzeTradeImage(asset.uri, mime);
+      setConditions(prev => {
+        if (!prev) return data.conditions;
+        return {
+          ...data.conditions,
+          buy_conditions:  [...(prev.buy_conditions  || []), ...(data.conditions.buy_conditions  || [])],
+          sell_conditions: [...(prev.sell_conditions || []), ...(data.conditions.sell_conditions || [])],
+          lock_conditions: [...(prev.lock_conditions || []), ...(data.conditions.lock_conditions || [])],
+        };
+      });
+      setCondExpanded(true);
+    } catch (e) {
+      setAnalyzeError(e?.message ?? String(e));
+      if (!conditions) setConditions({ summary: '수동 입력', buy_conditions: [], sell_conditions: [], lock_conditions: [] });
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  // ── 텍스트 분석 ────────────────────────────
+  const analyzeText = async () => {
+    const text = pasteText.trim();
+    if (!text) { Alert.alert('입력 없음', '분석할 텍스트를 붙여넣으세요.'); return; }
+    setTextModalVisible(false);
+    setPasteText('');
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    setResult(null);
+    try {
+      const data = await analyzeTradeText(text);
       setConditions(prev => {
         if (!prev) return data.conditions;
         return {
@@ -558,13 +591,13 @@ export default function BacktestScreen() {
       <ScrollView contentContainerStyle={styles.scroll}>
 
         {/* ── 이미지 업로드 ── */}
-        <Text style={styles.sectionTitle}>📸 조건 이미지 등록</Text>
+        <Text style={styles.sectionTitle}>📋 조건 등록</Text>
         <View style={styles.uploadBtns}>
           <TouchableOpacity style={[styles.imgBtn, analyzing && styles.btnDisabled]} onPress={() => pickImage(false)} disabled={analyzing}>
             {analyzing ? <ActivityIndicator color="#fff" /> : <Text style={styles.imgBtnText}>📁 갤러리</Text>}
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.imgBtn, styles.imgBtnSec, analyzing && styles.btnDisabled]} onPress={() => pickImage(true)} disabled={analyzing}>
-            <Text style={[styles.imgBtnText, { color: '#6366F1' }]}>📷 카메라</Text>
+          <TouchableOpacity style={[styles.imgBtn, styles.imgBtnSec, analyzing && styles.btnDisabled]} onPress={() => setTextModalVisible(true)} disabled={analyzing}>
+            <Text style={[styles.imgBtnText, { color: '#6366F1' }]}>📝 텍스트 붙여넣기</Text>
           </TouchableOpacity>
         </View>
 
@@ -680,6 +713,36 @@ export default function BacktestScreen() {
 
       {renderGalleryModal()}
       {renderEditModal()}
+
+      {/* 텍스트 붙여넣기 모달 */}
+      <Modal visible={textModalVisible} transparent animationType="slide" onRequestClose={() => setTextModalVisible(false)}>
+        <KeyboardAvoidingView style={{ flex: 1, justifyContent: 'flex-end' }} behavior="padding" enabled={Platform.OS === 'ios'}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setTextModalVisible(false)} />
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>📝 전략 텍스트 붙여넣기</Text>
+            <Text style={[styles.modalLabel, { marginTop: 0, marginBottom: 8 }]}>
+              매수/매도 조건이 적힌 텍스트를 붙여넣으면 AI가 자동으로 조건을 추출합니다.
+            </Text>
+            <TextInput
+              style={[styles.modalInput, { flex: 1, textAlignVertical: 'top', marginBottom: 12 }]}
+              value={pasteText}
+              onChangeText={setPasteText}
+              placeholder={'예)\nTQQQ: QQQ 고점 대비 -10% 시 30% 매수\nTP1: +15% 시 최초수량 50% 매도\n락: QQQ -40% 이하 시 전량 청산'}
+              placeholderTextColor="#94A3B8"
+              multiline
+              autoFocus
+            />
+            <View style={styles.modalBtns}>
+              <TouchableOpacity style={styles.modalCancel} onPress={() => { setTextModalVisible(false); setPasteText(''); }}>
+                <Text style={styles.modalCancelText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalSave} onPress={analyzeText}>
+                <Text style={styles.modalSaveText}>✨ AI 분석</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }

@@ -188,6 +188,12 @@ export async function analyzeTradeImage(imageUri, mimeType = 'image/jpeg') {
   return resp.json();
 }
 
+export async function analyzeTradeText(text) {
+  const c = await getClient();
+  const { data } = await c.post('/api/auto-trade/analyze-text', { text });
+  return data;
+}
+
 export async function startAutoTrade(conditions, tradeMode = 'paper') {
   const c = await getClient();
   const { data } = await c.post('/api/auto-trade/start', { conditions, trade_mode: tradeMode });

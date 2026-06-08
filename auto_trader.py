@@ -309,7 +309,10 @@ def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -
    신규매수 금지/강제청산은 lock_conditions에만 넣으세요.
 5. 복합 AND 조건(예: "고점 대비 -22% AND 200일선 대비 -7% 이하")은
    sub_conditions 배열에 각 조건을 따로 나열하고 condition_logic: "AND" 설정.
-6. RSI 과매도 시 '비중 추가'는 weight_mode: "add"로 설정.
+6. 매수 조건의 weight_mode 결정:
+   - "목표비중 X%", "비중 X%로 매수", "X% 비중 유지" → weight_mode: "target" (목표 비중까지 채움)
+   - "X% 추가 매수", "비중 +X% 추가", "RSI 과매도 시 추가" → weight_mode: "add" (기존에 추가로 더 삼)
+   Dip1/Dip2 같은 '목표비중' 조건은 반드시 "target"으로 설정하세요.
 7. 이미지에 있는 수치(%, 일수, 배수)를 절대 바꾸지 마세요.
 
 === TP(익절) 조건 파싱 규칙 (매우 중요) ===
@@ -389,6 +392,116 @@ TP 조건에는 두 가지 숫자가 있습니다. 절대 혼동하지 마세요
     result["_provider"] = "groq"
     return result
 
+
+
+def analyze_text_conditions(text: str) -> dict:
+    """
+    텍스트(복붙)에서 매수/매도 조건 추출.
+    이미지 분석과 동일한 JSON 스키마 반환.
+    """
+    prompt = """아래 텍스트는 주식/ETF 자동매매 전략 조건을 서술한 글입니다.
+텍스트에 적힌 모든 조건을 빠짐없이 정확하게 읽고 아래 JSON 형식으로 추출하세요.
+반드시 JSON만 출력하고 다른 텍스트는 절대 쓰지 마세요.
+
+=== 핵심 규칙 ===
+1. 하나의 항목에 여러 조건이 섞여 있으면 각각 별도 항목으로 분리하세요.
+2. 조건이 수량(주)이 아니라 포트폴리오 비중(%)이면 weight_pct 필드 사용.
+3. 참조 지수(예: QQQ 고점 대비 -X%)로 다른 종목(예: TQQQ) 매수 조건을 판단하면
+   ref_ticker에 QQQ 기입, ticker에 실제 매수할 종목(TQQQ) 기입.
+4. 매수/매도/락 조건을 절대 섞지 마세요.
+5. 복합 AND 조건은 sub_conditions 배열에 나열하고 condition_logic: "AND" 설정.
+6. weight_mode: "target" = 목표비중까지 채움, "add" = 현재에 추가로 더 삼.
+
+=== TP(익절) 조건 파싱 규칙 ===
+TP 조건: 수익률 기준(condition)과 매도 비율(sell_pct)을 혼동하지 마세요.
+예) "TP1: +15% 달성 시, 최초수량의 50% 매도"
+  → condition: "TP1 +15% 도달 시", sell_pct: 50, sell_mode: "initial_qty"
+
+=== JSON 스키마 ===
+{
+  "summary": "전략 전체 요약 (한국어 2~3문장)",
+  "strategy_type": "weight_based",
+  "buy_conditions": [
+    {
+      "ticker": "종목코드(예: TQQQ, AAPL, 005930)",
+      "name": "종목명",
+      "condition": "조건 전체 설명",
+      "ref_ticker": "참조종목코드 또는 null",
+      "weight_pct": 목표비중숫자(없으면 null),
+      "weight_mode": "target 또는 add",
+      "condition_logic": "AND 또는 OR 또는 null",
+      "sub_conditions": ["조건1", "조건2"],
+      "label": "조건 라벨명 또는 null"
+    }
+  ],
+  "sell_conditions": [
+    {
+      "ticker": "종목코드",
+      "name": "종목명",
+      "condition": "조건 전체 설명",
+      "sell_pct": 매도비율숫자(0~100),
+      "sell_mode": "current 또는 initial_qty",
+      "label": "TP1 등 라벨 또는 null"
+    }
+  ],
+  "lock_conditions": [
+    {
+      "condition": "락 발동 조건 설명",
+      "action": "lock_buy 또는 liquidate"
+    }
+  ],
+  "check_interval_minutes": 조건체크주기(기본5)
+}
+
+종목코드가 없으면 종목명으로 유추하세요. 비중/수량 정보가 없으면 null.
+
+=== 분석할 텍스트 ===
+""" + text
+
+    # Gemini 텍스트 모드 우선
+    try:
+        gemini_key = os.getenv("GEMINI_VISION_API_KEY") or os.getenv("GEMINI_API_KEY", "")
+        if not gemini_key:
+            raise ValueError("GEMINI_API_KEY 없음")
+        model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash")
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        body = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024}
+        }
+        resp = requests.post(url, params={"key": gemini_key}, json=body, timeout=30)
+        resp.raise_for_status()
+        text_out = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+        result = _parse_vision_text(text_out)
+        result["_provider"] = "gemini-text"
+        return result
+    except Exception as e:
+        import logging
+        logging.getLogger("auto_trader").warning(f"Gemini 텍스트 분석 실패 → Groq fallback: {e}")
+
+    # Groq fallback (텍스트 전용)
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    if not groq_key:
+        raise ValueError("GROQ_API_KEY 없음 — 텍스트 분석 불가")
+    model = os.getenv("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    body = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0.1,
+        "max_tokens": 1024,
+    }
+    resp = requests.post(
+        url,
+        headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+        json=body,
+        timeout=30,
+    )
+    resp.raise_for_status()
+    text_out = resp.json()["choices"][0]["message"]["content"]
+    result = _parse_vision_text(text_out)
+    result["_provider"] = "groq-text"
+    return result
 
 
 # ─────────────────────────────────────────────

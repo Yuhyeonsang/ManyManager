@@ -14,11 +14,15 @@ import {
   Alert,
   RefreshControl,
   Platform,
+  Modal,
+  TextInput,
+  KeyboardAvoidingView,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import {
   analyzeTradeImage,
+  analyzeTradeText,
   startAutoTrade,
   stopAutoTrade,
   getAutoTradeStatus,
@@ -31,6 +35,8 @@ export default function AutoTradeScreen() {
   const [tradeMode, setTradeMode] = useState('paper'); // 'paper' | 'real'
   const [refreshing, setRefreshing] = useState(false);
   const [conditions, setConditions] = useState(null);
+  const [textModalVisible, setTextModalVisible] = useState(false);
+  const [pasteText, setPasteText] = useState('');
 
   // ── 상태 폴링 ──────────────────────────────
   const loadStatus = useCallback(async (silent = false) => {
@@ -90,25 +96,20 @@ export default function AutoTradeScreen() {
     }
   };
 
-  // ── 카메라로 촬영 ──────────────────────────
-  const shootAndAnalyze = async () => {
-    const { status: perm } = await ImagePicker.requestCameraPermissionsAsync();
-    if (perm !== 'granted') {
-      Alert.alert('권한 필요', '카메라 권한이 필요합니다.');
-      return;
-    }
-    const result = await ImagePicker.launchCameraAsync({
-      allowsEditing: false,
-      quality: 0.85,
-    });
-    if (result.canceled) return;
-
+  // ── 텍스트 붙여넣기 분석 ──────────────────
+  const analyzeTextInput = async () => {
+    const text = pasteText.trim();
+    if (!text) { Alert.alert('입력 없음', '분석할 텍스트를 붙여넣으세요.'); return; }
+    setTextModalVisible(false);
+    setPasteText('');
     setAnalyzing(true);
     try {
-      const asset = result.assets[0];
-      const data = await analyzeTradeImage(asset.uri, 'image/jpeg');
+      const data = await analyzeTradeText(text);
       setConditions(data.conditions);
-      Alert.alert('분석 완료', `📋 ${data.conditions.summary}`);
+      Alert.alert(
+        '분석 완료',
+        `📋 ${data.conditions.summary}\n\n매수 ${data.conditions.buy_conditions?.length ?? 0}건, 매도 ${data.conditions.sell_conditions?.length ?? 0}건 추출됨`,
+      );
     } catch (e) {
       Alert.alert('분석 실패', e?.message ?? String(e));
     } finally {
@@ -266,8 +267,8 @@ export default function AutoTradeScreen() {
           </View>
         )}
 
-        {/* ── 이미지 업로드 버튼 ── */}
-        <Text style={styles.sectionTitle}>📸 조건 이미지 등록</Text>
+        {/* ── 조건 등록 버튼 ── */}
+        <Text style={styles.sectionTitle}>📋 조건 등록</Text>
         <View style={styles.imageButtons}>
           <TouchableOpacity
             style={[styles.imgBtn, analyzing && styles.btnDisabled]}
@@ -282,10 +283,10 @@ export default function AutoTradeScreen() {
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.imgBtn, styles.imgBtnSecondary, analyzing && styles.btnDisabled]}
-            onPress={shootAndAnalyze}
+            onPress={() => setTextModalVisible(true)}
             disabled={analyzing}
           >
-            <Text style={[styles.imgBtnText, styles.imgBtnTextSecondary]}>📷 카메라 촬영</Text>
+            <Text style={[styles.imgBtnText, styles.imgBtnTextSecondary]}>📝 텍스트 붙여넣기</Text>
           </TouchableOpacity>
         </View>
         {analyzing && (
@@ -338,6 +339,36 @@ export default function AutoTradeScreen() {
           <Text style={styles.lastCheck}>마지막 체크: {status.last_check}</Text>
         )}
       </ScrollView>
+
+      {/* 텍스트 붙여넣기 모달 */}
+      <Modal visible={textModalVisible} transparent animationType="slide" onRequestClose={() => setTextModalVisible(false)}>
+        <KeyboardAvoidingView style={{ flex: 1, justifyContent: 'flex-end' }} behavior="padding" enabled={Platform.OS === 'ios'}>
+          <TouchableOpacity style={{ ...StyleSheet.absoluteFillObject }} activeOpacity={1} onPress={() => setTextModalVisible(false)} />
+          <View style={styles.textModal}>
+            <Text style={styles.textModalTitle}>📝 전략 텍스트 붙여넣기</Text>
+            <Text style={styles.textModalDesc}>
+              매수/매도 조건이 적힌 텍스트를 붙여넣으면 AI가 자동으로 조건을 추출합니다.
+            </Text>
+            <TextInput
+              style={styles.textModalInput}
+              value={pasteText}
+              onChangeText={setPasteText}
+              placeholder={'예)\nTQQQ: QQQ 고점 대비 -10% 시 30% 매수\nTP1: +15% 시 최초수량 50% 매도\n락: QQQ -40% 이하 시 전량 청산'}
+              placeholderTextColor="#94A3B8"
+              multiline
+              autoFocus
+            />
+            <View style={styles.textModalBtns}>
+              <TouchableOpacity style={styles.textModalCancel} onPress={() => { setTextModalVisible(false); setPasteText(''); }}>
+                <Text style={styles.textModalCancelText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.textModalConfirm} onPress={analyzeTextInput}>
+                <Text style={styles.textModalConfirmText}>✨ AI 분석</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -466,6 +497,38 @@ const styles = StyleSheet.create({
   logMeta: { fontSize: 11, color: '#64748B', marginTop: 2 },
   logResult: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
   lastCheck: { textAlign: 'center', fontSize: 11, color: '#94A3B8', marginTop: 16 },
+
+  // 텍스트 붙여넣기 모달
+  textModal: {
+    backgroundColor: '#fff',
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    paddingHorizontal: 20,
+    paddingTop: 20,
+    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
+    height: 400,
+    flexDirection: 'column',
+  },
+  textModalTitle: { fontSize: 16, fontWeight: '800', color: '#1E293B', marginBottom: 6 },
+  textModalDesc: { fontSize: 12, color: '#64748B', marginBottom: 10 },
+  textModalInput: {
+    flex: 1,
+    backgroundColor: '#F8FAFC',
+    borderWidth: 1,
+    borderColor: '#E2E8F0',
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 14,
+    color: '#1E293B',
+    textAlignVertical: 'top',
+    marginBottom: 12,
+  },
+  textModalBtns: { flexDirection: 'row', gap: 10 },
+  textModalCancel: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center' },
+  textModalCancelText: { fontSize: 15, fontWeight: '700', color: '#64748B' },
+  textModalConfirm: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: '#6366F1', alignItems: 'center' },
+  textModalConfirmText: { fontSize: 15, fontWeight: '700', color: '#fff' },
 
   // 거래 모드 토글
   modeRow: { flexDirection: 'row', gap: 10 },

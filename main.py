@@ -1029,6 +1029,27 @@ async def auto_trade_analyze_image(file: UploadFile = File(...)):
         raise HTTPException(500, f"이미지 분석 실패: {e}")
 
 
+@app.post("/api/auto-trade/analyze-text")
+async def auto_trade_analyze_text(req: dict):
+    """
+    텍스트 복붙 → Gemini/Groq로 매수/매도 조건 추출.
+    Body: { "text": "전략 텍스트 내용" }
+    반환: { ok, conditions }
+    """
+    if not _AUTO_TRADER_AVAILABLE:
+        raise HTTPException(503, "auto_trader 모듈 없음")
+    text = (req.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text 필드가 비어있습니다.")
+    try:
+        conditions = auto_trader.analyze_text_conditions(text)
+        auto_trader.set_conditions_image_text(conditions.get("summary", ""))
+        return {"ok": True, "conditions": conditions}
+    except Exception as e:
+        log.exception("텍스트 분석 실패")
+        raise HTTPException(500, f"텍스트 분석 실패: {e}")
+
+
 @app.post("/api/auto-trade/start")
 def auto_trade_start(req: AutoTradeStartRequest):
     """조건을 받아 자동매매 루프 시작."""
