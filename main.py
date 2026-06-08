@@ -1152,6 +1152,7 @@ def save_template(req: SaveTemplateRequest):
     except ValueError as e:
         raise HTTPException(400, str(e))
 
+
 @app.delete("/api/templates/{name}")
 def delete_template(name: str):
     if not _TEMPLATES_AVAILABLE:
@@ -1159,10 +1160,13 @@ def delete_template(name: str):
     try:
         _templates.delete_template(name)
         return {"ok": True}
-    except (KeyError, ValueError) as e:
+    except ValueError as e:
         raise HTTPException(400, str(e))
+    except KeyError:
+        raise HTTPException(404, f"템플릿 없음: {name}")
 
 
+# ── 조건 초기화 / 수정 API ──────────────────────
 @app.post("/api/auto-trade/reset-conditions")
 def auto_trade_reset_conditions():
     if not _AUTO_TRADER_AVAILABLE:
@@ -1177,14 +1181,36 @@ class FixConditionsRequest(BaseModel):
 
 @app.post("/api/auto-trade/fix-conditions")
 async def auto_trade_fix_conditions(req: FixConditionsRequest):
-    if not _AUTO_TRADER_AVAILABLE:
-        raise HTTPException(503, "auto_trader 모듈 없음")
     try:
-        fixed = auto_trader.fix_conditions(req.existing, req.fix_text)
-        return {"ok": True, "conditions": fixed}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+        import groq as _groq
+        import json as _json
+        import re as _re
+        client = _groq.Groq()
+        prompt = f"""아래는 현재 자동매매 앱에 설정된 조건 JSON입니다.
+사용자의 수정 요청에 따라 조건을 수정하고, 수정된 전체 JSON을 반환하세요.
+반드시 동일한 JSON 구조를 유지하세요.
 
+현재 조건:
+{_json.dumps(req.existing, ensure_ascii=False, indent=2)}
+
+수정 요청:
+{req.fix_text}
+
+수정된 JSON만 반환하세요 (마크다운 없이):"""
+        resp = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.1,
+            max_tokens=4096,
+        )
+        raw = resp.choices[0].message.content.strip()
+        m = _re.search(r'\{.*\}', raw, _re.DOTALL)
+        if m:
+            raw = m.group(0)
+        fixed = _json.loads(raw)
+        return fixed
+    except Exception as e:
+        raise HTTPException(500, f"수정 실패: {e}")
 
 
 # ─────────────────────────────────────────────
@@ -1205,33 +1231,15 @@ class BacktestRequest(BaseModel):
 
 
 @app.post("/api/backtest/run")
-def backtest_run(req: BacktestRequest):
-    """
-    조건 + 기간을 받아 과거 데이터로 백테스트 실행.
-    period_days: 90 / 180 / 365
-    initial_cash: 초기 자본 (원)
-    """
+async def run_backtest(req: BacktestRequest):
     if not _BACKTESTER_AVAILABLE:
         raise HTTPException(503, "backtester 모듈 없음")
     try:
-        import json as _json
-        buy_n  = len(req.conditions.get("buy_conditions") or [])
-        sell_n = len(req.conditions.get("sell_conditions") or [])
-        lock_n = len(req.conditions.get("lock_conditions") or [])
-        stype  = req.conditions.get("strategy_type", "?")
-        log.info(f"[백테스트] type={stype} buy={buy_n} sell={sell_n} lock={lock_n} days={req.period_days} cash={req.initial_cash}")
-        log.info(f"[백테스트 buy_conds] {_json.dumps(req.conditions.get('buy_conditions', []), ensure_ascii=False)[:400]}")
-        result = _backtester.run_backtest(
-            conditions=req.conditions,
+        result = _backtester.run(
+            req.conditions,
             period_days=req.period_days,
             initial_cash=req.initial_cash,
         )
-        log.info(f"[백테스트 결과] trades={result.get('summary',{}).get('trade_count')} return={result.get('summary',{}).get('total_return_pct')}%")
         return result
     except Exception as e:
-        log.exception("백테스트 실패")
-        raise HTTPException(500, f"백테스트 실패: {e}")
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+        raise HTTPException(500, str(e))
