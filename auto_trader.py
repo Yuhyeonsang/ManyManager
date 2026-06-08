@@ -52,7 +52,9 @@ def _parse_account(account_no: str):
 # ─────────────────────────────────────────────
 _state = {
     "running": False,
-    "conditions": None,
+    "conditions": None,        # 구 포맷 (AI 추출) — 하위 호환
+    "strategy": None,          # Phase 템플릿 포맷
+    "phase_state": None,       # Phase 엔진 상태
     "conditions_image": None,
     "token": None,
     "token_expires": None,
@@ -60,7 +62,7 @@ _state = {
     "last_check": None,
     "error": None,
     "thread": None,
-    "trade_mode": KIS_TRADE_MODE,  # 런타임 전환 가능
+    "trade_mode": KIS_TRADE_MODE,
 }
 _lock = threading.Lock()
 
@@ -597,22 +599,28 @@ def _trading_loop():
         with _lock:
             if not _state["running"]:
                 break
-            conditions = _state["conditions"]
+            strategy = _state.get("strategy")
+            conditions = _state.get("conditions")
 
-        if not conditions:
+        has_work = strategy or conditions
+        if not has_work:
             time.sleep(30)
             continue
 
-        interval_sec = (conditions.get("check_interval_minutes", 5)) * 60
+        interval_sec = 5 * 60  # 기본 5분
+        if conditions:
+            interval_sec = conditions.get("check_interval_minutes", 5) * 60
 
         try:
-            _check_and_trade(conditions)
+            if strategy:
+                _check_and_trade_phase(strategy)
+            else:
+                _check_and_trade_legacy(conditions)
         except Exception as e:
             log.error(f"매매 루프 오류: {e}")
             with _lock:
                 _state["error"] = str(e)
 
-        # 다음 체크까지 대기 (running 상태 실시간 확인)
         end_time = time.time() + interval_sec
         while time.time() < end_time:
             with _lock:
@@ -621,6 +629,194 @@ def _trading_loop():
             time.sleep(5)
 
     log.info("자동매매 루프 종료")
+
+
+def _check_and_trade_phase(strategy: dict):
+    """Phase 엔진 기반 한 사이클: 상태 체크 → 주문 → Phase 전환."""
+    from phase_engine import (
+        evaluate_strategy, apply_action_to_state,
+        record_buy as pe_record_buy, get_phase_name,
+    )
+
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with _lock:
+        _state["last_check"] = now_str
+        phase_state = dict(_state.get("phase_state") or {})
+        if not phase_state:
+            phase_state = {"phase": strategy.get("initial_phase", 0),
+                           "triggered": {}, "locked": False, "lock_reason": None,
+                           "initial_qty": {}, "entry_price": {}}
+
+    # ── 가격 수집 ────────────────────────────
+    tickers_needed = set()
+    for c in strategy.get("conditions", []):
+        tickers_needed.add(c.get("ticker", ""))
+        tickers_needed.add(c.get("ref_ticker", ""))
+    for lc in strategy.get("lock_conditions", []):
+        tickers_needed.add(lc.get("ticker", ""))
+        tickers_needed.add(lc.get("ref_ticker", ""))
+    tickers_needed.discard("")
+
+    prices = {}
+    for tk in tickers_needed:
+        p = get_current_price(tk)
+        if p:
+            prices[tk] = p
+
+    if not prices:
+        log.warning("가격 조회 실패 — 이번 사이클 스킵")
+        return
+
+    # ── 포트폴리오 가치 (계좌 잔고 or 기본값) ──
+    try:
+        bal = get_account_balance()
+        portfolio_value = float(bal.get("total_eval_amount", 0)) or _state.get("portfolio_value", 1_000_000)
+    except Exception:
+        portfolio_value = _state.get("portfolio_value", 1_000_000)
+
+    # ── Phase 엔진 평가 ──────────────────────
+    actions = evaluate_strategy(strategy, phase_state, prices, portfolio_value)
+
+    for action in actions:
+        atype = action.get("type")
+        ticker = action.get("ticker", "")
+        now_str2 = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        if atype == "lock":
+            phase_state = apply_action_to_state(phase_state, action)
+            log.info(f"🔒 락 발동: {action.get('reason')}")
+            with _lock:
+                _state["phase_state"] = phase_state
+                _state["trade_log"].insert(0, {
+                    "time": now_str2, "action": "락 발동", "ticker": ticker,
+                    "name": "락", "price": 0, "qty": 0,
+                    "condition": action.get("reason", ""), "result": "매수 잠금",
+                })
+            continue
+
+        if atype == "unlock":
+            phase_state = apply_action_to_state(phase_state, action)
+            log.info(f"🔓 락 해제")
+            with _lock:
+                _state["phase_state"] = phase_state
+                _state["trade_log"].insert(0, {
+                    "time": now_str2, "action": "락 해제", "ticker": ticker,
+                    "name": "락 해제", "price": 0, "qty": 0,
+                    "condition": "", "result": "매수 잠금 해제",
+                })
+            continue
+
+        price = prices.get(ticker, 0)
+        if price <= 0:
+            continue
+
+        if atype == "buy":
+            weight_pct = action.get("weight_pct", 0)
+            weight_mode = action.get("weight_mode", "add")
+
+            if weight_mode == "target":
+                # 목표비중까지 채우기: 목표금액 - 현재보유금액
+                try:
+                    holdings = get_holdings()
+                    current_val = sum(
+                        float(h.get("eval_amount", 0))
+                        for h in holdings
+                        if h.get("ticker") == ticker
+                    )
+                except Exception:
+                    current_val = 0
+                target_amount = portfolio_value * weight_pct / 100
+                buy_amount = max(0, target_amount - current_val)
+            else:
+                buy_amount = portfolio_value * weight_pct / 100
+
+            qty = max(1, int(buy_amount / price))
+            try:
+                result = place_order(ticker, "buy", qty, 0)
+                # Phase 상태 업데이트
+                phase_state = apply_action_to_state(phase_state, action)
+                phase_state = pe_record_buy(phase_state, ticker, qty, price)
+                with _lock:
+                    _state["phase_state"] = phase_state
+                    _state["trade_log"].insert(0, {
+                        "time": now_str2, "action": "매수",
+                        "ticker": ticker, "name": action.get("condition_name", ticker),
+                        "price": price, "qty": qty,
+                        "condition": action.get("condition_name", ""),
+                        "phase": get_phase_name(strategy, phase_state["phase"]),
+                        "result": result.get("msg1", "완료"),
+                    })
+                    _state["trade_log"] = _state["trade_log"][:100]
+                log.info(f"✅ 매수: {ticker} {qty}주 @{price} | Phase→{phase_state['phase']}")
+            except Exception as e:
+                log.error(f"매수 실패 ({ticker}): {e}")
+                with _lock:
+                    _state["trade_log"].insert(0, {
+                        "time": now_str2, "action": "매수실패",
+                        "ticker": ticker, "name": action.get("condition_name", ticker),
+                        "price": price, "qty": qty,
+                        "condition": action.get("condition_name", ""),
+                        "result": str(e),
+                    })
+
+        elif atype == "sell":
+            sell_pct = action.get("sell_pct", 100)
+            sell_mode = action.get("sell_mode", "current_qty")
+            initial_qty = phase_state.get("initial_qty", {}).get(ticker, 0)
+
+            try:
+                holdings = get_holdings()
+                current_qty = next(
+                    (int(h.get("qty", 0)) for h in holdings if h.get("ticker") == ticker), 0
+                )
+            except Exception:
+                current_qty = _positions.get(ticker, {}).get("current_qty", 0)
+
+            if sell_mode == "initial_qty":
+                base_qty = initial_qty if initial_qty > 0 else current_qty
+            else:
+                base_qty = current_qty
+
+            qty = max(1, int(base_qty * sell_pct / 100))
+            qty = min(qty, current_qty)  # 보유 초과 불가
+
+            if qty <= 0:
+                log.warning(f"매도 수량 0 ({ticker}) — 스킵")
+                phase_state = apply_action_to_state(phase_state, action)
+                with _lock:
+                    _state["phase_state"] = phase_state
+                continue
+
+            try:
+                result = place_order(ticker, "sell", qty, 0)
+                phase_state = apply_action_to_state(phase_state, action)
+                with _lock:
+                    _state["phase_state"] = phase_state
+                    _state["trade_log"].insert(0, {
+                        "time": now_str2, "action": "매도",
+                        "ticker": ticker, "name": action.get("condition_name", ticker),
+                        "price": price, "qty": qty,
+                        "condition": action.get("condition_name", ""),
+                        "phase": get_phase_name(strategy, phase_state["phase"]),
+                        "result": result.get("msg1", "완료"),
+                    })
+                    _state["trade_log"] = _state["trade_log"][:100]
+                log.info(f"✅ 매도: {ticker} {qty}주 @{price} | Phase→{phase_state['phase']}")
+            except Exception as e:
+                log.error(f"매도 실패 ({ticker}): {e}")
+                with _lock:
+                    _state["trade_log"].insert(0, {
+                        "time": now_str2, "action": "매도실패",
+                        "ticker": ticker, "name": action.get("condition_name", ticker),
+                        "price": price, "qty": qty,
+                        "condition": action.get("condition_name", ""),
+                        "result": str(e),
+                    })
+
+
+def _check_and_trade_legacy(conditions: dict):
+    """구 포맷(AI 추출) 조건 처리 — 하위 호환용."""
+    _check_and_trade(conditions)
 
 
 def _check_and_trade(conditions: dict):
@@ -785,13 +981,40 @@ def _check_and_trade(conditions: dict):
 # 공개 API (main.py에서 호출)
 # ─────────────────────────────────────────────
 def start_trading(conditions: dict, trade_mode: str = None) -> bool:
-    """자동매매 시작. 이미 실행 중이면 False."""
+    """자동매매 시작 (구 포맷 조건). 이미 실행 중이면 False."""
     with _lock:
         if _state["running"]:
             return False
         _state["conditions"] = conditions
+        _state["strategy"] = None
         _state["running"] = True
         _state["error"] = None
+        if trade_mode in ("real", "paper"):
+            _state["trade_mode"] = trade_mode
+            _state["token"] = None
+            _state["token_expires"] = None
+
+    t = threading.Thread(target=_trading_loop, daemon=True)
+    t.start()
+    with _lock:
+        _state["thread"] = t
+    return True
+
+
+def start_trading_phase(strategy: dict, trade_mode: str = None, resume: bool = False) -> bool:
+    """Phase 엔진 기반 자동매매 시작."""
+    from phase_engine import initial_phase_state
+    with _lock:
+        if _state["running"]:
+            return False
+        _state["strategy"] = strategy
+        _state["conditions"] = None
+        _state["running"] = True
+        _state["error"] = None
+        # resume=True면 기존 phase_state 유지, False면 초기화
+        if not resume or not _state.get("phase_state"):
+            _state["phase_state"] = initial_phase_state()
+            _state["phase_state"]["phase"] = strategy.get("initial_phase", 0)
         if trade_mode in ("real", "paper"):
             _state["trade_mode"] = trade_mode
             _state["token"] = None
@@ -816,9 +1039,24 @@ def stop_trading() -> bool:
 def get_status() -> dict:
     """현재 상태 조회."""
     with _lock:
+        strategy = _state.get("strategy")
+        phase_state = _state.get("phase_state")
+        phase_info = None
+        if strategy and phase_state is not None:
+            from phase_engine import get_phase_name
+            phase_num = phase_state.get("phase", 0)
+            phase_info = {
+                "phase": phase_num,
+                "phase_name": get_phase_name(strategy, phase_num),
+                "locked": phase_state.get("locked", False),
+                "lock_reason": phase_state.get("lock_reason"),
+                "triggered": phase_state.get("triggered", {}),
+            }
         return {
             "running": _state["running"],
             "conditions": _state["conditions"],
+            "strategy": strategy,
+            "phase_state": phase_info,
             "conditions_image": _state["conditions_image"],
             "last_check": _state["last_check"],
             "error": _state["error"],
@@ -835,11 +1073,13 @@ def set_conditions_image_text(text: str):
 
 
 def reset_conditions():
-    """조건 전체 초기화 (실행 중이면 중지 후 초기화)."""
+    """조건/전략 전체 초기화 (실행 중이면 중지 후 초기화)."""
     with _lock:
         if _state["running"]:
             _state["running"] = False
         _state["conditions"] = None
+        _state["strategy"] = None
+        _state["phase_state"] = None
         _state["conditions_image"] = None
         _state["trade_log"] = []
         _state["last_check"] = None

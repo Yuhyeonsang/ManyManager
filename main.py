@@ -1089,6 +1089,80 @@ def auto_trade_status():
     return {"available": True, **auto_trader.get_status()}
 
 
+class PhaseStartRequest(BaseModel):
+    strategy: dict
+    trade_mode: str = "paper"
+    resume: bool = False
+
+@app.post("/api/auto-trade/start-phase")
+def auto_trade_start_phase(req: PhaseStartRequest):
+    if not _AUTO_TRADER_AVAILABLE:
+        raise HTTPException(503, "auto_trader 모듈 없음")
+    started = auto_trader.start_trading_phase(req.strategy, trade_mode=req.trade_mode, resume=req.resume)
+    return {"ok": True, "started": started}
+
+
+# ── 템플릿 API ────────────────────────────────
+try:
+    import strategy_templates as _templates
+    _TEMPLATES_AVAILABLE = True
+except ImportError:
+    _TEMPLATES_AVAILABLE = False
+
+@app.get("/api/templates")
+def list_templates():
+    if not _TEMPLATES_AVAILABLE:
+        raise HTTPException(503, "strategy_templates 모듈 없음")
+    names = _templates.list_templates()
+    result = []
+    for name in names:
+        try:
+            t = _templates.get_template(name)
+            result.append({
+                "name": name,
+                "description": t.get("description", ""),
+                "ticker": t.get("ticker", ""),
+                "builtin": _templates.is_builtin(name),
+                "phases": t.get("phases", {}),
+            })
+        except Exception:
+            pass
+    return result
+
+@app.get("/api/templates/{name}")
+def get_template(name: str):
+    if not _TEMPLATES_AVAILABLE:
+        raise HTTPException(503, "strategy_templates 모듈 없음")
+    try:
+        return _templates.get_template(name)
+    except KeyError:
+        raise HTTPException(404, f"템플릿 없음: {name}")
+
+class SaveTemplateRequest(BaseModel):
+    name: str
+    strategy: dict
+
+@app.post("/api/templates")
+def save_template(req: SaveTemplateRequest):
+    if not _TEMPLATES_AVAILABLE:
+        raise HTTPException(503, "strategy_templates 모듈 없음")
+    try:
+        _templates.save_template(req.name, req.strategy)
+        return {"ok": True}
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+
+@app.delete("/api/templates/{name}")
+def delete_template(name: str):
+    if not _TEMPLATES_AVAILABLE:
+        raise HTTPException(503, "strategy_templates 모듈 없음")
+    try:
+        _templates.delete_template(name)
+        return {"ok": True}
+    except (KeyError, ValueError) as e:
+        raise HTTPException(400, str(e))
+
+
 @app.post("/api/auto-trade/reset-conditions")
 def auto_trade_reset_conditions():
     if not _AUTO_TRADER_AVAILABLE:

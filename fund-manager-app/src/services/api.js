@@ -218,6 +218,39 @@ export async function resetAutoTradeConditions() {
   return data;
 }
 
+// ── Phase 엔진 ──────────────────────────────
+export async function startPhaseTrading(strategy, tradeMode = 'paper', resume = false) {
+  const c = await getClient();
+  const { data } = await c.post('/api/auto-trade/start-phase', {
+    strategy, trade_mode: tradeMode, resume,
+  });
+  return data;
+}
+
+export async function listTemplates() {
+  const c = await getClient();
+  const { data } = await c.get('/api/templates');
+  return data;
+}
+
+export async function getTemplate(name) {
+  const c = await getClient();
+  const { data } = await c.get(`/api/templates/${encodeURIComponent(name)}`);
+  return data;
+}
+
+export async function saveTemplate(name, strategy) {
+  const c = await getClient();
+  const { data } = await c.post('/api/templates', { name, strategy });
+  return data;
+}
+
+export async function deleteTemplate(name) {
+  const c = await getClient();
+  const { data } = await c.delete(`/api/templates/${encodeURIComponent(name)}`);
+  return data;
+}
+
 export async function fixAutoTradeConditions(existing, fixText) {
   const c = await getClient();
   const { data } = await c.post('/api/auto-trade/fix-conditions', {

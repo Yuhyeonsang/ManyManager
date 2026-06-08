@@ -16,6 +16,7 @@ import {
   analyzeTradeImage, analyzeTradeText,
   startAutoTrade, stopAutoTrade, getAutoTradeStatus,
   resetAutoTradeConditions, fixAutoTradeConditions,
+  startPhaseTrading, listTemplates, getTemplate, saveTemplate, deleteTemplate,
 } from '../services/api';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
@@ -78,6 +79,14 @@ export default function AutoTradeScreen() {
   const [pasteText,  setPasteText]  = useState('');
   const [kbHeight,   setKbHeight]   = useState(0);
 
+  // ── 템플릿 ───────────────────────────────
+  const [templateModal, setTemplateModal] = useState(false);
+  const [templateList,  setTemplateList]  = useState([]);
+  const [activeStrategy, setActiveStrategy] = useState(null); // 현재 로드된 Phase 전략
+  const [saveNameModal, setSaveNameModal] = useState(false);
+  const [saveNameText,  setSaveNameText]  = useState('');
+
+
   // ── 조건 편집 모달 ────────────────────────
   const [editModal, setEditModal] = useState({ visible: false, type: null, index: null, data: null });
   const [editError, setEditError] = useState(null);
@@ -108,6 +117,7 @@ export default function AutoTradeScreen() {
       const s = await getAutoTradeStatus();
       setStatus(s);
       if (s.conditions && !conditions) setConditions(s.conditions);
+      if (s.strategy && !activeStrategy) setActiveStrategy(s.strategy);
     } catch (e) {
       if (!silent) Alert.alert('오류', '서버 연결 실패: ' + (e?.message ?? e));
     } finally {
@@ -346,19 +356,32 @@ export default function AutoTradeScreen() {
 
   // ── 자동매매 시작/정지 ────────────────────
   const toggleTrading = async () => {
-    if (!conditions) { Alert.alert('조건 없음', '먼저 이미지를 업로드하거나 조건을 입력하세요.'); return; }
+    const hasStrategy = !!activeStrategy;
+    const hasConditions = !!conditions;
+    if (!hasStrategy && !hasConditions) {
+      Alert.alert('조건 없음', '먼저 템플릿을 불러오거나 이미지/텍스트로 조건을 설정하세요.');
+      return;
+    }
     const isRunning = status?.running;
     if (!isRunning) {
       const modeLabel = tradeMode === 'real' ? '🔴 실전투자' : '🟡 모의투자';
       const modeDesc  = tradeMode === 'real'
         ? `실제 계좌(${status?.account_no ?? '??'})로 실제 돈이 거래됩니다!`
         : '가상 머니로 연습합니다. 실제 거래 없음.';
-      Alert.alert(`자동매매 시작 — ${modeLabel}`, `${modeDesc}\n\n계속하시겠습니까?`, [
+      const stratName = hasStrategy ? `\n전략: ${activeStrategy.name}` : '';
+      Alert.alert(`자동매매 시작 — ${modeLabel}`, `${modeDesc}${stratName}\n\n계속하시겠습니까?`, [
         { text: '취소', style: 'cancel' },
         { text: '시작', style: tradeMode === 'real' ? 'destructive' : 'default',
           onPress: async () => {
             setToggling(true);
-            try { await startAutoTrade(conditions, tradeMode); await loadStatus(); }
+            try {
+              if (hasStrategy) {
+                await startPhaseTrading(activeStrategy, tradeMode, false);
+              } else {
+                await startAutoTrade(conditions, tradeMode);
+              }
+              await loadStatus();
+            }
             catch (e) { Alert.alert('오류', e?.message ?? String(e)); }
             finally { setToggling(false); }
           }},
@@ -369,6 +392,52 @@ export default function AutoTradeScreen() {
       catch (e) { Alert.alert('오류', e?.message ?? String(e)); }
       finally { setToggling(false); }
     }
+  };
+
+  // ── 템플릿 관련 ──────────────────────────
+  const openTemplateModal = async () => {
+    try {
+      const list = await listTemplates();
+      setTemplateList(list);
+      setTemplateModal(true);
+    } catch (e) { Alert.alert('오류', '템플릿 목록 조회 실패: ' + (e?.message ?? e)); }
+  };
+
+  const loadTemplateByName = async (name) => {
+    try {
+      const strategy = await getTemplate(name);
+      setActiveStrategy(strategy);
+      setConditions(null);
+      setVerification(null);
+      setTemplateModal(false);
+      Alert.alert('✅ 템플릿 로드', `"${name}" 전략이 설정됐습니다.\n자동매매 시작 버튼을 누르세요.`);
+    } catch (e) { Alert.alert('오류', e?.message ?? String(e)); }
+  };
+
+  const saveCurrentAsTemplate = async () => {
+    const name = saveNameText.trim();
+    if (!name) { Alert.alert('이름 필요', '저장할 전략 이름을 입력하세요.'); return; }
+    const strategy = activeStrategy || conditions;
+    if (!strategy) { Alert.alert('전략 없음', '저장할 전략이 없습니다.'); return; }
+    try {
+      await saveTemplate(name, strategy);
+      setSaveNameModal(false);
+      setSaveNameText('');
+      Alert.alert('✅ 저장 완료', `"${name}"으로 저장됐습니다.`);
+    } catch (e) { Alert.alert('오류', e?.message ?? String(e)); }
+  };
+
+  const deleteTemplateByName = async (name) => {
+    Alert.alert('템플릿 삭제', `"${name}"을 삭제할까요?`, [
+      { text: '취소', style: 'cancel' },
+      { text: '삭제', style: 'destructive', onPress: async () => {
+        try {
+          await deleteTemplate(name);
+          const list = await listTemplates();
+          setTemplateList(list);
+        } catch (e) { Alert.alert('오류', e?.message ?? String(e)); }
+      }},
+    ]);
   };
 
   // ── 자동완성 드롭다운 ────────────────────
@@ -622,6 +691,43 @@ export default function AutoTradeScreen() {
         )}
 
         {/* ── 조건 등록 ── */}
+        {/* ── Phase 상태 배너 ── */}
+        {status?.phase_state && (
+          <View style={[styles.phaseBanner, status.phase_state.locked && styles.phaseBannerLocked]}>
+            <Text style={styles.phaseLabel}>
+              {status.phase_state.locked ? '🔒 잠금' : `📍 Phase ${status.phase_state.phase}`}
+            </Text>
+            <Text style={styles.phaseName}>{status.phase_state.phase_name}</Text>
+          </View>
+        )}
+
+        {/* ── 전략 템플릿 ── */}
+        <View style={styles.templateRow}>
+          <Text style={styles.sectionTitle}>📂 전략 템플릿</Text>
+          <TouchableOpacity style={styles.templateSaveBtn} onPress={() => setSaveNameModal(true)}>
+            <Text style={styles.templateSaveBtnText}>+ 저장</Text>
+          </TouchableOpacity>
+        </View>
+        {activeStrategy ? (
+          <View style={styles.activeStrategyCard}>
+            <View style={{ flex: 1 }}>
+              <Text style={styles.activeStrategyName}>{activeStrategy.name}</Text>
+              <Text style={styles.activeStrategyDesc} numberOfLines={1}>{activeStrategy.description}</Text>
+            </View>
+            <TouchableOpacity onPress={openTemplateModal} style={styles.templateChangeBtn}>
+              <Text style={styles.templateChangeBtnText}>변경</Text>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => { setActiveStrategy(null); }} style={[styles.templateChangeBtn, { backgroundColor: '#FEE2E2', marginLeft: 6 }]}>
+              <Text style={[styles.templateChangeBtnText, { color: '#DC2626' }]}>해제</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.templatePickBtn} onPress={openTemplateModal}>
+            <Text style={styles.templatePickBtnText}>📂  전략 불러오기</Text>
+            <Text style={styles.templatePickBtnSub}>눈덩이 TQQQ 등 저장된 전략 선택</Text>
+          </TouchableOpacity>
+        )}
+
         <Text style={styles.sectionTitle}>📋 조건 등록</Text>
         <View style={styles.uploadBtns}>
           <TouchableOpacity style={[styles.imgBtn, analyzing && styles.btnDisabled]} onPress={pickImage} disabled={analyzing}>
@@ -823,6 +929,66 @@ export default function AutoTradeScreen() {
         )}
       </ScrollView>
 
+      {/* 템플릿 선택 모달 */}
+      <Modal visible={templateModal} transparent animationType="slide" onRequestClose={() => setTemplateModal(false)}>
+        <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setTemplateModal(false)} />
+          <View style={[styles.textModalBox, { paddingBottom: Platform.OS === 'ios' ? 34 : 16, maxHeight: SCREEN_H * 0.75 }]}>
+            <Text style={styles.modalTitle}>📂 전략 템플릿</Text>
+            <ScrollView style={{ maxHeight: SCREEN_H * 0.5 }} showsVerticalScrollIndicator={false}>
+              {templateList.map((t, i) => (
+                <View key={i} style={styles.templateItem}>
+                  <TouchableOpacity style={{ flex: 1 }} onPress={() => loadTemplateByName(t.name)}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                      <Text style={styles.templateItemName}>{t.name}</Text>
+                      {t.builtin && <View style={styles.builtinBadge}><Text style={styles.builtinBadgeText}>내장</Text></View>}
+                    </View>
+                    <Text style={styles.templateItemDesc} numberOfLines={1}>{t.description}</Text>
+                    {t.ticker ? <Text style={styles.templateItemMeta}>{t.ticker}</Text> : null}
+                  </TouchableOpacity>
+                  {!t.builtin && (
+                    <TouchableOpacity onPress={() => deleteTemplateByName(t.name)} style={styles.templateDelBtn}>
+                      <Text style={styles.templateDelBtnText}>삭제</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              ))}
+              {templateList.length === 0 && (
+                <Text style={{ color: '#94A3B8', textAlign: 'center', paddingVertical: 20 }}>저장된 템플릿이 없습니다.</Text>
+              )}
+            </ScrollView>
+            <TouchableOpacity style={[styles.modalCancel, { marginTop: 12 }]} onPress={() => setTemplateModal(false)}>
+              <Text style={styles.modalCancelText}>닫기</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* 템플릿 이름 저장 모달 */}
+      <Modal visible={saveNameModal} transparent animationType="fade" onRequestClose={() => setSaveNameModal(false)}>
+        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', backgroundColor: 'rgba(0,0,0,0.4)' }}>
+          <View style={{ backgroundColor: '#fff', borderRadius: 16, padding: 24, width: SCREEN_W - 48 }}>
+            <Text style={styles.modalTitle}>💾 전략 저장</Text>
+            <TextInput
+              style={[styles.modalInput, { marginBottom: 16 }]}
+              value={saveNameText}
+              onChangeText={setSaveNameText}
+              placeholder="전략 이름 (예: 나스닥 역추세)"
+              placeholderTextColor="#94A3B8"
+              autoFocus
+            />
+            <View style={styles.textModalBtns}>
+              <TouchableOpacity style={styles.modalCancel} onPress={() => { setSaveNameModal(false); setSaveNameText(''); }}>
+                <Text style={styles.modalCancelText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalSave} onPress={saveCurrentAsTemplate}>
+                <Text style={styles.modalSaveText}>저장</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
       {renderGalleryModal()}
       {renderEditModal()}
 
@@ -968,6 +1134,32 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 13, color: '#94A3B8', textAlign: 'center', marginVertical: 8 },
 
   // 시작/정지
+  // Phase 배너
+  phaseBanner: { flexDirection: 'row', alignItems: 'center', gap: 10, backgroundColor: '#EEF2FF', borderRadius: 10, padding: 10, marginBottom: 8 },
+  phaseBannerLocked: { backgroundColor: '#FEF2F2' },
+  phaseLabel: { fontSize: 13, fontWeight: '800', color: '#6366F1' },
+  phaseName: { fontSize: 12, color: '#475569', flex: 1 },
+  // 템플릿
+  templateRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 16, marginBottom: 8 },
+  templateSaveBtn: { paddingHorizontal: 12, paddingVertical: 5, backgroundColor: '#EEF2FF', borderRadius: 8 },
+  templateSaveBtnText: { fontSize: 12, color: '#6366F1', fontWeight: '700' },
+  activeStrategyCard: { flexDirection: 'row', alignItems: 'center', backgroundColor: '#fff', borderRadius: 12, padding: 14, marginBottom: 8, borderWidth: 1.5, borderColor: '#6366F1', gap: 8 },
+  activeStrategyName: { fontSize: 14, fontWeight: '800', color: '#1E293B' },
+  activeStrategyDesc: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+  templateChangeBtn: { paddingHorizontal: 10, paddingVertical: 5, backgroundColor: '#EEF2FF', borderRadius: 8 },
+  templateChangeBtnText: { fontSize: 12, color: '#6366F1', fontWeight: '600' },
+  templatePickBtn: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 8, borderWidth: 1.5, borderColor: '#CBD5E1', alignItems: 'center' },
+  templatePickBtnText: { fontSize: 14, fontWeight: '700', color: '#475569' },
+  templatePickBtnSub: { fontSize: 11, color: '#94A3B8', marginTop: 3 },
+  // 템플릿 모달 아이템
+  templateItem: { flexDirection: 'row', alignItems: 'center', paddingVertical: 12, borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  templateItemName: { fontSize: 14, fontWeight: '700', color: '#1E293B' },
+  templateItemDesc: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+  templateItemMeta: { fontSize: 11, color: '#6366F1', marginTop: 2 },
+  builtinBadge: { backgroundColor: '#EEF2FF', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4 },
+  builtinBadgeText: { fontSize: 10, color: '#6366F1', fontWeight: '700' },
+  templateDelBtn: { paddingHorizontal: 10, paddingVertical: 5, backgroundColor: '#FEE2E2', borderRadius: 8, marginLeft: 8 },
+  templateDelBtnText: { fontSize: 12, color: '#DC2626', fontWeight: '600' },
   matchCheckBtn: { marginTop: 16, padding: 14, borderRadius: 12, backgroundColor: '#fff', borderWidth: 1.5, borderColor: '#6366F1', alignItems: 'center' },
   matchCheckBtnText: { fontSize: 15, fontWeight: '700', color: '#6366F1' },
   matchCheckBtnSub: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
