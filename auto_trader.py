@@ -505,46 +505,88 @@ TP 조건: 수익률 기준(condition)과 매도 비율(sell_pct)을 혼동하�
 
 
 # ─────────────────────────────────────────────
-# 조건 체크 및 자동매매 루프
+# 조건 평가 엔진 (condition_evaluator 사용)
 # ─────────────────────────────────────────────
-def _evaluate_condition(condition_str: str, current_price: float, ticker: str) -> bool:
+try:
+    import condition_evaluator as _ce
+    _CE_AVAILABLE = True
+except ImportError:
+    _CE_AVAILABLE = False
+    log.warning("condition_evaluator 모듈 없음 — 가격 조건만 지원")
+
+
+def _evaluate_condition_item(cond: dict, price: float, buy_price: Optional[float] = None) -> bool:
     """
-    조건 문자열을 해석해 True/False 반환.
-    지원 형식 예시:
-      "현재가 < 70000"
-      "price < 70000"
-      "RSI < 30"  (RSI는 현재 미지원 → False)
-      "수익률 > 5%"  (미지원 → False)
-      "항상"  → True
+    조건 딕셔너리 하나를 평가.
+    sub_conditions(AND/OR 복합) 지원.
     """
-    cond = condition_str.strip().lower()
+    ticker = cond.get("ticker", "")
+    ref_ticker = cond.get("ref_ticker") or None
+    condition_str = cond.get("condition", "")
+    sub_conditions = cond.get("sub_conditions", [])
+    logic = cond.get("condition_logic", "AND") or "AND"
 
-    # 항상 실행
-    if cond in ("항상", "always", "즉시"):
-        return True
+    kwargs = dict(
+        ticker=ticker,
+        ref_ticker=ref_ticker,
+        buy_price=buy_price,
+        current_price=price,
+    )
 
-    # price / 현재가 비교
-    for keyword in ["현재가", "price", "가격"]:
-        if keyword in cond:
-            try:
-                if "<=" in cond:
-                    threshold = float(cond.split("<=")[1].strip().replace(",", ""))
-                    return current_price <= threshold
-                elif ">=" in cond:
-                    threshold = float(cond.split(">=")[1].strip().replace(",", ""))
-                    return current_price >= threshold
-                elif "<" in cond:
-                    threshold = float(cond.split("<")[1].strip().replace(",", ""))
-                    return current_price < threshold
-                elif ">" in cond:
-                    threshold = float(cond.split(">")[1].strip().replace(",", ""))
-                    return current_price > threshold
-            except Exception:
-                pass
+    if not _CE_AVAILABLE:
+        # 폴백: 가격 비교만
+        cond_lower = condition_str.strip().lower()
+        if cond_lower in ("항상", "always", "즉시"):
+            return True
+        log.warning(f"[폴백] 미지원 조건: '{condition_str}'")
+        return False
 
-    # 지원하지 않는 조건 → False (RSI, MACD 등 지표는 추후 구현)
-    log.warning(f"미지원 조건: '{condition_str}' → 건너뜀")
-    return False
+    # 복합 조건 (sub_conditions)
+    if sub_conditions:
+        return _ce.evaluate_compound(sub_conditions, logic, **kwargs)
+
+    # 단일 조건
+    return _ce.evaluate(condition_str, **kwargs)
+
+
+# ─────────────────────────────────────────────
+# 포지션 추적 (수익률 조건 / sell_mode 지원용)
+# ─────────────────────────────────────────────
+# { ticker: {"buy_price": float, "initial_qty": int, "current_qty": int} }
+_positions: dict = {}
+
+
+def _record_buy(ticker: str, price: float, qty: int):
+    if ticker not in _positions:
+        _positions[ticker] = {"buy_price": price, "initial_qty": qty, "current_qty": qty}
+    else:
+        pos = _positions[ticker]
+        total_cost = pos["buy_price"] * pos["current_qty"] + price * qty
+        pos["current_qty"] += qty
+        pos["buy_price"] = total_cost / pos["current_qty"]
+        pos["initial_qty"] = pos["current_qty"]  # 리셋: 분할매수 반영
+
+
+def _calc_sell_qty(cond: dict, ticker: str) -> int:
+    """sell_pct + sell_mode 기반 매도 수량 계산."""
+    sell_pct = cond.get("sell_pct", 100)
+    sell_mode = cond.get("sell_mode", "current")
+    pos = _positions.get(ticker, {})
+
+    if sell_mode == "initial_qty":
+        base_qty = pos.get("initial_qty", 1)
+    else:
+        base_qty = pos.get("current_qty", 1)
+
+    qty = max(1, int(base_qty * sell_pct / 100))
+    return qty
+
+
+def _record_sell(ticker: str, qty: int):
+    if ticker in _positions:
+        _positions[ticker]["current_qty"] = max(0, _positions[ticker]["current_qty"] - qty)
+        if _positions[ticker]["current_qty"] == 0:
+            del _positions[ticker]
 
 
 def _trading_loop():
@@ -587,24 +629,81 @@ def _check_and_trade(conditions: dict):
     with _lock:
         _state["last_check"] = now_str
 
-    # 매수 조건 체크
-    for cond in conditions.get("buy_conditions", []):
-        ticker = cond.get("ticker")
-        if not ticker:
-            continue
-        price = get_current_price(ticker)
-        if price is None:
-            continue
-        if _evaluate_condition(cond.get("condition", ""), price, ticker):
-            qty = cond.get("qty", 1)
+    _mode = _state.get("trade_mode", KIS_TRADE_MODE)
+
+    # ── 락 조건 체크 (신규 매수 금지) ────────
+    buy_locked = False
+    force_liquidate = False
+    for lock in conditions.get("lock_conditions", []):
+        ticker_for_lock = conditions.get("buy_conditions", [{}])[0].get("ref_ticker") or \
+                          conditions.get("buy_conditions", [{}])[0].get("ticker", "")
+        price_for_lock = get_current_price(ticker_for_lock) if ticker_for_lock else None
+        if price_for_lock and _evaluate_condition_item(
+            {"condition": lock.get("condition", ""), "ticker": ticker_for_lock},
+            price_for_lock,
+        ):
+            action = lock.get("action", "lock_buy")
+            if action == "liquidate":
+                force_liquidate = True
+            buy_locked = True
+            log.info(f"락 조건 발동: {lock.get('condition')} → {action}")
+
+    # ── 강제 청산 ──────────────────────────
+    if force_liquidate:
+        for ticker, pos in list(_positions.items()):
+            qty = pos.get("current_qty", 0)
+            if qty > 0:
+                try:
+                    result = place_order(ticker, "sell", qty, 0)
+                    _record_sell(ticker, qty)
+                    with _lock:
+                        _state["trade_log"].insert(0, {
+                            "time": now_str,
+                            "action": "강제청산",
+                            "ticker": ticker,
+                            "price": get_current_price(ticker),
+                            "qty": qty,
+                            "condition": "락 조건 → liquidate",
+                            "result": result.get("msg1", "완료"),
+                        })
+                except Exception as e:
+                    log.error(f"강제청산 실패 ({ticker}): {e}")
+        return
+
+    # ── 매수 조건 체크 ────────────────────
+    if not buy_locked:
+        for cond in conditions.get("buy_conditions", []):
+            ticker = cond.get("ticker")
+            if not ticker:
+                continue
+            price = get_current_price(ticker)
+            if price is None:
+                continue
+
+            buy_price = _positions.get(ticker, {}).get("buy_price")
+            if not _evaluate_condition_item(cond, price, buy_price):
+                continue
+
+            # 수량 계산: weight_pct 우선, 없으면 qty 필드
+            qty = cond.get("qty", None)
+            weight_pct = cond.get("weight_pct")
+            if weight_pct and price > 0:
+                # 계좌 잔고 조회가 필요하나, 현재는 모의 고정값 사용
+                # TODO: 계좌 개설 후 get_account_balance() 연동
+                portfolio_value = _state.get("portfolio_value", 1_000_000)
+                target_amount = portfolio_value * weight_pct / 100
+                qty = max(1, int(target_amount / price))
+            elif qty is None:
+                qty = 1
             try:
                 qty = int(qty)
             except Exception:
                 qty = 1
-            price_type = cond.get("price_type", "market")
-            order_price = 0 if price_type == "market" else int(price)
+
+            order_price = 0  # 시장가
             try:
                 result = place_order(ticker, "buy", qty, order_price)
+                _record_buy(ticker, price, qty)
                 log_entry = {
                     "time": now_str,
                     "action": "매수",
@@ -613,6 +712,7 @@ def _check_and_trade(conditions: dict):
                     "price": price,
                     "qty": qty,
                     "condition": cond.get("condition", ""),
+                    "label": cond.get("label", ""),
                     "result": result.get("msg1", "완료"),
                 }
                 with _lock:
@@ -633,7 +733,7 @@ def _check_and_trade(conditions: dict):
                         "result": str(e),
                     })
 
-    # 매도 조건 체크
+    # ── 매도 조건 체크 ────────────────────
     for cond in conditions.get("sell_conditions", []):
         ticker = cond.get("ticker")
         if not ticker:
@@ -641,40 +741,44 @@ def _check_and_trade(conditions: dict):
         price = get_current_price(ticker)
         if price is None:
             continue
-        if _evaluate_condition(cond.get("condition", ""), price, ticker):
-            qty_raw = cond.get("qty", 1)
-            qty = 1 if qty_raw == "all" else int(qty_raw)
-            price_type = cond.get("price_type", "market")
-            order_price = 0 if price_type == "market" else int(price)
-            try:
-                result = place_order(ticker, "sell", qty, order_price)
-                log_entry = {
+
+        buy_price = _positions.get(ticker, {}).get("buy_price")
+        if not _evaluate_condition_item(cond, price, buy_price):
+            continue
+
+        qty = _calc_sell_qty(cond, ticker)
+        order_price = 0  # 시장가
+        try:
+            result = place_order(ticker, "sell", qty, order_price)
+            _record_sell(ticker, qty)
+            log_entry = {
+                "time": now_str,
+                "action": "매도",
+                "ticker": ticker,
+                "name": cond.get("name", ticker),
+                "price": price,
+                "qty": qty,
+                "condition": cond.get("condition", ""),
+                "label": cond.get("label", ""),
+                "result": result.get("msg1", "완료"),
+            }
+            with _lock:
+                _state["trade_log"].insert(0, log_entry)
+                _state["trade_log"] = _state["trade_log"][:100]
+            log.info(f"매도 완료: {ticker} {qty}주 @{price}")
+        except Exception as e:
+            log.error(f"매도 주문 실패 ({ticker}): {e}")
+            with _lock:
+                _state["trade_log"].insert(0, {
                     "time": now_str,
-                    "action": "매도",
+                    "action": "매도실패",
                     "ticker": ticker,
                     "name": cond.get("name", ticker),
                     "price": price,
                     "qty": qty,
                     "condition": cond.get("condition", ""),
-                    "result": result.get("msg1", "완료"),
-                }
-                with _lock:
-                    _state["trade_log"].insert(0, log_entry)
-                    _state["trade_log"] = _state["trade_log"][:100]
-                log.info(f"매도 완료: {ticker} {qty}주 @{price}")
-            except Exception as e:
-                log.error(f"매도 주문 실패 ({ticker}): {e}")
-                with _lock:
-                    _state["trade_log"].insert(0, {
-                        "time": now_str,
-                        "action": "매도실패",
-                        "ticker": ticker,
-                        "name": cond.get("name", ticker),
-                        "price": price,
-                        "qty": qty,
-                        "condition": cond.get("condition", ""),
-                        "result": str(e),
-                    })
+                    "result": str(e),
+                })
 
 
 # ─────────────────────────────────────────────
