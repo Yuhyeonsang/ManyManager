@@ -1,58 +1,116 @@
 /**
  * AutoTradeScreen.js
- * 이미지로 매수/매도 조건 등록 → 자동매매 실행/정지
+ * BacktestScreen과 동일한 조건 UI + 자동매매 실행/정지 + AI 이중 검증
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
-  View,
-  Text,
-  ScrollView,
-  TouchableOpacity,
-  StyleSheet,
-  ActivityIndicator,
-  Alert,
-  RefreshControl,
-  Platform,
-  Modal,
-  TextInput,
-  KeyboardAvoidingView,
+  View, Text, ScrollView, FlatList, TouchableOpacity, StyleSheet,
+  ActivityIndicator, Alert, RefreshControl, Platform, Modal,
+  TextInput, KeyboardAvoidingView, Image, Dimensions,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import {
-  analyzeTradeImage,
-  analyzeTradeText,
-  startAutoTrade,
-  stopAutoTrade,
-  getAutoTradeStatus,
+  analyzeTradeImage, analyzeTradeText,
+  startAutoTrade, stopAutoTrade, getAutoTradeStatus,
 } from '../services/api';
 
-export default function AutoTradeScreen() {
-  const [status, setStatus] = useState(null);
-  const [analyzing, setAnalyzing] = useState(false);
-  const [toggling, setToggling] = useState(false);
-  const [tradeMode, setTradeMode] = useState('paper'); // 'paper' | 'real'
-  const [refreshing, setRefreshing] = useState(false);
-  const [conditions, setConditions] = useState(null);
-  const [verification, setVerification] = useState(null);
-  const [showMissing, setShowMissing] = useState(false);
-  const [textModalVisible, setTextModalVisible] = useState(false);
-  const [pasteText, setPasteText] = useState('');
+const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
+const DEFAULT_TICKERS = ['TQQQ', 'QQQ', 'SPY', 'SQQQ', 'TLT', 'GLD', 'UPRO', 'TMF'];
 
-  // ── 상태 폴링 ──────────────────────────────
+const CONDITION_TEMPLATES = {
+  buy: [
+    '고점 대비 -10% 하락', '고점 대비 -20% 하락', '고점 대비 -30% 하락',
+    'RSI 35 이하', 'RSI 25 이하', '골든크로스 발생',
+    '200일선 이하', '200일선 대비 -7% 이하', '볼린저 하단 이탈', '항상',
+  ],
+  sell: [
+    'TP1 +15% 도달', 'TP2 +100% 도달', 'TP3 +350% 도달',
+    '+30% 도달', '+50% 도달', '+200% 도달',
+    '데드크로스 발생', '손절 -10%', 'RSI 70 이상', '볼린저 상단 돌파',
+  ],
+  lock: [
+    '고점 대비 -40% 이하', '극단적 하락 (-40% 이하)', 'RSI 20 이하',
+  ],
+};
+
+const emptyBuy  = () => ({ label: '', name: '', ticker: '', ref_ticker: '', condition: '', weight_pct: '', weight_mode: 'add' });
+const emptySell = () => ({ label: '', name: '', ticker: '', condition: '', sell_pct: '', sell_mode: 'initial_qty' });
+const emptyLock = () => ({ condition: '', action: 'liquidate' });
+
+function validateCondition(type, data) {
+  if (type === 'buy' || type === 'sell') {
+    if (!data.ticker && !data.name) return '종목명 또는 티커를 입력하세요.';
+    if (!data.condition) return '조건 내용을 입력하세요.';
+  }
+  if (type === 'lock') {
+    if (!data.condition) return '조건 내용을 입력하세요.';
+  }
+  return null;
+}
+
+export default function AutoTradeScreen() {
+  // ── 자동매매 상태 ─────────────────────────
+  const [status,    setStatus]    = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+  const [toggling,  setToggling]  = useState(false);
+  const [tradeMode, setTradeMode] = useState('paper');
+
+  // ── 조건 ─────────────────────────────────
+  const [conditions,    setConditions]    = useState(null);
+  const [verification,  setVerification]  = useState(null);
+  const [showMissing,   setShowMissing]   = useState(false);
+  const [condExpanded,  setCondExpanded]  = useState(false);
+
+  // ── 이미지 ───────────────────────────────
+  const [imageUris,     setImageUris]     = useState([]);
+  const [analyzing,     setAnalyzing]     = useState(false);
+  const [analyzeError,  setAnalyzeError]  = useState(null);
+  const [galleryVisible, setGalleryVisible] = useState(false);
+  const [galleryIndex,  setGalleryIndex]  = useState(0);
+  const galleryRef = useRef(null);
+
+  // ── 텍스트 모달 ──────────────────────────
+  const [textModalVisible, setTextModalVisible] = useState(false);
+  const [pasteText,  setPasteText]  = useState('');
+
+  // ── 조건 편집 모달 ────────────────────────
+  const [editModal, setEditModal] = useState({ visible: false, type: null, index: null, data: null });
+  const [editError, setEditError] = useState(null);
+
+  // ── 자동완성 ────────────────────────────
+  const knownTickers = React.useMemo(() => {
+    const set = new Set(DEFAULT_TICKERS);
+    if (!conditions) return [...set];
+    [...(conditions.buy_conditions || []), ...(conditions.sell_conditions || [])].forEach(c => {
+      if (c.ticker) set.add(c.ticker);
+      if (c.ref_ticker) set.add(c.ref_ticker);
+    });
+    return [...set];
+  }, [conditions]);
+
+  const knownLabels = React.useMemo(() => {
+    const set = new Set();
+    [...(conditions?.buy_conditions || []), ...(conditions?.sell_conditions || [])].forEach(c => {
+      if (c.label) set.add(c.label);
+    });
+    return [...set];
+  }, [conditions]);
+
+  // ── 상태 폴링 ────────────────────────────
   const loadStatus = useCallback(async (silent = false) => {
     if (!silent) setRefreshing(true);
     try {
       const s = await getAutoTradeStatus();
       setStatus(s);
-      if (s.conditions) setConditions(s.conditions);
+      if (s.conditions && !conditions) setConditions(s.conditions);
     } catch (e) {
       if (!silent) Alert.alert('오류', '서버 연결 실패: ' + (e?.message ?? e));
     } finally {
       setRefreshing(false);
     }
-  }, []);
+  }, [conditions]);
 
   useEffect(() => {
     loadStatus();
@@ -60,143 +118,353 @@ export default function AutoTradeScreen() {
     return () => clearInterval(timer);
   }, [loadStatus]);
 
-  // ── 이미지 선택 & 분석 ──────────────────────
-  const pickAndAnalyze = async () => {
+  // ── 이미지 선택 & 분석 ──────────────────
+  const pickImage = async () => {
     const { status: perm } = await ImagePicker.requestMediaLibraryPermissionsAsync();
-    if (perm !== 'granted') {
-      Alert.alert('권한 필요', '사진 접근 권한이 필요합니다.');
-      return;
-    }
+    if (perm !== 'granted') { Alert.alert('권한 필요', '사진 접근 권한이 필요합니다.'); return; }
 
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      allowsEditing: false,
-      quality: 0.85,
-      base64: false,
+    const res = await ImagePicker.launchImageLibraryAsync({
+      allowsEditing: false, quality: 0.85, allowsMultipleSelection: true,
     });
+    if (res.canceled) return;
 
-    if (result.canceled) return;
-
+    const assets = res.assets;
+    setImageUris(prev => [...prev, ...assets.map(a => a.uri)]);
     setAnalyzing(true);
-    try {
-      const asset = result.assets[0];
-      const uriParts = asset.uri.split('.');
-      const ext = uriParts[uriParts.length - 1].toLowerCase();
-      const mimeMap = { jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png', webp: 'image/webp' };
-      const mime = mimeMap[ext] || 'image/jpeg';
+    setAnalyzeError(null);
 
+    try {
+      const asset = assets[0];
+      const ext  = asset.uri.split('.').pop().toLowerCase();
+      const mime = ext === 'png' ? 'image/png' : 'image/jpeg';
       const data = await analyzeTradeImage(asset.uri, mime);
-      setConditions(data.conditions);
+      setConditions(prev => {
+        if (!prev) return data.conditions;
+        return {
+          ...data.conditions,
+          buy_conditions:  [...(prev.buy_conditions  || []), ...(data.conditions.buy_conditions  || [])],
+          sell_conditions: [...(prev.sell_conditions || []), ...(data.conditions.sell_conditions || [])],
+          lock_conditions: [...(prev.lock_conditions || []), ...(data.conditions.lock_conditions || [])],
+        };
+      });
       setVerification(data.verification ?? null);
       setShowMissing(false);
+      setCondExpanded(true);
     } catch (e) {
-      Alert.alert('분석 실패', e?.message ?? String(e));
+      setAnalyzeError(e?.message ?? String(e));
+      if (!conditions) setConditions({ summary: '수동 입력', buy_conditions: [], sell_conditions: [], lock_conditions: [] });
     } finally {
       setAnalyzing(false);
     }
   };
 
-  // ── 텍스트 붙여넣기 분석 ──────────────────
-  const analyzeTextInput = async () => {
+  // ── 텍스트 분석 ──────────────────────────
+  const analyzeText = async () => {
     const text = pasteText.trim();
-    if (!text) { Alert.alert('입력 없음', '분석할 텍스트를 붙여넣으세요.'); return; }
+    if (!text) { Alert.alert('입력 없음', '텍스트를 붙여넣으세요.'); return; }
     setTextModalVisible(false);
     setPasteText('');
     setAnalyzing(true);
+    setAnalyzeError(null);
     try {
       const data = await analyzeTradeText(text);
-      setConditions(data.conditions);
+      setConditions(prev => {
+        if (!prev) return data.conditions;
+        return {
+          ...data.conditions,
+          buy_conditions:  [...(prev.buy_conditions  || []), ...(data.conditions.buy_conditions  || [])],
+          sell_conditions: [...(prev.sell_conditions || []), ...(data.conditions.sell_conditions || [])],
+          lock_conditions: [...(prev.lock_conditions || []), ...(data.conditions.lock_conditions || [])],
+        };
+      });
       setVerification(data.verification ?? null);
       setShowMissing(false);
+      setCondExpanded(true);
     } catch (e) {
-      Alert.alert('분석 실패', e?.message ?? String(e));
+      setAnalyzeError(e?.message ?? String(e));
+      if (!conditions) setConditions({ summary: '수동 입력', buy_conditions: [], sell_conditions: [], lock_conditions: [] });
     } finally {
       setAnalyzing(false);
     }
   };
 
-  // ── 자동매매 시작/정지 ─────────────────────
+  const removeImage = (i) =>
+    Alert.alert('삭제', '이 이미지를 제거할까요?', [
+      { text: '취소', style: 'cancel' },
+      { text: '삭제', style: 'destructive', onPress: () => setImageUris(prev => prev.filter((_, idx) => idx !== i)) },
+    ]);
+
+  // ── 조건 CRUD ────────────────────────────
+  const openEdit = (type, index) => {
+    const list = type === 'buy' ? conditions.buy_conditions : type === 'sell' ? conditions.sell_conditions : conditions.lock_conditions;
+    setEditError(null);
+    setEditModal({ visible: true, type, index, data: { ...list[index] } });
+  };
+
+  const openAdd = (type) => {
+    const data = type === 'buy' ? emptyBuy() : type === 'sell' ? emptySell() : emptyLock();
+    setEditError(null);
+    setEditModal({ visible: true, type, index: null, data });
+  };
+
+  const saveEdit = () => {
+    const { type, index, data } = editModal;
+    const err = validateCondition(type, data);
+    if (err) { setEditError(err); return; }
+    setConditions(prev => {
+      const key  = type === 'buy' ? 'buy_conditions' : type === 'sell' ? 'sell_conditions' : 'lock_conditions';
+      const list = [...(prev[key] || [])];
+      if (index === null) list.push(data);
+      else list[index] = data;
+      return { ...prev, [key]: list };
+    });
+    setEditModal({ visible: false, type: null, index: null, data: null });
+    setEditError(null);
+  };
+
+  const deleteCondition = (type, index) =>
+    Alert.alert('삭제', '이 조건을 삭제할까요?', [
+      { text: '취소', style: 'cancel' },
+      { text: '삭제', style: 'destructive', onPress: () => {
+        setConditions(prev => {
+          const key  = type === 'buy' ? 'buy_conditions' : type === 'sell' ? 'sell_conditions' : 'lock_conditions';
+          const list = [...(prev[key] || [])];
+          list.splice(index, 1);
+          return { ...prev, [key]: list };
+        });
+      }},
+    ]);
+
+  const setField = (field, value) =>
+    setEditModal(prev => ({ ...prev, data: { ...prev.data, [field]: value } }));
+
+  // ── 자동매매 시작/정지 ────────────────────
   const toggleTrading = async () => {
-    if (!conditions) {
-      Alert.alert('조건 없음', '먼저 이미지를 업로드해서 조건을 분석하세요.');
-      return;
-    }
-
+    if (!conditions) { Alert.alert('조건 없음', '먼저 이미지를 업로드하거나 조건을 입력하세요.'); return; }
     const isRunning = status?.running;
-
     if (!isRunning) {
       const modeLabel = tradeMode === 'real' ? '🔴 실전투자' : '🟡 모의투자';
       const modeDesc  = tradeMode === 'real'
         ? `실제 계좌(${status?.account_no ?? '??'})로 실제 돈이 거래됩니다!`
         : '가상 머니로 연습합니다. 실제 거래 없음.';
-      Alert.alert(
-        `자동매매 시작 — ${modeLabel}`,
-        `${modeDesc}\n\n계속하시겠습니까?`,
-        [
-          { text: '취소', style: 'cancel' },
-          {
-            text: '시작',
-            style: tradeMode === 'real' ? 'destructive' : 'default',
-            onPress: async () => {
-              setToggling(true);
-              try {
-                await startAutoTrade(conditions, tradeMode);
-                await loadStatus();
-              } catch (e) {
-                Alert.alert('오류', e?.message ?? String(e));
-              } finally {
-                setToggling(false);
-              }
-            },
-          },
-        ],
-      );
+      Alert.alert(`자동매매 시작 — ${modeLabel}`, `${modeDesc}\n\n계속하시겠습니까?`, [
+        { text: '취소', style: 'cancel' },
+        { text: '시작', style: tradeMode === 'real' ? 'destructive' : 'default',
+          onPress: async () => {
+            setToggling(true);
+            try { await startAutoTrade(conditions, tradeMode); await loadStatus(); }
+            catch (e) { Alert.alert('오류', e?.message ?? String(e)); }
+            finally { setToggling(false); }
+          }},
+      ]);
     } else {
       setToggling(true);
-      try {
-        await stopAutoTrade();
-        await loadStatus();
-      } catch (e) {
-        Alert.alert('오류', e?.message ?? String(e));
-      } finally {
-        setToggling(false);
-      }
+      try { await stopAutoTrade(); await loadStatus(); }
+      catch (e) { Alert.alert('오류', e?.message ?? String(e)); }
+      finally { setToggling(false); }
     }
   };
 
-  // ── 렌더 헬퍼 ─────────────────────────────
-  const renderConditionRow = (item, type) => (
-    <View key={`${type}-${item.ticker}`} style={styles.condRow}>
-      <View style={[styles.condBadge, type === 'buy' ? styles.buyBadge : styles.sellBadge]}>
-        <Text style={styles.condBadgeText}>{type === 'buy' ? '매수' : '매도'}</Text>
-      </View>
-      <View style={styles.condInfo}>
-        <Text style={styles.condName}>{item.name || item.ticker}</Text>
-        <Text style={styles.condDetail}>{item.condition}</Text>
-        <Text style={styles.condMeta}>
-          {item.qty === 'all' ? '전량' : `${item.qty}주`} · {item.price_type === 'market' ? '시장가' : '지정가'}
-        </Text>
-      </View>
-    </View>
-  );
-
-  const renderLogRow = (entry, idx) => {
-    const isError = entry.action.includes('실패');
+  // ── 자동완성 드롭다운 ────────────────────
+  const AutoSuggest = ({ query, items, onSelect, showAll = false }) => {
+    const q = (query || '').trim().toLowerCase();
+    if (!showAll && q.length === 0) return null;
+    const filtered = q.length === 0 ? items : items.filter(t => t.toLowerCase().includes(q));
+    if (filtered.length === 0) return null;
     return (
-      <View key={idx} style={styles.logRow}>
-        <Text style={[styles.logAction, isError ? styles.errorText : entry.action === '매수' ? styles.buyText : styles.sellText]}>
-          {entry.action}
-        </Text>
-        <View style={styles.logDetail}>
-          <Text style={styles.logName}>{entry.name} ({entry.ticker})</Text>
-          <Text style={styles.logMeta}>
-            {entry.price?.toLocaleString()}원 · {entry.qty}주 · {entry.time}
-          </Text>
-          <Text style={styles.logResult} numberOfLines={1}>{entry.result}</Text>
-        </View>
+      <View style={styles.suggestBox}>
+        {filtered.map((item, i) => (
+          <TouchableOpacity key={i} style={[styles.suggestItem, i < filtered.length - 1 && styles.suggestItemBorder]} onPress={() => onSelect(item)}>
+            <Text style={styles.suggestText}>{item}</Text>
+          </TouchableOpacity>
+        ))}
       </View>
     );
   };
+
+  // ── 조건 상세 표시 ───────────────────────
+  const renderConditionDetail = () => (
+    <View style={styles.condDetail}>
+      {[
+        { type: 'buy',  label: '🟢 매수 조건', color: '#16A34A', list: conditions.buy_conditions },
+        { type: 'sell', label: '🔴 매도 조건', color: '#DC2626', list: conditions.sell_conditions },
+        { type: 'lock', label: '🔒 락 조건',   color: '#F59E0B', list: conditions.lock_conditions },
+      ].map(({ type, label, color, list }) => (
+        <View key={type}>
+          <View style={styles.condSectionHeader}>
+            <Text style={[styles.condDetailHeader, { color }]}>{label}</Text>
+            <TouchableOpacity style={styles.addBtn} onPress={() => openAdd(type)}>
+              <Text style={styles.addBtnText}>➕ 추가</Text>
+            </TouchableOpacity>
+          </View>
+          {(!list || list.length === 0) && <Text style={styles.emptyText}>조건 없음</Text>}
+          {(list || []).map((c, i) => (
+            <View key={i} style={styles.condDetailRow}>
+              <View style={styles.condDetailContent}>
+                {type !== 'lock' && (
+                  <Text style={styles.condDetailName}>
+                    {c.label ? `[${c.label}] ` : ''}{c.name || c.ticker || '-'}
+                    {c.ref_ticker ? ` (기준: ${c.ref_ticker})` : ''}
+                  </Text>
+                )}
+                <Text style={styles.condDetailCond}>조건: {c.condition}</Text>
+                <Text style={styles.condDetailMeta}>
+                  {type === 'buy'  && c.weight_pct != null ? `목표비중 ${c.weight_pct}% (${c.weight_mode === 'add' ? '추가' : '타겟'})` : ''}
+                  {type === 'sell' && c.sell_pct   != null ? `${c.sell_pct}% 매도 (${c.sell_mode === 'initial_qty' ? '최초수량' : '현재보유'} 기준)` : ''}
+                  {type === 'lock' ? (c.action === 'liquidate' ? '전량 청산+매수 잠금' : '신규 매수 잠금') : ''}
+                  {(type === 'buy' || type === 'sell') && c.ticker ? ` · ${c.ticker}` : ''}
+                </Text>
+              </View>
+              <View style={styles.condActions}>
+                <TouchableOpacity style={styles.condEditBtn} onPress={() => openEdit(type, i)}><Text>✏️</Text></TouchableOpacity>
+                <TouchableOpacity style={styles.condDelBtn} onPress={() => deleteCondition(type, i)}><Text>🗑️</Text></TouchableOpacity>
+              </View>
+            </View>
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+
+  // ── 편집 모달 ────────────────────────────
+  const renderEditModal = () => {
+    if (!editModal.visible || !editModal.data) return null;
+    const { type, data } = editModal;
+    const isNew = editModal.index === null;
+    return (
+      <Modal visible transparent animationType="slide" onRequestClose={() => setEditModal(v => ({ ...v, visible: false }))}>
+        <KeyboardAvoidingView style={{ flex: 1, justifyContent: 'flex-end' }} behavior="padding" enabled={Platform.OS === 'ios'}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setEditModal(v => ({ ...v, visible: false }))} />
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>
+              {isNew ? '➕ 조건 추가' : '✏️ 조건 수정'}
+              {type === 'buy' ? ' (매수)' : type === 'sell' ? ' (매도)' : ' (락)'}
+            </Text>
+            {editError && <View style={styles.modalError}><Text style={styles.modalErrorText}>⚠️ {editError}</Text></View>}
+            <ScrollView style={styles.modalScroll} contentContainerStyle={{ paddingBottom: 8 }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+
+              {(type === 'buy' || type === 'sell') && (
+                <>
+                  <Text style={styles.modalLabel}>라벨</Text>
+                  <TextInput style={styles.modalInput} value={data.label ?? ''} onChangeText={v => setField('label', v)} placeholder="예: Dip 1 (선택)" placeholderTextColor="#94A3B8" />
+                  <AutoSuggest query={data.label} items={[...knownLabels]} onSelect={v => setField('label', v)} />
+
+                  <Text style={styles.modalLabel}>티커 <Text style={{ color: '#DC2626' }}>*</Text></Text>
+                  <TextInput style={styles.modalInput} value={data.ticker ?? ''} onChangeText={v => { setField('ticker', v); if (!data.name) setField('name', v); }} placeholder="예: TQQQ" placeholderTextColor="#94A3B8" autoCapitalize="characters" />
+                  <AutoSuggest query={data.ticker} items={knownTickers} onSelect={v => { setField('ticker', v); setField('name', v); }} showAll />
+
+                  <Text style={styles.modalLabel}>종목명</Text>
+                  <TextInput style={styles.modalInput} value={data.name ?? ''} onChangeText={v => setField('name', v)} placeholder="티커와 같으면 생략 가능" placeholderTextColor="#94A3B8" />
+                </>
+              )}
+
+              {type === 'buy' && (
+                <>
+                  <Text style={styles.modalLabel}>기준 티커 (선택)</Text>
+                  <TextInput style={styles.modalInput} value={data.ref_ticker ?? ''} onChangeText={v => setField('ref_ticker', v)} placeholder="예: QQQ" placeholderTextColor="#94A3B8" autoCapitalize="characters" />
+                  <AutoSuggest query={data.ref_ticker} items={knownTickers} onSelect={v => setField('ref_ticker', v)} showAll />
+                </>
+              )}
+
+              <Text style={styles.modalLabel}>조건 내용 <Text style={{ color: '#DC2626' }}>*</Text></Text>
+              <TextInput style={[styles.modalInput, styles.modalInputMulti]} value={data.condition ?? ''} onChangeText={v => setField('condition', v)} placeholder="예: 고점 대비 -10% 이하" placeholderTextColor="#94A3B8" multiline />
+              <AutoSuggest query={data.condition} items={CONDITION_TEMPLATES[type] || []} onSelect={v => setField('condition', v)} />
+
+              {type === 'buy' && (
+                <>
+                  <Text style={styles.modalLabel}>목표 비중 (%)</Text>
+                  <TextInput style={styles.modalInput} value={String(data.weight_pct ?? '')} onChangeText={v => setField('weight_pct', v === '' ? '' : Number(v))} keyboardType="numeric" placeholder="예: 30" placeholderTextColor="#94A3B8" />
+                  <AutoSuggest query={String(data.weight_pct ?? '')} items={['10', '15', '20', '30', '50', '70', '100']} onSelect={v => setField('weight_pct', Number(v))} showAll />
+
+                  <Text style={styles.modalLabel}>비중 모드</Text>
+                  <View style={styles.toggleRow}>
+                    {[{ v: 'add', label: '추가' }, { v: 'target', label: '타겟' }].map(opt => (
+                      <TouchableOpacity key={opt.v} style={[styles.toggleBtn, data.weight_mode === opt.v && styles.toggleBtnActive]} onPress={() => setField('weight_mode', opt.v)}>
+                        <Text style={[styles.toggleBtnText, data.weight_mode === opt.v && styles.toggleBtnTextActive]}>{opt.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
+
+              {type === 'sell' && (
+                <>
+                  <Text style={styles.modalLabel}>매도 비율 (%)</Text>
+                  <TextInput style={styles.modalInput} value={String(data.sell_pct ?? '')} onChangeText={v => setField('sell_pct', v === '' ? '' : Number(v))} keyboardType="numeric" placeholder="예: 50 (100이면 전량)" placeholderTextColor="#94A3B8" />
+                  <AutoSuggest query={String(data.sell_pct ?? '')} items={['25', '35', '50', '75', '100']} onSelect={v => setField('sell_pct', Number(v))} showAll />
+
+                  <Text style={styles.modalLabel}>매도 기준</Text>
+                  <View style={styles.toggleRow}>
+                    {[{ v: 'initial_qty', label: '최초수량 기준' }, { v: 'current_qty', label: '현재보유 기준' }].map(opt => (
+                      <TouchableOpacity key={opt.v} style={[styles.toggleBtn, data.sell_mode === opt.v && styles.toggleBtnActive]} onPress={() => setField('sell_mode', opt.v)}>
+                        <Text style={[styles.toggleBtnText, data.sell_mode === opt.v && styles.toggleBtnTextActive]}>{opt.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
+
+              {type === 'lock' && (
+                <>
+                  <Text style={styles.modalLabel}>락 액션</Text>
+                  <View style={styles.toggleRow}>
+                    {[{ v: 'liquidate', label: '전량 청산+잠금' }, { v: 'lock_buy', label: '신규 매수 잠금' }].map(opt => (
+                      <TouchableOpacity key={opt.v} style={[styles.toggleBtn, data.action === opt.v && styles.toggleBtnActive]} onPress={() => setField('action', opt.v)}>
+                        <Text style={[styles.toggleBtnText, data.action === opt.v && styles.toggleBtnTextActive]}>{opt.label}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                </>
+              )}
+            </ScrollView>
+
+            <View style={styles.modalBtns}>
+              <TouchableOpacity style={styles.modalCancel} onPress={() => { setEditModal(v => ({ ...v, visible: false })); setEditError(null); }}>
+                <Text style={styles.modalCancelText}>취소</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.modalSave} onPress={saveEdit}>
+                <Text style={styles.modalSaveText}>저장</Text>
+              </TouchableOpacity>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+    );
+  };
+
+  // ── 갤러리 모달 ──────────────────────────
+  const renderGalleryModal = () => (
+    <Modal visible={galleryVisible} transparent animationType="fade" onRequestClose={() => setGalleryVisible(false)}>
+      <View style={styles.galleryOverlay}>
+        <View style={styles.galleryHeader}>
+          <Text style={styles.galleryPageText}>{galleryIndex + 1} / {imageUris.length}</Text>
+          <TouchableOpacity style={styles.galleryCloseBtn} onPress={() => setGalleryVisible(false)}>
+            <Text style={styles.galleryCloseText}>✕ 닫기</Text>
+          </TouchableOpacity>
+        </View>
+        <FlatList
+          ref={galleryRef}
+          data={imageUris}
+          horizontal pagingEnabled
+          showsHorizontalScrollIndicator={false}
+          initialScrollIndex={galleryIndex}
+          getItemLayout={(_, i) => ({ length: SCREEN_W, offset: SCREEN_W * i, index: i })}
+          onMomentumScrollEnd={e => setGalleryIndex(Math.round(e.nativeEvent.contentOffset.x / SCREEN_W))}
+          keyExtractor={(_, i) => String(i)}
+          renderItem={({ item }) => (
+            <ScrollView style={{ width: SCREEN_W, height: SCREEN_H }} contentContainerStyle={styles.galleryImgContainer} maximumZoomScale={5} minimumZoomScale={1} centerContent showsVerticalScrollIndicator={false} showsHorizontalScrollIndicator={false}>
+              <Image source={{ uri: item }} style={{ width: SCREEN_W, height: SCREEN_H * 0.85 }} resizeMode="contain" />
+            </ScrollView>
+          )}
+        />
+        {imageUris.length > 1 && (
+          <View style={styles.galleryDots}>
+            {imageUris.map((_, i) => <View key={i} style={[styles.galleryDot, i === galleryIndex && styles.galleryDotActive]} />)}
+          </View>
+        )}
+      </View>
+    </Modal>
+  );
 
   const isRunning = status?.running;
 
@@ -206,15 +474,11 @@ export default function AutoTradeScreen() {
         contentContainerStyle={styles.scroll}
         refreshControl={<RefreshControl refreshing={refreshing} onRefresh={loadStatus} tintColor="#6366F1" />}
       >
-        {/* ── 헤더 상태 ── */}
+        {/* ── 상태 배너 ── */}
         <View style={[styles.statusBanner, isRunning ? styles.bannerRunning : styles.bannerStopped]}>
           <View style={[styles.statusDot, isRunning ? styles.dotRunning : styles.dotStopped]} />
-          <Text style={styles.statusText}>
-            {isRunning ? '자동매매 실행 중' : '자동매매 정지'}
-          </Text>
-          <Text style={styles.modeText}>
-            {(status?.trade_mode ?? tradeMode) === 'real' ? '🔴 실전' : '🟡 모의'}
-          </Text>
+          <Text style={styles.statusText}>{isRunning ? '자동매매 실행 중' : '자동매매 정지'}</Text>
+          <Text style={styles.modeText}>{(status?.trade_mode ?? tradeMode) === 'real' ? '🔴 실전' : '🟡 모의'}</Text>
         </View>
 
         {status?.error && (
@@ -223,90 +487,83 @@ export default function AutoTradeScreen() {
           </View>
         )}
 
-        {/* ── 실전 / 모의 토글 ── */}
+        {/* ── 거래 모드 ── */}
         <Text style={styles.sectionTitle}>💼 거래 모드 선택</Text>
         <View style={styles.modeRow}>
-          <TouchableOpacity
-            style={[styles.modeBtn, tradeMode === 'paper' && styles.modeBtnPaper]}
-            onPress={() => !isRunning && setTradeMode('paper')}
-            disabled={isRunning}
-          >
-            <Text style={[styles.modeBtnText, tradeMode === 'paper' && styles.modeBtnTextActive]}>
-              🟡 모의투자
-            </Text>
+          <TouchableOpacity style={[styles.modeBtn, tradeMode === 'paper' && styles.modeBtnPaper]} onPress={() => !isRunning && setTradeMode('paper')} disabled={isRunning}>
+            <Text style={[styles.modeBtnText, tradeMode === 'paper' && styles.modeBtnTextActive]}>🟡 모의투자</Text>
             <Text style={styles.modeBtnSub}>가상머니 · 안전하게 연습</Text>
           </TouchableOpacity>
           <TouchableOpacity
             style={[styles.modeBtn, tradeMode === 'real' && styles.modeBtnReal]}
             onPress={() => {
               if (isRunning) return;
-              Alert.alert(
-                '실전투자 선택',
-                '실제 계좌의 실제 돈으로 거래됩니다.\n정말 실전투자 모드로 전환하시겠습니까?',
-                [
-                  { text: '취소', style: 'cancel' },
-                  { text: '실전으로 전환', style: 'destructive', onPress: () => setTradeMode('real') },
-                ],
-              );
+              Alert.alert('실전투자 선택', '실제 계좌의 실제 돈으로 거래됩니다.\n정말 전환하시겠습니까?', [
+                { text: '취소', style: 'cancel' },
+                { text: '실전으로 전환', style: 'destructive', onPress: () => setTradeMode('real') },
+              ]);
             }}
             disabled={isRunning}
           >
-            <Text style={[styles.modeBtnText, tradeMode === 'real' && styles.modeBtnTextActive]}>
-              🔴 실전투자
-            </Text>
+            <Text style={[styles.modeBtnText, tradeMode === 'real' && styles.modeBtnTextActive]}>🔴 실전투자</Text>
             <Text style={styles.modeBtnSub}>실제 돈 · KIS 계좌 필요</Text>
           </TouchableOpacity>
         </View>
         {tradeMode === 'real' && (
           <View style={styles.realWarning}>
-            <Text style={styles.realWarningText}>
-              ⚠️ 실전투자 모드입니다. 실제 돈으로 거래됩니다. 신중하게 사용하세요.
-            </Text>
+            <Text style={styles.realWarningText}>⚠️ 실전투자 모드입니다. 실제 돈으로 거래됩니다.</Text>
           </View>
         )}
 
-        {/* ── 조건 등록 버튼 ── */}
+        {/* ── 조건 등록 ── */}
         <Text style={styles.sectionTitle}>📋 조건 등록</Text>
-        <View style={styles.imageButtons}>
-          <TouchableOpacity
-            style={[styles.imgBtn, analyzing && styles.btnDisabled]}
-            onPress={pickAndAnalyze}
-            disabled={analyzing}
-          >
-            {analyzing ? (
-              <ActivityIndicator color="#fff" />
-            ) : (
-              <Text style={styles.imgBtnText}>📁 갤러리에서 선택</Text>
-            )}
+        <View style={styles.uploadBtns}>
+          <TouchableOpacity style={[styles.imgBtn, analyzing && styles.btnDisabled]} onPress={pickImage} disabled={analyzing}>
+            {analyzing ? <ActivityIndicator color="#fff" /> : <Text style={styles.imgBtnText}>📁 갤러리에서 선택</Text>}
           </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.imgBtn, styles.imgBtnSecondary, analyzing && styles.btnDisabled]}
-            onPress={() => setTextModalVisible(true)}
-            disabled={analyzing}
-          >
-            <Text style={[styles.imgBtnText, styles.imgBtnTextSecondary]}>📝 텍스트 붙여넣기</Text>
+          <TouchableOpacity style={[styles.imgBtn, styles.imgBtnSec, analyzing && styles.btnDisabled]} onPress={() => setTextModalVisible(true)} disabled={analyzing}>
+            <Text style={[styles.imgBtnText, { color: '#6366F1' }]}>📝 텍스트 붙여넣기</Text>
           </TouchableOpacity>
         </View>
-        {analyzing && (
-          <Text style={styles.analyzingText}>AI가 조건을 분석 중입니다...</Text>
+
+        {/* 이미지 썸네일 */}
+        {imageUris.length > 0 && (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.thumbList}>
+            {imageUris.map((uri, i) => (
+              <TouchableOpacity key={i} style={styles.thumbWrap} onPress={() => { setGalleryIndex(i); setGalleryVisible(true); }}>
+                <Image source={{ uri }} style={styles.thumbImg} />
+                <TouchableOpacity style={styles.thumbDel} onPress={() => removeImage(i)}>
+                  <Text style={styles.thumbDelText}>✕</Text>
+                </TouchableOpacity>
+                <Text style={styles.thumbLabel}>사진 {i + 1}</Text>
+              </TouchableOpacity>
+            ))}
+            <TouchableOpacity style={styles.thumbAdd} onPress={pickImage}>
+              <Text style={styles.thumbAddIcon}>＋</Text>
+              <Text style={styles.thumbAddText}>추가</Text>
+            </TouchableOpacity>
+          </ScrollView>
         )}
 
-        {/* ── 추출된 조건 표시 ── */}
+        {analyzing && <Text style={styles.subText}>AI가 조건 분석 중...</Text>}
+        {analyzeError && (
+          <View style={styles.inlineError}>
+            <Text style={styles.inlineErrorText}>⚠️ 분석 실패: {analyzeError}</Text>
+            <Text style={styles.inlineErrorSub}>조건을 직접 입력하거나 수정하세요.</Text>
+          </View>
+        )}
+
+        {/* ── 추출된 조건 + 일치율 ── */}
         {conditions && (
           <>
-            <Text style={styles.sectionTitle}>📋 매매 조건</Text>
-            {conditions.summary && (
-              <Text style={styles.summary}>{conditions.summary}</Text>
-            )}
-
-            {/* ── 일치율 카드 ── */}
+            {/* 일치율 카드 */}
             {verification && verification.match_pct >= 0 && (() => {
-              const pct = verification.match_pct ?? 0;
+              const pct   = verification.match_pct ?? 0;
               const color = pct >= 80 ? '#16A34A' : pct >= 60 ? '#D97706' : '#DC2626';
               const bg    = pct >= 80 ? '#DCFCE7' : pct >= 60 ? '#FEF3C7' : '#FEE2E2';
               const label = pct >= 80 ? '높음' : pct >= 60 ? '보통' : '낮음';
-              const missing  = verification.missing  ?? [];
-              const wrong    = verification.wrong    ?? [];
+              const missing = verification.missing ?? [];
+              const wrong   = verification.wrong   ?? [];
               return (
                 <View style={[styles.verifyCard, { borderColor: color }]}>
                   <View style={styles.verifyTop}>
@@ -314,27 +571,18 @@ export default function AutoTradeScreen() {
                       <Text style={[styles.verifyPct, { color }]}>{pct}%</Text>
                     </View>
                     <View style={styles.verifyInfo}>
-                      <Text style={styles.verifyTitle}>
-                        AI 이중 검증 완료 — 일치율 <Text style={{ color }}>{label}</Text>
-                      </Text>
+                      <Text style={styles.verifyTitle}>AI 이중 검증 — 일치율 <Text style={{ color }}>{label}</Text></Text>
                       <Text style={styles.verifyNotes}>{verification.notes}</Text>
-                      <Text style={styles.verifyMeta}>
-                        원본 {verification.total_in_source ?? '?'}건 중 {verification.total_extracted ?? '?'}건 추출
-                      </Text>
+                      <Text style={styles.verifyMeta}>원본 {verification.total_in_source ?? '?'}건 중 {verification.total_extracted ?? '?'}건 추출</Text>
                     </View>
                   </View>
-
                   {(missing.length > 0 || wrong.length > 0) && (
-                    <TouchableOpacity
-                      style={styles.verifyToggle}
-                      onPress={() => setShowMissing(v => !v)}
-                    >
+                    <TouchableOpacity style={styles.verifyToggle} onPress={() => setShowMissing(v => !v)}>
                       <Text style={[styles.verifyToggleText, { color }]}>
                         {showMissing ? '▲ 닫기' : `▼ 누락/오류 ${missing.length + wrong.length}건 보기`}
                       </Text>
                     </TouchableOpacity>
                   )}
-
                   {showMissing && (
                     <View style={styles.verifyDetail}>
                       {missing.map((m, i) => (
@@ -355,30 +603,30 @@ export default function AutoTradeScreen() {
               );
             })()}
 
-            <Text style={styles.condHeader}>
-              체크 주기: {conditions.check_interval_minutes ?? 5}분마다
-            </Text>
-            {conditions.buy_conditions?.map((c) => renderConditionRow(c, 'buy'))}
-            {conditions.sell_conditions?.map((c) => renderConditionRow(c, 'sell'))}
+            {/* 조건 카드 */}
+            <TouchableOpacity style={styles.condSummaryCard} onPress={() => setCondExpanded(v => !v)} activeOpacity={0.8}>
+              <View style={styles.condSummaryHeader}>
+                <Text style={styles.condSummaryTitle}>📋 추출된 조건</Text>
+                <Text style={styles.condToggleIcon}>{condExpanded ? '▲' : '▼'}</Text>
+              </View>
+              <Text style={styles.condSummaryText}>{conditions.summary}</Text>
+              <Text style={styles.condSummaryMeta}>
+                매수 {conditions.buy_conditions?.length ?? 0}건 · 매도 {conditions.sell_conditions?.length ?? 0}건
+                {conditions.lock_conditions?.length > 0 ? ` · 락 ${conditions.lock_conditions.length}건` : ''} · 탭하면 상세보기
+              </Text>
+              {condExpanded && renderConditionDetail()}
+            </TouchableOpacity>
           </>
         )}
 
         {/* ── 시작/정지 버튼 ── */}
         <TouchableOpacity
-          style={[
-            styles.mainBtn,
-            isRunning ? styles.stopBtn : styles.startBtn,
-            (toggling || analyzing) && styles.btnDisabled,
-          ]}
+          style={[styles.mainBtn, isRunning ? styles.stopBtn : styles.startBtn, (toggling || analyzing) && styles.btnDisabled]}
           onPress={toggleTrading}
           disabled={toggling || analyzing}
         >
-          {toggling ? (
-            <ActivityIndicator color="#fff" size="large" />
-          ) : (
-            <Text style={styles.mainBtnText}>
-              {isRunning ? '⏹  자동매매 정지' : '▶  자동매매 시작'}
-            </Text>
+          {toggling ? <ActivityIndicator color="#fff" size="large" /> : (
+            <Text style={styles.mainBtnText}>{isRunning ? '⏹  자동매매 정지' : '▶  자동매매 시작'}</Text>
           )}
         </TouchableOpacity>
 
@@ -386,7 +634,19 @@ export default function AutoTradeScreen() {
         {status?.trade_log?.length > 0 && (
           <>
             <Text style={styles.sectionTitle}>📜 최근 거래 내역</Text>
-            {status.trade_log.map((e, i) => renderLogRow(e, i))}
+            {status.trade_log.map((e, i) => {
+              const isError = e.action.includes('실패');
+              return (
+                <View key={i} style={styles.logRow}>
+                  <Text style={[styles.logAction, isError ? styles.errText : e.action === '매수' ? styles.buyText : styles.sellText]}>{e.action}</Text>
+                  <View style={styles.logDetail}>
+                    <Text style={styles.logName}>{e.name} ({e.ticker})</Text>
+                    <Text style={styles.logMeta}>{e.price?.toLocaleString()}원 · {e.qty}주 · {e.time}</Text>
+                    <Text style={styles.logResult} numberOfLines={1}>{e.result}</Text>
+                  </View>
+                </View>
+              );
+            })}
           </>
         )}
 
@@ -395,30 +655,32 @@ export default function AutoTradeScreen() {
         )}
       </ScrollView>
 
+      {renderGalleryModal()}
+      {renderEditModal()}
+
       {/* 텍스트 붙여넣기 모달 */}
       <Modal visible={textModalVisible} transparent animationType="slide" onRequestClose={() => setTextModalVisible(false)}>
         <KeyboardAvoidingView style={{ flex: 1, justifyContent: 'flex-end' }} behavior="padding" enabled={Platform.OS === 'ios'}>
-          <TouchableOpacity style={{ ...StyleSheet.absoluteFillObject }} activeOpacity={1} onPress={() => setTextModalVisible(false)} />
-          <View style={styles.textModal}>
-            <Text style={styles.textModalTitle}>📝 전략 텍스트 붙여넣기</Text>
-            <Text style={styles.textModalDesc}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setTextModalVisible(false)} />
+          <View style={styles.modalBox}>
+            <Text style={styles.modalTitle}>📝 전략 텍스트 붙여넣기</Text>
+            <Text style={[styles.modalLabel, { marginTop: 0, marginBottom: 8 }]}>
               매수/매도 조건이 적힌 텍스트를 붙여넣으면 AI가 자동으로 조건을 추출합니다.
             </Text>
             <TextInput
-              style={styles.textModalInput}
+              style={[styles.modalInput, { flex: 1, textAlignVertical: 'top', marginBottom: 12 }]}
               value={pasteText}
               onChangeText={setPasteText}
               placeholder={'예)\nTQQQ: QQQ 고점 대비 -10% 시 30% 매수\nTP1: +15% 시 최초수량 50% 매도\n락: QQQ -40% 이하 시 전량 청산'}
               placeholderTextColor="#94A3B8"
-              multiline
-              autoFocus
+              multiline autoFocus
             />
-            <View style={styles.textModalBtns}>
-              <TouchableOpacity style={styles.textModalCancel} onPress={() => { setTextModalVisible(false); setPasteText(''); }}>
-                <Text style={styles.textModalCancelText}>취소</Text>
+            <View style={styles.modalBtns}>
+              <TouchableOpacity style={styles.modalCancel} onPress={() => { setTextModalVisible(false); setPasteText(''); }}>
+                <Text style={styles.modalCancelText}>취소</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.textModalConfirm} onPress={analyzeTextInput}>
-                <Text style={styles.textModalConfirmText}>✨ AI 분석</Text>
+              <TouchableOpacity style={styles.modalSave} onPress={analyzeText}>
+                <Text style={styles.modalSaveText}>✨ AI 분석</Text>
               </TouchableOpacity>
             </View>
           </View>
@@ -431,15 +693,11 @@ export default function AutoTradeScreen() {
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#F1F5F9' },
   scroll: { padding: 16, paddingBottom: 40 },
+  sectionTitle: { fontSize: 15, fontWeight: '700', color: '#1E293B', marginTop: 20, marginBottom: 10 },
+  btnDisabled: { opacity: 0.5 },
 
   // 상태 배너
-  statusBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 14,
-    borderRadius: 12,
-    marginBottom: 16,
-  },
+  statusBanner: { flexDirection: 'row', alignItems: 'center', padding: 14, borderRadius: 12, marginBottom: 16 },
   bannerRunning: { backgroundColor: '#DCFCE7' },
   bannerStopped: { backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1' },
   statusDot: { width: 10, height: 10, borderRadius: 5, marginRight: 8 },
@@ -447,157 +705,43 @@ const styles = StyleSheet.create({
   dotStopped: { backgroundColor: '#94A3B8' },
   statusText: { fontSize: 16, fontWeight: '700', color: '#1E293B', flex: 1 },
   modeText: { fontSize: 13, color: '#475569' },
-
-  errorBanner: {
-    backgroundColor: '#FEE2E2',
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 12,
-  },
+  errorBanner: { backgroundColor: '#FEE2E2', padding: 10, borderRadius: 8, marginBottom: 12 },
   errorBannerText: { color: '#DC2626', fontSize: 13 },
 
-  // 섹션 제목
-  sectionTitle: {
-    fontSize: 15,
-    fontWeight: '700',
-    color: '#1E293B',
-    marginTop: 20,
-    marginBottom: 10,
-  },
+  // 거래 모드
+  modeRow: { flexDirection: 'row', gap: 10 },
+  modeBtn: { flex: 1, padding: 14, borderRadius: 12, borderWidth: 2, borderColor: '#CBD5E1', backgroundColor: '#fff', alignItems: 'center' },
+  modeBtnPaper: { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' },
+  modeBtnReal:  { borderColor: '#DC2626', backgroundColor: '#FEF2F2' },
+  modeBtnText:  { fontSize: 15, fontWeight: '700', color: '#475569' },
+  modeBtnTextActive: { color: '#1E293B' },
+  modeBtnSub:   { fontSize: 11, color: '#94A3B8', marginTop: 3 },
+  realWarning: { marginTop: 8, backgroundColor: '#FEE2E2', borderRadius: 8, padding: 10, borderLeftWidth: 3, borderLeftColor: '#DC2626' },
+  realWarningText: { fontSize: 12, color: '#B91C1C', fontWeight: '600' },
 
-  // 이미지 버튼
-  imageButtons: { flexDirection: 'row', gap: 10 },
-  imgBtn: {
-    flex: 1,
-    backgroundColor: '#6366F1',
-    padding: 14,
-    borderRadius: 10,
-    alignItems: 'center',
-  },
-  imgBtnSecondary: { backgroundColor: '#fff', borderWidth: 1.5, borderColor: '#6366F1' },
+  // 업로드
+  uploadBtns: { flexDirection: 'row', gap: 10 },
+  imgBtn: { flex: 1, backgroundColor: '#6366F1', padding: 14, borderRadius: 10, alignItems: 'center' },
+  imgBtnSec: { backgroundColor: '#fff', borderWidth: 1.5, borderColor: '#6366F1' },
   imgBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
-  imgBtnTextSecondary: { color: '#6366F1' },
-  analyzingText: { textAlign: 'center', color: '#6366F1', marginTop: 8, fontSize: 13 },
+  subText: { textAlign: 'center', color: '#6366F1', marginTop: 8, fontSize: 13 },
+  thumbList: { marginTop: 12, marginBottom: 4 },
+  thumbWrap: { alignItems: 'center', marginRight: 10, position: 'relative' },
+  thumbImg: { width: 76, height: 76, borderRadius: 10, borderWidth: 2, borderColor: '#6366F1' },
+  thumbDel: { position: 'absolute', top: -6, right: -6, backgroundColor: '#DC2626', borderRadius: 10, width: 20, height: 20, alignItems: 'center', justifyContent: 'center' },
+  thumbDelText: { color: '#fff', fontSize: 10, fontWeight: '900' },
+  thumbLabel: { fontSize: 10, color: '#6366F1', fontWeight: '600', marginTop: 3 },
+  thumbAdd: { width: 76, height: 76, borderRadius: 10, borderWidth: 2, borderColor: '#CBD5E1', borderStyle: 'dashed', alignItems: 'center', justifyContent: 'center', backgroundColor: '#F8FAFC' },
+  thumbAddIcon: { fontSize: 22, color: '#94A3B8' },
+  thumbAddText: { fontSize: 10, color: '#94A3B8', marginTop: 2 },
+  inlineError: { backgroundColor: '#FEE2E2', borderRadius: 10, padding: 12, marginTop: 10 },
+  inlineErrorText: { color: '#DC2626', fontWeight: '700', fontSize: 13 },
+  inlineErrorSub: { color: '#991B1B', fontSize: 12, marginTop: 4 },
 
-  // 조건 카드
-  summary: {
-    fontSize: 13,
-    color: '#475569',
-    backgroundColor: '#fff',
-    padding: 10,
-    borderRadius: 8,
-    marginBottom: 8,
-  },
-  condHeader: { fontSize: 12, color: '#94A3B8', marginBottom: 6 },
-  condRow: {
-    flexDirection: 'row',
-    backgroundColor: '#fff',
-    borderRadius: 10,
-    padding: 12,
-    marginBottom: 8,
-    alignItems: 'flex-start',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 2,
-    elevation: 1,
-  },
-  condBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    marginRight: 10,
-    marginTop: 2,
-  },
-  buyBadge: { backgroundColor: '#DCFCE7' },
-  sellBadge: { backgroundColor: '#FEE2E2' },
-  condBadgeText: { fontSize: 11, fontWeight: '700', color: '#1E293B' },
-  condInfo: { flex: 1 },
-  condName: { fontSize: 14, fontWeight: '700', color: '#1E293B' },
-  condDetail: { fontSize: 13, color: '#475569', marginTop: 2 },
-  condMeta: { fontSize: 11, color: '#94A3B8', marginTop: 4 },
-
-  // 시작/정지 버튼
-  mainBtn: {
-    marginTop: 24,
-    padding: 18,
-    borderRadius: 14,
-    alignItems: 'center',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
-    elevation: 3,
-  },
-  startBtn: { backgroundColor: '#16A34A' },
-  stopBtn: { backgroundColor: '#DC2626' },
-  btnDisabled: { opacity: 0.5 },
-  mainBtnText: { color: '#fff', fontSize: 18, fontWeight: '800' },
-
-  // 거래 로그
-  logRow: {
-    flexDirection: 'row',
-    backgroundColor: '#fff',
-    borderRadius: 8,
-    padding: 10,
-    marginBottom: 6,
-    alignItems: 'flex-start',
-  },
-  logAction: { fontSize: 12, fontWeight: '700', width: 44, marginTop: 2 },
-  buyText: { color: '#16A34A' },
-  sellText: { color: '#DC2626' },
-  errorText: { color: '#F59E0B' },
-  logDetail: { flex: 1 },
-  logName: { fontSize: 13, fontWeight: '600', color: '#1E293B' },
-  logMeta: { fontSize: 11, color: '#64748B', marginTop: 2 },
-  logResult: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
-  lastCheck: { textAlign: 'center', fontSize: 11, color: '#94A3B8', marginTop: 16 },
-
-  // 텍스트 붙여넣기 모달
-  textModal: {
-    backgroundColor: '#fff',
-    borderTopLeftRadius: 20,
-    borderTopRightRadius: 20,
-    paddingHorizontal: 20,
-    paddingTop: 20,
-    paddingBottom: Platform.OS === 'ios' ? 34 : 20,
-    height: 400,
-    flexDirection: 'column',
-  },
-  textModalTitle: { fontSize: 16, fontWeight: '800', color: '#1E293B', marginBottom: 6 },
-  textModalDesc: { fontSize: 12, color: '#64748B', marginBottom: 10 },
-  textModalInput: {
-    flex: 1,
-    backgroundColor: '#F8FAFC',
-    borderWidth: 1,
-    borderColor: '#E2E8F0',
-    borderRadius: 8,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 14,
-    color: '#1E293B',
-    textAlignVertical: 'top',
-    marginBottom: 12,
-  },
-  textModalBtns: { flexDirection: 'row', gap: 10 },
-  textModalCancel: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center' },
-  textModalCancelText: { fontSize: 15, fontWeight: '700', color: '#64748B' },
-  textModalConfirm: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: '#6366F1', alignItems: 'center' },
-  textModalConfirmText: { fontSize: 15, fontWeight: '700', color: '#fff' },
-
-  // 일치율 검증 카드
-  verifyCard: {
-    backgroundColor: '#fff',
-    borderRadius: 12,
-    borderWidth: 1.5,
-    padding: 14,
-    marginBottom: 12,
-  },
+  // 일치율
+  verifyCard: { backgroundColor: '#fff', borderRadius: 12, borderWidth: 1.5, padding: 14, marginTop: 12 },
   verifyTop: { flexDirection: 'row', alignItems: 'center', gap: 14 },
-  verifyCircle: {
-    width: 64, height: 64, borderRadius: 32,
-    alignItems: 'center', justifyContent: 'center',
-  },
+  verifyCircle: { width: 64, height: 64, borderRadius: 32, alignItems: 'center', justifyContent: 'center' },
   verifyPct: { fontSize: 20, fontWeight: '800' },
   verifyInfo: { flex: 1 },
   verifyTitle: { fontSize: 13, fontWeight: '700', color: '#1E293B', marginBottom: 3 },
@@ -607,28 +751,84 @@ const styles = StyleSheet.create({
   verifyToggleText: { fontSize: 13, fontWeight: '600' },
   verifyDetail: { marginTop: 8, gap: 6 },
   verifyItem: { flexDirection: 'row', alignItems: 'flex-start', gap: 8 },
-  verifyItemBadge: {
-    fontSize: 10, fontWeight: '700', color: '#D97706',
-    backgroundColor: '#FEF3C7', paddingHorizontal: 6, paddingVertical: 2,
-    borderRadius: 4, marginTop: 1,
-  },
+  verifyItemBadge: { fontSize: 10, fontWeight: '700', color: '#D97706', backgroundColor: '#FEF3C7', paddingHorizontal: 6, paddingVertical: 2, borderRadius: 4, marginTop: 1 },
   verifyWrongBadge: { color: '#DC2626', backgroundColor: '#FEE2E2' },
   verifyItemText: { fontSize: 12, color: '#475569', flex: 1 },
 
-  // 거래 모드 토글
-  modeRow: { flexDirection: 'row', gap: 10 },
-  modeBtn: {
-    flex: 1, padding: 14, borderRadius: 12, borderWidth: 2,
-    borderColor: '#CBD5E1', backgroundColor: '#fff', alignItems: 'center',
-  },
-  modeBtnPaper: { borderColor: '#F59E0B', backgroundColor: '#FFFBEB' },
-  modeBtnReal:  { borderColor: '#DC2626', backgroundColor: '#FEF2F2' },
-  modeBtnText:  { fontSize: 15, fontWeight: '700', color: '#475569' },
-  modeBtnTextActive: { color: '#1E293B' },
-  modeBtnSub:   { fontSize: 11, color: '#94A3B8', marginTop: 3 },
-  realWarning: {
-    marginTop: 8, backgroundColor: '#FEE2E2', borderRadius: 8, padding: 10,
-    borderLeftWidth: 3, borderLeftColor: '#DC2626',
-  },
-  realWarningText: { fontSize: 12, color: '#B91C1C', fontWeight: '600' },
+  // 조건 카드
+  condSummaryCard: { backgroundColor: '#fff', borderRadius: 10, padding: 14, marginTop: 12, borderLeftWidth: 3, borderLeftColor: '#6366F1' },
+  condSummaryHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  condSummaryTitle: { fontSize: 13, fontWeight: '700', color: '#6366F1' },
+  condToggleIcon: { fontSize: 12, color: '#6366F1' },
+  condSummaryText: { fontSize: 13, color: '#334155' },
+  condSummaryMeta: { fontSize: 12, color: '#94A3B8', marginTop: 6 },
+  condDetail: { marginTop: 12, borderTopWidth: 1, borderTopColor: '#E2E8F0', paddingTop: 10 },
+  condSectionHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, marginTop: 8 },
+  condDetailHeader: { fontSize: 13, fontWeight: '700' },
+  addBtn: { backgroundColor: '#EEF2FF', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 6 },
+  addBtnText: { fontSize: 12, color: '#6366F1', fontWeight: '600' },
+  condDetailRow: { backgroundColor: '#F8FAFC', borderRadius: 8, padding: 10, marginBottom: 6, flexDirection: 'row', alignItems: 'flex-start' },
+  condDetailContent: { flex: 1 },
+  condDetailName: { fontSize: 13, fontWeight: '700', color: '#1E293B' },
+  condDetailCond: { fontSize: 12, color: '#475569', marginTop: 2 },
+  condDetailMeta: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+  condActions: { flexDirection: 'row', gap: 6, marginLeft: 8 },
+  condEditBtn: { backgroundColor: '#EEF2FF', borderRadius: 6, padding: 6 },
+  condDelBtn: { backgroundColor: '#FEE2E2', borderRadius: 6, padding: 6 },
+  emptyText: { fontSize: 13, color: '#94A3B8', textAlign: 'center', marginVertical: 8 },
+
+  // 시작/정지
+  mainBtn: { marginTop: 24, padding: 18, borderRadius: 14, alignItems: 'center', elevation: 3 },
+  startBtn: { backgroundColor: '#16A34A' },
+  stopBtn:  { backgroundColor: '#DC2626' },
+  mainBtnText: { color: '#fff', fontSize: 18, fontWeight: '800' },
+
+  // 로그
+  logRow: { flexDirection: 'row', backgroundColor: '#fff', borderRadius: 8, padding: 10, marginBottom: 6, alignItems: 'flex-start' },
+  logAction: { fontSize: 12, fontWeight: '700', width: 44, marginTop: 2 },
+  buyText:  { color: '#16A34A' },
+  sellText: { color: '#DC2626' },
+  errText:  { color: '#F59E0B' },
+  logDetail: { flex: 1 },
+  logName:   { fontSize: 13, fontWeight: '600', color: '#1E293B' },
+  logMeta:   { fontSize: 11, color: '#64748B', marginTop: 2 },
+  logResult: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+  lastCheck: { textAlign: 'center', fontSize: 11, color: '#94A3B8', marginTop: 16 },
+
+  // 갤러리
+  galleryOverlay: { flex: 1, backgroundColor: '#000' },
+  galleryHeader: { position: 'absolute', top: 50, left: 0, right: 0, zIndex: 10, flexDirection: 'row', justifyContent: 'space-between', paddingHorizontal: 20 },
+  galleryPageText: { color: '#fff', fontSize: 15, fontWeight: '700' },
+  galleryCloseBtn: { backgroundColor: 'rgba(255,255,255,0.2)', padding: 10, borderRadius: 8 },
+  galleryCloseText: { color: '#fff', fontWeight: '700', fontSize: 15 },
+  galleryImgContainer: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+  galleryDots: { position: 'absolute', bottom: 40, left: 0, right: 0, flexDirection: 'row', justifyContent: 'center', gap: 6 },
+  galleryDot: { width: 7, height: 7, borderRadius: 4, backgroundColor: 'rgba(255,255,255,0.4)' },
+  galleryDotActive: { backgroundColor: '#fff', width: 18 },
+
+  // 모달
+  modalBox: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 20, paddingTop: 20, paddingBottom: Platform.OS === 'ios' ? 34 : 20, height: SCREEN_H * 0.78, flexDirection: 'column' },
+  modalTitle: { fontSize: 16, fontWeight: '800', color: '#1E293B', marginBottom: 8 },
+  modalError: { backgroundColor: '#FEE2E2', borderRadius: 8, padding: 10, marginBottom: 8 },
+  modalErrorText: { color: '#DC2626', fontSize: 13, fontWeight: '600' },
+  modalScroll: { flex: 1 },
+  modalLabel: { fontSize: 12, fontWeight: '600', color: '#64748B', marginBottom: 4, marginTop: 12 },
+  modalInput: { backgroundColor: '#F8FAFC', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 10, fontSize: 14, color: '#1E293B' },
+  modalInputMulti: { height: 72, textAlignVertical: 'top' },
+  toggleRow: { flexDirection: 'row', gap: 8, marginTop: 4 },
+  toggleBtn: { flex: 1, paddingVertical: 10, borderRadius: 8, backgroundColor: '#F1F5F9', borderWidth: 1, borderColor: '#CBD5E1', alignItems: 'center' },
+  toggleBtnActive: { backgroundColor: '#6366F1', borderColor: '#6366F1' },
+  toggleBtnText: { fontSize: 12, fontWeight: '600', color: '#475569' },
+  toggleBtnTextActive: { color: '#fff' },
+  modalBtns: { flexDirection: 'row', gap: 10, marginTop: 16 },
+  modalCancel: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: '#F1F5F9', alignItems: 'center' },
+  modalCancelText: { fontSize: 15, fontWeight: '700', color: '#64748B' },
+  modalSave: { flex: 1, paddingVertical: 14, borderRadius: 10, backgroundColor: '#6366F1', alignItems: 'center' },
+  modalSaveText: { fontSize: 15, fontWeight: '700', color: '#fff' },
+
+  // 자동완성
+  suggestBox: { backgroundColor: '#fff', borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 10, marginTop: 4, overflow: 'hidden', elevation: 3 },
+  suggestItem: { paddingHorizontal: 14, paddingVertical: 12 },
+  suggestItemBorder: { borderBottomWidth: 1, borderBottomColor: '#F1F5F9' },
+  suggestText: { fontSize: 13, color: '#1E293B' },
 });
