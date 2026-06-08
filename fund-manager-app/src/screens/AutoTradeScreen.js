@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
+import * as Clipboard from 'expo-clipboard';
 import {
   analyzeTradeImage, analyzeTradeText,
   startAutoTrade, stopAutoTrade, getAutoTradeStatus,
@@ -187,6 +188,82 @@ export default function AutoTradeScreen() {
     } finally {
       setAnalyzing(false);
     }
+  };
+
+  // ── 조건 → 읽기 편한 텍스트 변환 ──────────
+  const formatConditionsAsText = () => {
+    if (!conditions) return '';
+    const lines = [`[전략] ${conditions.summary || '자동매매 전략'}\n`];
+
+    if (conditions.buy_conditions?.length) {
+      lines.push('=== 매수 조건 ===');
+      conditions.buy_conditions.forEach((c, i) => {
+        const name = c.name || c.label || `매수${i + 1}`;
+        const ticker = c.ticker ? `[${c.ticker}]` : '';
+        const ref = c.ref_ticker ? ` (기준: ${c.ref_ticker})` : '';
+        const weight = c.weight_pct ? ` | 목표비중 ${c.weight_pct}% (${c.weight_mode === 'target' ? '타겟' : '추가'})` : '';
+        lines.push(`• ${name} ${ticker}${ref}: ${c.condition}${weight}`);
+      });
+      lines.push('');
+    }
+
+    if (conditions.sell_conditions?.length) {
+      lines.push('=== 매도 조건 ===');
+      conditions.sell_conditions.forEach((c, i) => {
+        const name = c.name || c.label || `매도${i + 1}`;
+        const ticker = c.ticker ? `[${c.ticker}]` : '';
+        const sell = c.sell_pct ? ` | ${c.sell_pct}% 매도 (${c.sell_mode === 'initial_qty' ? '최초수량 기준' : '현재보유 기준'})` : '';
+        lines.push(`• ${name} ${ticker}: ${c.condition}${sell}`);
+      });
+      lines.push('');
+    }
+
+    if (conditions.lock_conditions?.length) {
+      lines.push('=== 락 조건 ===');
+      conditions.lock_conditions.forEach((c, i) => {
+        lines.push(`• 조건: ${c.condition} → ${c.action === 'liquidate' ? '전량 청산' : '신규 매수 잠금'}`);
+      });
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  };
+
+  // ── 일치 확인: 조건 텍스트 클립보드 복사 후 AI 앱 열기 ──
+  const openMatchCheck = () => {
+    if (!conditions) { Alert.alert('조건 없음', '먼저 조건을 추출하세요.'); return; }
+    const condText = formatConditionsAsText();
+    const prompt =
+      `아래는 자동매매 앱에 현재 등록된 조건입니다.\n원본 전략과 비교하여 다음을 확인해주세요:\n1. 잘못 설정된 조건 (방향 반전, 수치 오류 등)\n2. 빠진 조건\n3. 전체 일치율 (%)\n\n${condText}`;
+
+    Alert.alert(
+      '📋 일치 확인',
+      '조건이 클립보드에 복사됩니다.\nAI 앱을 선택하면 앱이 열립니다.\n원본 전략과 함께 붙여넣어 비교하세요.',
+      [
+        { text: '취소', style: 'cancel' },
+        {
+          text: '✦ Gemini',
+          onPress: async () => {
+            await Clipboard.setStringAsync(prompt);
+            Linking.openURL('https://gemini.google.com/app');
+          },
+        },
+        {
+          text: '◆ Claude',
+          onPress: async () => {
+            await Clipboard.setStringAsync(prompt);
+            Linking.openURL('https://claude.ai/new');
+          },
+        },
+        {
+          text: '⬡ ChatGPT',
+          onPress: async () => {
+            await Clipboard.setStringAsync(prompt);
+            Linking.openURL('https://chatgpt.com');
+          },
+        },
+      ]
+    );
   };
 
   // ── 수정 적용 (기존 조건 + 수정 텍스트 → AI 픽스) ──
@@ -695,6 +772,14 @@ export default function AutoTradeScreen() {
           </>
         )}
 
+        {/* ── 일치 확인 버튼 ── */}
+        {conditions && (
+          <TouchableOpacity style={styles.matchCheckBtn} onPress={openMatchCheck}>
+            <Text style={styles.matchCheckBtnText}>🔍 일치 확인</Text>
+            <Text style={styles.matchCheckBtnSub}>조건을 복사 후 AI 앱에서 원본과 비교</Text>
+          </TouchableOpacity>
+        )}
+
         {/* ── 시작/정지 버튼 ── */}
         <TouchableOpacity
           style={[styles.mainBtn, isRunning ? styles.stopBtn : styles.startBtn, (toggling || analyzing) && styles.btnDisabled]}
@@ -736,9 +821,13 @@ export default function AutoTradeScreen() {
 
       {/* 텍스트 붙여넣기 모달 */}
       <Modal visible={textModalVisible} transparent animationType="slide" onRequestClose={() => setTextModalVisible(false)}>
-        <KeyboardAvoidingView style={{ flex: 1, justifyContent: 'flex-end' }} behavior="padding" enabled={Platform.OS === 'ios'}>
+        <KeyboardAvoidingView
+          style={{ flex: 1, justifyContent: 'flex-end' }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'android' ? 0 : 0}
+        >
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setTextModalVisible(false)} />
-          <View style={styles.modalBox}>
+          <View style={styles.textModalBox}>
             <Text style={styles.modalTitle}>📝 전략 텍스트 붙여넣기</Text>
             {conditions ? (
               <Text style={[styles.modalLabel, { marginTop: 0, marginBottom: 8, color: '#F59E0B' }]}>
@@ -750,7 +839,7 @@ export default function AutoTradeScreen() {
               </Text>
             )}
             <TextInput
-              style={[styles.modalInput, { flex: 1, textAlignVertical: 'top', marginBottom: 12 }]}
+              style={styles.textModalInput}
               value={pasteText}
               onChangeText={setPasteText}
               placeholder={conditions
@@ -760,16 +849,16 @@ export default function AutoTradeScreen() {
               placeholderTextColor="#94A3B8"
               multiline autoFocus
             />
-            <View style={styles.modalBtns}>
+            <View style={styles.textModalBtns}>
               <TouchableOpacity style={styles.modalCancel} onPress={() => { setTextModalVisible(false); setPasteText(''); }}>
                 <Text style={styles.modalCancelText}>취소</Text>
               </TouchableOpacity>
               {conditions && (
-                <TouchableOpacity style={[styles.modalSave, { backgroundColor: '#F59E0B', flex: 1, marginRight: 6 }]} onPress={applyFix}>
+                <TouchableOpacity style={[styles.modalSave, { backgroundColor: '#F59E0B' }]} onPress={applyFix}>
                   <Text style={styles.modalSaveText}>🔧 수정 적용</Text>
                 </TouchableOpacity>
               )}
-              <TouchableOpacity style={[styles.modalSave, { flex: 1 }]} onPress={analyzeText}>
+              <TouchableOpacity style={styles.modalSave} onPress={analyzeText}>
                 <Text style={styles.modalSaveText}>✨ AI 분석</Text>
               </TouchableOpacity>
             </View>
@@ -876,7 +965,10 @@ const styles = StyleSheet.create({
   emptyText: { fontSize: 13, color: '#94A3B8', textAlign: 'center', marginVertical: 8 },
 
   // 시작/정지
-  mainBtn: { marginTop: 24, padding: 18, borderRadius: 14, alignItems: 'center', elevation: 3 },
+  matchCheckBtn: { marginTop: 16, padding: 14, borderRadius: 12, backgroundColor: '#fff', borderWidth: 1.5, borderColor: '#6366F1', alignItems: 'center' },
+  matchCheckBtnText: { fontSize: 15, fontWeight: '700', color: '#6366F1' },
+  matchCheckBtnSub: { fontSize: 11, color: '#94A3B8', marginTop: 2 },
+  mainBtn: { marginTop: 12, padding: 18, borderRadius: 14, alignItems: 'center', elevation: 3 },
   startBtn: { backgroundColor: '#16A34A' },
   stopBtn:  { backgroundColor: '#DC2626' },
   mainBtnText: { color: '#fff', fontSize: 18, fontWeight: '800' },
@@ -905,6 +997,9 @@ const styles = StyleSheet.create({
   galleryDotActive: { backgroundColor: '#fff', width: 18 },
 
   // 모달
+  textModalBox: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 20, paddingTop: 20, paddingBottom: Platform.OS === 'ios' ? 34 : 16 },
+  textModalInput: { borderWidth: 1, borderColor: '#E2E8F0', borderRadius: 10, padding: 12, fontSize: 14, color: '#1E293B', height: 160, textAlignVertical: 'top', marginBottom: 12 },
+  textModalBtns: { flexDirection: 'row', gap: 8 },
   modalBox: { backgroundColor: '#fff', borderTopLeftRadius: 20, borderTopRightRadius: 20, paddingHorizontal: 20, paddingTop: 20, paddingBottom: Platform.OS === 'ios' ? 34 : 20, height: SCREEN_H * 0.78, flexDirection: 'column' },
   modalTitle: { fontSize: 16, fontWeight: '800', color: '#1E293B', marginBottom: 8 },
   modalError: { backgroundColor: '#FEE2E2', borderRadius: 8, padding: 10, marginBottom: 8 },
