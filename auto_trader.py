@@ -945,3 +945,87 @@ def verify_conditions_text(original_text: str, extracted: dict) -> dict:
     except Exception as e:
         log.warning(f"텍스트 검증 실패: {e}")
         return {"match_pct": -1, "error": str(e), "missing": [], "wrong": [], "notes": "검증 실패"}
+
+
+# ─────────────────────────────────────────────
+# 조건 수정 — 기존 JSON + 수정 텍스트 → 픽스된 JSON
+# ─────────────────────────────────────────────
+
+_FIX_PROMPT = """당신은 주식 자동매매 전략 수정 전문가입니다.
+아래 "기존 조건 JSON"과 "수정 사항 텍스트"를 보고,
+수정 사항 텍스트에 명시된 내용만 정확히 반영하여 수정된 JSON을 반환하세요.
+
+=== 수정 원칙 ===
+1. 수정 사항에 없는 조건은 절대 변경하지 마세요.
+2. 수치 오류(예: 이상↔이하 반전, % 값 오기입)를 정확히 고치세요.
+3. 빠진 조건은 적절한 위치(buy/sell/lock)에 추가하세요.
+4. 삭제 명시된 조건만 제거하세요.
+5. condition 필드의 방향(이상/이하/초과/미만)에 특히 주의하세요.
+
+반드시 아래와 동일한 JSON 스키마로만 응답하세요. JSON 외 텍스트는 절대 쓰지 마세요.
+
+=== 기존 조건 JSON ===
+{existing_json}
+
+=== 수정 사항 텍스트 ===
+{fix_text}
+
+=== 수정된 JSON (동일 스키마) ==="""
+
+
+def fix_conditions(existing: dict, fix_text: str) -> dict:
+    """
+    기존 조건 JSON + 수정 텍스트 → 수정된 조건 JSON 반환.
+    Groq 우선, 실패 시 Gemini 텍스트 모드.
+    """
+    prompt = _FIX_PROMPT.replace(
+        "{existing_json}", json.dumps(existing, ensure_ascii=False, indent=2)
+    ).replace("{fix_text}", fix_text)
+
+    # 1) Groq 시도
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    if groq_key:
+        try:
+            model = os.getenv("GROQ_TEXT_MODEL", "llama-3.3-70b-versatile")
+            resp = requests.post(
+                "https://api.groq.com/openai/v1/chat/completions",
+                headers={"Authorization": f"Bearer {groq_key}", "Content-Type": "application/json"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": 0.0,
+                    "max_tokens": 4096,
+                },
+                timeout=40,
+            )
+            resp.raise_for_status()
+            text = resp.json()["choices"][0]["message"]["content"]
+            result = _parse_vision_text(text)
+            result["_fixer"] = "groq"
+            return result
+        except Exception as e:
+            log.warning(f"Groq fix 실패, Gemini fallback: {e}")
+
+    # 2) Gemini fallback
+    gemini_key = os.getenv("GEMINI_VISION_API_KEY") or os.getenv("GEMINI_API_KEY", "")
+    if gemini_key:
+        try:
+            model = os.getenv("GEMINI_VISION_MODEL", "gemini-2.0-flash")
+            resp = requests.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                params={"key": gemini_key},
+                json={
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.0, "maxOutputTokens": 4096},
+                },
+                timeout=40,
+            )
+            resp.raise_for_status()
+            text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            result = _parse_vision_text(text)
+            result["_fixer"] = "gemini"
+            return result
+        except Exception as e:
+            log.warning(f"Gemini fix 실패: {e}")
+
+    raise RuntimeError("조건 수정 가능한 AI 모델이 없습니다 (API 키 확인).")

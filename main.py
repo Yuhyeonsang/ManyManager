@@ -1097,6 +1097,21 @@ def auto_trade_reset_conditions():
     return {"ok": True}
 
 
+class FixConditionsRequest(BaseModel):
+    existing: dict
+    fix_text: str
+
+@app.post("/api/auto-trade/fix-conditions")
+async def auto_trade_fix_conditions(req: FixConditionsRequest):
+    if not _AUTO_TRADER_AVAILABLE:
+        raise HTTPException(503, "auto_trader 모듈 없음")
+    try:
+        fixed = auto_trader.fix_conditions(req.existing, req.fix_text)
+        return {"ok": True, "conditions": fixed}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
 
 # ─────────────────────────────────────────────
 # 백테스트 엔드포인트

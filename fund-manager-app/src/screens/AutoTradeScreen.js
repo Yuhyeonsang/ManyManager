@@ -7,13 +7,14 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, FlatList, TouchableOpacity, StyleSheet,
   ActivityIndicator, Alert, RefreshControl, Platform, Modal,
-  TextInput, KeyboardAvoidingView, Image, Dimensions,
+  TextInput, KeyboardAvoidingView, Image, Dimensions, Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
 import {
   analyzeTradeImage, analyzeTradeText,
-  startAutoTrade, stopAutoTrade, getAutoTradeStatus, resetAutoTradeConditions,
+  startAutoTrade, stopAutoTrade, getAutoTradeStatus,
+  resetAutoTradeConditions, fixAutoTradeConditions,
 } from '../services/api';
 
 const { width: SCREEN_W, height: SCREEN_H } = Dimensions.get('window');
@@ -183,6 +184,27 @@ export default function AutoTradeScreen() {
     } catch (e) {
       setAnalyzeError(e?.message ?? String(e));
       if (!conditions) setConditions({ summary: '수동 입력', buy_conditions: [], sell_conditions: [], lock_conditions: [] });
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  // ── 수정 적용 (기존 조건 + 수정 텍스트 → AI 픽스) ──
+  const applyFix = async () => {
+    const text = pasteText.trim();
+    if (!text) { Alert.alert('입력 없음', '수정 내용을 붙여넣으세요.'); return; }
+    if (!conditions) { Alert.alert('조건 없음', '먼저 AI 분석으로 조건을 추출하세요.'); return; }
+    setTextModalVisible(false);
+    setPasteText('');
+    setAnalyzing(true);
+    setAnalyzeError(null);
+    try {
+      const data = await fixAutoTradeConditions(conditions, text);
+      setConditions(data.conditions);
+      setVerification(null);
+      setCondExpanded(true);
+    } catch (e) {
+      setAnalyzeError(e?.message ?? String(e));
     } finally {
       setAnalyzing(false);
     }
@@ -526,6 +548,34 @@ export default function AutoTradeScreen() {
           </TouchableOpacity>
         </View>
 
+        {/* ── AI 앱 바로가기 ── */}
+        <View style={styles.aiShortcutRow}>
+          <Text style={styles.aiShortcutLabel}>AI로 전략 만들기</Text>
+          <View style={styles.aiShortcutBtns}>
+            <TouchableOpacity
+              style={[styles.aiShortcutBtn, { backgroundColor: '#1a73e8' }]}
+              onPress={() => Linking.openURL('https://gemini.google.com/app').catch(() => Linking.openURL('https://gemini.google.com'))}
+            >
+              <Text style={styles.aiShortcutIcon}>✦</Text>
+              <Text style={styles.aiShortcutText}>Gemini</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.aiShortcutBtn, { backgroundColor: '#D97706' }]}
+              onPress={() => Linking.openURL('https://claude.ai/new').catch(() => Linking.openURL('https://claude.ai'))}
+            >
+              <Text style={styles.aiShortcutIcon}>◆</Text>
+              <Text style={styles.aiShortcutText}>Claude</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[styles.aiShortcutBtn, { backgroundColor: '#10A37F' }]}
+              onPress={() => Linking.openURL('https://chatgpt.com').catch(() => Linking.openURL('https://chat.openai.com'))}
+            >
+              <Text style={styles.aiShortcutIcon}>⬡</Text>
+              <Text style={styles.aiShortcutText}>ChatGPT</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         {/* 이미지 썸네일 */}
         {imageUris.length > 0 && (
           <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.thumbList}>
@@ -690,14 +740,23 @@ export default function AutoTradeScreen() {
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setTextModalVisible(false)} />
           <View style={styles.modalBox}>
             <Text style={styles.modalTitle}>📝 전략 텍스트 붙여넣기</Text>
-            <Text style={[styles.modalLabel, { marginTop: 0, marginBottom: 8 }]}>
-              매수/매도 조건이 적힌 텍스트를 붙여넣으면 AI가 자동으로 조건을 추출합니다.
-            </Text>
+            {conditions ? (
+              <Text style={[styles.modalLabel, { marginTop: 0, marginBottom: 8, color: '#F59E0B' }]}>
+                ✏️ 수정 사항을 붙여넣으면 기존 조건에 AI가 반영합니다.{'\n'}새 전략으로 완전 교체하려면 "AI 분석"을 누르세요.
+              </Text>
+            ) : (
+              <Text style={[styles.modalLabel, { marginTop: 0, marginBottom: 8 }]}>
+                매수/매도 조건이 적힌 텍스트를 붙여넣으면 AI가 자동으로 조건을 추출합니다.
+              </Text>
+            )}
             <TextInput
               style={[styles.modalInput, { flex: 1, textAlignVertical: 'top', marginBottom: 12 }]}
               value={pasteText}
               onChangeText={setPasteText}
-              placeholder={'예)\nTQQQ: QQQ 고점 대비 -10% 시 30% 매수\nTP1: +15% 시 최초수량 50% 매도\n락: QQQ -40% 이하 시 전량 청산'}
+              placeholder={conditions
+                ? '예)\nRSI 35 조건이 이상→이하로 잘못됨, 수정 필요\n데드크로스 매도 수량 100% 전량 매도로 추가'
+                : '예)\nTQQQ: QQQ 고점 대비 -10% 시 30% 매수\nTP1: +15% 시 최초수량 50% 매도\n락: QQQ -40% 이하 시 전량 청산'
+              }
               placeholderTextColor="#94A3B8"
               multiline autoFocus
             />
@@ -705,7 +764,12 @@ export default function AutoTradeScreen() {
               <TouchableOpacity style={styles.modalCancel} onPress={() => { setTextModalVisible(false); setPasteText(''); }}>
                 <Text style={styles.modalCancelText}>취소</Text>
               </TouchableOpacity>
-              <TouchableOpacity style={styles.modalSave} onPress={analyzeText}>
+              {conditions && (
+                <TouchableOpacity style={[styles.modalSave, { backgroundColor: '#F59E0B', flex: 1, marginRight: 6 }]} onPress={applyFix}>
+                  <Text style={styles.modalSaveText}>🔧 수정 적용</Text>
+                </TouchableOpacity>
+              )}
+              <TouchableOpacity style={[styles.modalSave, { flex: 1 }]} onPress={analyzeText}>
                 <Text style={styles.modalSaveText}>✨ AI 분석</Text>
               </TouchableOpacity>
             </View>
@@ -750,6 +814,12 @@ const styles = StyleSheet.create({
   imgBtn: { flex: 1, backgroundColor: '#6366F1', padding: 14, borderRadius: 10, alignItems: 'center' },
   imgBtnSec: { backgroundColor: '#fff', borderWidth: 1.5, borderColor: '#6366F1' },
   imgBtnText: { color: '#fff', fontWeight: '700', fontSize: 14 },
+  aiShortcutRow: { marginTop: 10, marginBottom: 4 },
+  aiShortcutLabel: { fontSize: 11, color: '#94A3B8', marginBottom: 6, textAlign: 'center' },
+  aiShortcutBtns: { flexDirection: 'row', gap: 8 },
+  aiShortcutBtn: { flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5, paddingVertical: 9, borderRadius: 10 },
+  aiShortcutIcon: { fontSize: 14, color: '#fff', fontWeight: '700' },
+  aiShortcutText: { fontSize: 13, color: '#fff', fontWeight: '700' },
   subText: { textAlign: 'center', color: '#6366F1', marginTop: 8, fontSize: 13 },
   thumbList: { marginTop: 12, marginBottom: 4 },
   thumbWrap: { alignItems: 'center', marginRight: 10, position: 'relative' },

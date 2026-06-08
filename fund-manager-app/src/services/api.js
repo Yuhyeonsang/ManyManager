@@ -218,6 +218,15 @@ export async function resetAutoTradeConditions() {
   return data;
 }
 
+export async function fixAutoTradeConditions(existing, fixText) {
+  const c = await getClient();
+  const { data } = await c.post('/api/auto-trade/fix-conditions', {
+    existing,
+    fix_text: fixText,
+  });
+  return data;
+}
+
 // ─────────────────────────────────────────────
 // 백테스트 API
 // ─────────────────────────────────────────────
