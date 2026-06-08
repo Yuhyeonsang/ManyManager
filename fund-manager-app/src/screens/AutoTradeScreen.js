@@ -7,7 +7,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   View, Text, ScrollView, FlatList, TouchableOpacity, StyleSheet,
   ActivityIndicator, Alert, RefreshControl, Platform, Modal,
-  TextInput, KeyboardAvoidingView, Image, Dimensions, Linking,
+  TextInput, KeyboardAvoidingView, Image, Dimensions, Linking, Keyboard,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as ImagePicker from 'expo-image-picker';
@@ -76,6 +76,7 @@ export default function AutoTradeScreen() {
   // ── 텍스트 모달 ──────────────────────────
   const [textModalVisible, setTextModalVisible] = useState(false);
   const [pasteText,  setPasteText]  = useState('');
+  const [kbHeight,   setKbHeight]   = useState(0);
 
   // ── 조건 편집 모달 ────────────────────────
   const [editModal, setEditModal] = useState({ visible: false, type: null, index: null, data: null });
@@ -119,6 +120,12 @@ export default function AutoTradeScreen() {
     const timer = setInterval(() => loadStatus(true), 10000);
     return () => clearInterval(timer);
   }, [loadStatus]);
+
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', e => setKbHeight(e.endCoordinates.height));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKbHeight(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
 
   // ── 이미지 선택 & 분석 ──────────────────
   const pickImage = async () => {
@@ -821,13 +828,9 @@ export default function AutoTradeScreen() {
 
       {/* 텍스트 붙여넣기 모달 */}
       <Modal visible={textModalVisible} transparent animationType="slide" onRequestClose={() => setTextModalVisible(false)}>
-        <KeyboardAvoidingView
-          style={{ flex: 1, justifyContent: 'flex-end' }}
-          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-          keyboardVerticalOffset={Platform.OS === 'android' ? 0 : 0}
-        >
-          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => setTextModalVisible(false)} />
-          <View style={styles.textModalBox}>
+        <View style={{ flex: 1, justifyContent: 'flex-end' }}>
+          <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => { setTextModalVisible(false); Keyboard.dismiss(); }} />
+          <View style={[styles.textModalBox, { paddingBottom: Math.max(kbHeight, Platform.OS === 'ios' ? 34 : 16) }]}>
             <Text style={styles.modalTitle}>📝 전략 텍스트 붙여넣기</Text>
             {conditions ? (
               <Text style={[styles.modalLabel, { marginTop: 0, marginBottom: 8, color: '#F59E0B' }]}>
@@ -850,7 +853,7 @@ export default function AutoTradeScreen() {
               multiline autoFocus
             />
             <View style={styles.textModalBtns}>
-              <TouchableOpacity style={styles.modalCancel} onPress={() => { setTextModalVisible(false); setPasteText(''); }}>
+              <TouchableOpacity style={styles.modalCancel} onPress={() => { setTextModalVisible(false); setPasteText(''); Keyboard.dismiss(); }}>
                 <Text style={styles.modalCancelText}>취소</Text>
               </TouchableOpacity>
               {conditions && (
@@ -863,7 +866,7 @@ export default function AutoTradeScreen() {
               </TouchableOpacity>
             </View>
           </View>
-        </KeyboardAvoidingView>
+        </View>
       </Modal>
     </SafeAreaView>
   );
