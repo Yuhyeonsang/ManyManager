@@ -355,14 +355,20 @@ export default function AutoTradeScreen() {
   const applyFix = async () => {
     const text = pasteText.trim();
     if (!text) { Alert.alert('입력 없음', '수정 내용을 붙여넣으세요.'); return; }
-    if (!conditions) { Alert.alert('조건 없음', '먼저 AI 분석으로 조건을 추출하세요.'); return; }
+    const existing = conditions || activeStrategy;
+    if (!existing) { Alert.alert('조건 없음', '먼저 전략을 불러오거나 AI 분석으로 조건을 추출하세요.'); return; }
     setTextModalVisible(false);
     setPasteText('');
     setAnalyzing(true);
     setAnalyzeError(null);
     try {
-      const data = await fixAutoTradeConditions(conditions, text);
-      setConditions(data.conditions);
+      const data = await fixAutoTradeConditions(existing, text);
+      // Phase 전략이면 activeStrategy 업데이트, 구 조건이면 conditions 업데이트
+      if (activeStrategy && data.conditions) {
+        setActiveStrategy(data.conditions);
+      } else if (data.conditions) {
+        setConditions(data.conditions);
+      }
       setVerification(null);
       setCondExpanded(true);
     } catch (e) {
@@ -1092,7 +1098,7 @@ export default function AutoTradeScreen() {
               <TouchableOpacity style={styles.modalCancel} onPress={() => { setTextModalVisible(false); setPasteText(''); Keyboard.dismiss(); }}>
                 <Text style={styles.modalCancelText}>취소</Text>
               </TouchableOpacity>
-              {conditions && (
+              {(conditions || activeStrategy) && (
                 <TouchableOpacity style={[styles.modalSave, { backgroundColor: '#F59E0B' }]} onPress={applyFix}>
                   <Text style={styles.modalSaveText}>🔧 수정 적용</Text>
                 </TouchableOpacity>
