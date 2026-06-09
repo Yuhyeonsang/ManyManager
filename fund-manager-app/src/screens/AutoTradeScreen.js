@@ -1072,9 +1072,9 @@ export default function AutoTradeScreen() {
       <Modal visible={textModalVisible} transparent animationType="slide" onRequestClose={() => setTextModalVisible(false)}>
         <View style={{ flex: 1, justifyContent: 'flex-end' }}>
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => { setTextModalVisible(false); Keyboard.dismiss(); }} />
-          <View style={[styles.textModalBox, { paddingBottom: Math.max(kbHeight, Platform.OS === 'ios' ? 34 : 16) }]}>
+          <View style={[styles.textModalBox, { marginBottom: kbHeight, paddingBottom: Platform.OS === 'ios' ? 34 : 16 }]}>
             <Text style={styles.modalTitle}>📝 전략 텍스트 붙여넣기</Text>
-            {conditions ? (
+            {(conditions || activeStrategy) ? (
               <Text style={[styles.modalLabel, { marginTop: 0, marginBottom: 8, color: '#F59E0B' }]}>
                 ✏️ 수정 사항을 붙여넣으면 기존 조건에 AI가 반영합니다.{'\n'}새 전략으로 완전 교체하려면 "AI 분석"을 누르세요.
               </Text>
