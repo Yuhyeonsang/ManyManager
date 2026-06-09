@@ -246,12 +246,80 @@ export default function AutoTradeScreen() {
     return lines.join('\n');
   };
 
+  // ── Phase 템플릿 → 텍스트 포맷 ──
+  const formatStrategyAsText = (strat) => {
+    if (!strat) return '';
+    const lines = [
+      `[Phase 전략] ${strat.name}`,
+      `설명: ${strat.description || ''}`,
+      `종목: ${strat.ticker || ''}  참조: ${strat.ref_ticker || ''}`,
+      '',
+    ];
+
+    // Phases
+    if (strat.phases) {
+      lines.push('=== Phase 단계 ===');
+      Object.entries(strat.phases).forEach(([k, v]) => lines.push(`  Phase ${k}: ${v}`));
+      lines.push('');
+    }
+
+    // 매수/매도 조건
+    const buys = (strat.conditions || []).filter(c => c.type === 'buy');
+    const sells = (strat.conditions || []).filter(c => c.type === 'sell');
+
+    if (buys.length) {
+      lines.push('=== 매수 조건 ===');
+      buys.forEach(c => {
+        const phases = Array.isArray(c.required_phase) ? `Phase [${c.required_phase.join(',')}]` : `Phase ${c.required_phase}`;
+        const next = c.next_phase != null ? ` → Phase ${c.next_phase}` : '';
+        const one = c.one_time ? ' [1회]' : '';
+        const reset = c.reset_on_trigger ? ' [리셋]' : '';
+        const action = c.action?.weight_mode === 'target'
+          ? `목표비중 ${c.action.weight_pct}% (타겟)`
+          : `+${c.action?.weight_pct}% 추가`;
+        lines.push(`• ${c.name} [${c.ticker}] (기준: ${c.ref_ticker})`);
+        lines.push(`  조건: ${c.condition}`);
+        lines.push(`  실행: ${action} | ${phases}${next}${one}${reset}`);
+      });
+      lines.push('');
+    }
+
+    if (sells.length) {
+      lines.push('=== 매도 조건 ===');
+      sells.forEach(c => {
+        const phases = Array.isArray(c.required_phase) ? `Phase [${c.required_phase.join(',')}]` : `Phase ${c.required_phase}`;
+        const next = c.next_phase != null ? ` → Phase ${c.next_phase}` : '';
+        const one = c.one_time ? ' [1회]' : '';
+        const reset = c.reset_on_trigger ? ' [리셋]' : '';
+        const mode = c.action?.sell_mode === 'initial_qty' ? '최초수량' : '현재보유';
+        lines.push(`• ${c.name} [${c.ticker}]`);
+        lines.push(`  조건: ${c.condition}`);
+        lines.push(`  실행: ${c.action?.sell_pct}% 매도 (${mode}) | ${phases}${next}${one}${reset}`);
+      });
+      lines.push('');
+    }
+
+    if (strat.lock_conditions?.length) {
+      lines.push('=== 락 조건 ===');
+      strat.lock_conditions.forEach(c => {
+        lines.push(`• ${c.id}: ${c.condition} → 해제: ${c.release_condition || '없음'}`);
+      });
+      lines.push('');
+    }
+
+    return lines.join('\n');
+  };
+
   // ── 일치 확인: 조건 텍스트 클립보드 복사 후 AI 앱 열기 ──
   const openMatchCheck = () => {
-    if (!conditions) { Alert.alert('조건 없음', '먼저 조건을 추출하세요.'); return; }
-    const condText = formatConditionsAsText();
-    const prompt =
-      `아래는 자동매매 앱에 현재 등록된 조건입니다.\n원본 전략과 비교하여 다음을 확인해주세요:\n1. 잘못 설정된 조건 (방향 반전, 수치 오류 등)\n2. 빠진 조건\n3. 전체 일치율 (%)\n\n${condText}`;
+    const condText = activeStrategy
+      ? formatStrategyAsText(activeStrategy)
+      : formatConditionsAsText();
+    if (!condText.trim()) { Alert.alert('조건 없음', '먼저 전략을 불러오거나 조건을 추출하세요.'); return; }
+    const stratLabel = activeStrategy
+      ? `Phase 전략 "${activeStrategy.name}"의 조건이 원본과 100% 일치하는지 검증해주세요.\n조건 순서, 수치, Phase 번호, 1회 여부, 리셋 여부 등 모든 항목 확인.`
+      : '아래 조건이 원본 전략과 일치하는지 확인해주세요.\n1. 잘못된 조건 (수치 오류, 방향 반전)\n2. 빠진 조건\n3. 전체 일치율 (%)';
+    const prompt = `${stratLabel}\n\n${condText}`;
 
     Alert.alert(
       '📋 일치 확인',
@@ -886,10 +954,12 @@ export default function AutoTradeScreen() {
         )}
 
         {/* ── 일치 확인 버튼 ── */}
-        {conditions && (
+        {(conditions || activeStrategy) && (
           <TouchableOpacity style={styles.matchCheckBtn} onPress={openMatchCheck}>
             <Text style={styles.matchCheckBtnText}>🔍 일치 확인</Text>
-            <Text style={styles.matchCheckBtnSub}>조건을 복사 후 AI 앱에서 원본과 비교</Text>
+            <Text style={styles.matchCheckBtnSub}>
+              {activeStrategy ? `"${activeStrategy.name}" 전략 전체 조건 복사 후 AI 검증` : '조건을 복사 후 AI 앱에서 원본과 비교'}
+            </Text>
           </TouchableOpacity>
         )}
 
