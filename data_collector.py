@@ -611,10 +611,11 @@ class StockDataCollector:
             if q1_curr.get("error"):
                 return None
             ci = q1_curr.get("indicators", {})
-            q1c_ni  = ci.get("net_income", {}).get("current")
-            q1c_rev = ci.get("revenue", {}).get("current")
-            q1c_op  = ci.get("operating_income", {}).get("current")
-            if not q1c_ni:
+            q1c_ni     = ci.get("net_income", {}).get("current")
+            q1c_rev    = ci.get("revenue", {}).get("current")
+            q1c_op     = ci.get("operating_income", {}).get("current")
+            q1c_equity = ci.get("total_equity", {}).get("current")   # ★ 최신 분기 자본총계
+            if q1c_ni is None:
                 return None
 
             # Q1 전년
@@ -625,7 +626,7 @@ class StockDataCollector:
             q1p_ni  = pi.get("net_income", {}).get("current")
             q1p_rev = pi.get("revenue", {}).get("current")
             q1p_op  = pi.get("operating_income", {}).get("current")
-            if not q1p_ni:
+            if q1p_ni is None:
                 return None
 
             def _ttm(annual, prev, curr):
@@ -637,7 +638,7 @@ class StockDataCollector:
             ttm_rev = _ttm(annual_rev, q1p_rev, q1c_rev)
             ttm_op  = _ttm(annual_op,  q1p_op,  q1c_op)
 
-            if not ttm_ni or ttm_ni <= 0:
+            if ttm_ni is None:
                 return None
 
             return {
@@ -646,6 +647,7 @@ class StockDataCollector:
                 "ttm_operating_income": ttm_op,
                 "equity_curr":          eq_curr,
                 "equity_prev":          eq_prev,
+                "latest_equity":        q1c_equity,   # ★ 최신 분기 자본 (PBR 계산용)
             }
         except Exception as e:
             log.debug(f"TTM income statement 계산 실패 ({stock_code}): {e}")
@@ -908,18 +910,26 @@ class StockDataCollector:
                     mm["per_basis"]  = "TTM"
                     log.debug(f"TTM PER ({stock_code}): mc={mc}, ni={ttm_ni}, per={mm['per']}")
 
-                # TTM ROE = TTM순이익 / 평균자기자본
-                if eq_c and eq_p and eq_c > 0:
+                # TTM ROE = TTM순이익 / 평균자기자본 (음수 자본/음수 이익 모두 허용)
+                if eq_c is not None and eq_p is not None:
                     avg_eq = (eq_c + eq_p) / 2
-                    mm["roe_pct"]    = round(ttm_ni / avg_eq * 100, 2)
-                    mm["roe_source"] = "dart_ttm"
-                    mm["roe_basis"]  = "TTM"
+                    if avg_eq != 0:
+                        mm["roe_pct"]    = round(ttm_ni / avg_eq * 100, 2)
+                        mm["roe_source"] = "dart_ttm"
+                        mm["roe_basis"]  = "TTM"
 
-                # TTM 영업이익률
-                if ttm_rev and ttm_op and ttm_rev != 0:
+                # TTM 영업이익률 (음수 허용)
+                if ttm_rev and ttm_op is not None and ttm_rev != 0:
                     mm["operating_margin_pct"]    = round(ttm_op / ttm_rev * 100, 2)
                     mm["operating_margin_source"] = "dart_ttm"
                     mm["operating_margin_basis"]  = "TTM"
+
+                # PBR = 현재 시총 / 최신 분기 자본총계 (stale KRX BPS 대체)
+                latest_eq = ttm.get("latest_equity")
+                if mc and latest_eq and latest_eq > 0:
+                    mm["pbr"]        = round(mc / latest_eq, 2)
+                    mm["pbr_source"] = "dart_q1"
+                    mm["pbr_basis"]  = "분기말"
 
         # ★ US 종목: yfinance 연간 재무제표로 정확한 지표 덮어쓰기
         # revenueGrowth(분기YoY)/operatingMargins(분기)/debtToEquity(금융부채만) 오류 수정
