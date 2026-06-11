@@ -163,7 +163,7 @@ def get_summary(code):
         "dividend_yield_pct": _by_id("_dvd_yld_for_yr"),
     }
 
-    # ★ 재무 분석 탭 API에서 영업이익률·ROE·매출성장률 추가 시도
+    # ★ 재무 분석 탭 API에서 영업이익률·ROE·매출성장률·부채비율 추가 시도
     try:
         fin_r = requests.get(
             f"https://finance.naver.com/item/coinfo.naver?code={c}&target=finsum_more",
@@ -174,29 +174,40 @@ def get_summary(code):
                 fin_r.encoding = fin_r.apparent_encoding or "euc-kr"
             fin_html = fin_r.text
 
-            # 영업이익률: 테이블에서 "영업이익률" 행의 최신 값
-            m_op = re.search(
-                r'영업이익률[^<]*</th>.*?<td[^>]*>\s*([0-9,.\-]+)\s*</td>',
-                fin_html, re.S,
-            )
-            if m_op:
-                out["operating_margin_pct"] = _p(m_op.group(1))
+            def _last_td_val(pattern):
+                """row 내 <td> 값들 중 마지막(최신연도) 숫자 반환.
+                Naver finsum 테이블: 열이 왼→오 = 오래된연도→최신연도."""
+                m = re.search(pattern, fin_html, re.S)
+                if not m:
+                    return None
+                row_html = m.group(1)
+                tds = re.findall(r'<td[^>]*>\s*([^<]+)\s*</td>', row_html)
+                # 뒤에서부터 유효한 숫자 탐색 (빈값/N/A 건너뜀)
+                for raw in reversed(tds):
+                    v = _p(raw.strip())
+                    if v is not None:
+                        return v
+                return None
 
-            # ROE: "ROE" 행
-            m_roe = re.search(
-                r'>ROE[^<]*</th>.*?<td[^>]*>\s*([0-9,.\-]+)\s*</td>',
-                fin_html, re.S,
+            # 영업이익률 (마지막 유효 열 = 최신)
+            out["operating_margin_pct"] = _last_td_val(
+                r'영업이익률[^<]*</th>(.*?)</tr>'
             )
-            if m_roe:
-                out["roe_pct"] = _p(m_roe.group(1))
+
+            # ROE
+            out["roe_pct"] = _last_td_val(
+                r'>ROE[^<]*</th>(.*?)</tr>'
+            )
 
             # 매출액 증가율
-            m_rev = re.search(
-                r'매출액\s*증가율[^<]*</th>.*?<td[^>]*>\s*([0-9,.\-]+)\s*</td>',
-                fin_html, re.S,
+            out["revenue_growth_pct"] = _last_td_val(
+                r'매출액\s*증가율[^<]*</th>(.*?)</tr>'
             )
-            if m_rev:
-                out["revenue_growth_pct"] = _p(m_rev.group(1))
+
+            # 부채비율 (연간 기준 — TTM 블록이 이후 분기말로 덮어씀)
+            out["debt_to_equity_pct"] = _last_td_val(
+                r'부채비율[^<]*</th>(.*?)</tr>'
+            )
     except Exception as e:
         logger.debug("Naver finsum fail (%s): %s", code, e)
 

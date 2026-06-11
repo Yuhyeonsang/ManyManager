@@ -274,8 +274,8 @@ def map_grade(grade_kr: str) -> str:
 
 
 def score_to_100(total_score: int) -> int:
-    """-6 ~ +6 → 0 ~ 100 으로 변환."""
-    return max(0, min(100, int((total_score + 6) / 12 * 100)))
+    """-12 ~ +12 → 0 ~ 100 으로 변환."""
+    return max(0, min(100, int((total_score + 12) / 24 * 100)))
 
 
 # ─────────────────────────────────────────────
@@ -418,7 +418,10 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
         ]
         sent_score, sent_counts = 0.0, {"긍정": 0, "부정": 0, "중립": len(picks)}
 
-    verdict = grader.grade(price_an, fin_an, sent_score, sent_counts, is_etf=bool(etf_raw))
+    _mm_grade = bundle.get("market_metrics") or {}
+    if _mm_grade.get("error"):
+        _mm_grade = {}
+    verdict = grader.grade(price_an, fin_an, sent_score, sent_counts, is_etf=bool(etf_raw), market_metrics=_mm_grade)
 
     # 한 줄 요약
     if picks and not picks[0].get("error"):
@@ -858,16 +861,22 @@ def stock_report(ticker: str, refresh: bool = False):
         pbr = mm_safe.get("pbr")
         roe = mm_safe.get("roe_pct")
 
-        # 매출 성장률 / 영업이익률 / 부채비율: DART → yfinance.info 폴백
-        revenue_growth = growth.get("revenue")
+        # 매출 성장률 / 영업이익률 / 부채비율
+        # ★ KR 종목: mm_safe(TTM/Naver/DART Q1)가 더 최신 → 1순위
+        #   US 종목: margins(yfinance annual)이 정확 → 폴백 순서 같음
+        revenue_growth = mm_safe.get("revenue_growth_pct")
         if revenue_growth is None:
-            revenue_growth = mm_safe.get("revenue_growth_pct")
-        operating_margin = margins.get("operating_margin_pct")
+            revenue_growth = growth.get("revenue")
+
+        # 영업이익률: TTM(mm_safe) 우선, DART annual 폴백
+        operating_margin = mm_safe.get("operating_margin_pct")
         if operating_margin is None:
-            operating_margin = mm_safe.get("operating_margin_pct")
-        debt_ratio = fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None
+            operating_margin = margins.get("operating_margin_pct")
+
+        # 부채비율: DART Q1(mm_safe = 분기말 최신) 우선, DART annual 폴백
+        debt_ratio = mm_safe.get("debt_to_equity_pct")
         if debt_ratio is None:
-            debt_ratio = mm_safe.get("debt_to_equity_pct")
+            debt_ratio = fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None
 
         # 부채비율 basis: DART 연간 → "분기말", yfinance → "분기말"
         debt_ratio_basis = "분기말"
@@ -1257,6 +1266,4 @@ async def auto_trade_fix_conditions(req: FixConditionsRequest):
         raise HTTPException(500, f"수정 실패: {e}")
 
 
-# ─────────────────────────────────────────────
-# 백테스트 엔드포인트
-# ──────────────────────────
+# ─────────────────────────────────────�

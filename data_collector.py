@@ -669,7 +669,7 @@ class StockDataCollector:
             annual_op  = ind.get("operating_income", {}).get("current")
             eq_curr    = ind.get("total_equity", {}).get("current")
             eq_prev    = ind.get("total_equity", {}).get("previous")
-            if not annual_ni:
+            if annual_ni is None:
                 return None
             base_year = annual_fin.get("year", datetime.now().year - 1)
             curr_year = datetime.now().year
@@ -937,9 +937,12 @@ class StockDataCollector:
                 etf_info = us_etf
 
         # ★ KR 종목: 네이버 금융을 1순위로 — yfinance 한국 데이터 부정확 문제 해결
+        # _ns_cache: get_summary 결과 캐시 (이 함수 호출 1회만 API 요청)
+        _ns_cache: Optional[Dict] = None
         if stock_code and isinstance(mm, dict) and _NAVER_AVAILABLE and hasattr(_naver, "get_summary"):
             try:
-                ns = _naver.get_summary(stock_code)
+                _ns_cache = _naver.get_summary(stock_code)
+                ns = _ns_cache
                 if ns:
                     if ns.get("per") is not None:
                         mm["per"]        = ns["per"]
@@ -1029,7 +1032,8 @@ class StockDataCollector:
             )
             if need_basic or need_margins:
                 try:
-                    ns = _naver.get_summary(stock_code)
+                    # ★ _ns_cache 재사용 — API 중복 호출 방지
+                    ns = _ns_cache if _ns_cache is not None else _naver.get_summary(stock_code)
                     if ns:
                         if mm.get("per") is None and ns.get("per") is not None:
                             mm["per"]        = ns["per"]
