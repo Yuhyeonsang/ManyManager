@@ -315,6 +315,27 @@ class HotStock(BaseModel):
     summary: str
 
 
+class EtfInfo(BaseModel):
+    """ETF 전용 지표. 일반 주식이면 None."""
+    is_etf: bool = True
+    market: Optional[str] = None               # "KR" / "US"
+    fund_name: Optional[str] = None            # ETF 풀네임
+    fund_family: Optional[str] = None          # 운용사
+    category: Optional[str] = None             # 카테고리/테마
+    total_assets_billion: Optional[float] = None  # 총운용자산 (억원 or USD B)
+    expense_ratio_pct: Optional[float] = None  # 운용보수 %
+    nav: Optional[float] = None                # 순자산가치 (KR)
+    nav_diff_pct: Optional[float] = None       # 괴리율 % (KR)
+    dividend_yield_pct: Optional[float] = None # 배당수익률
+    return_1m: Optional[float] = None          # 1개월 수익률 %
+    return_3m: Optional[float] = None          # 3개월 수익률 %
+    return_ytd: Optional[float] = None         # YTD 수익률 %
+    return_1y: Optional[float] = None          # 1년 수익률 %
+    return_3y_ann: Optional[float] = None      # 3년 연평균 % (US)
+    return_5y_ann: Optional[float] = None      # 5년 연평균 % (US)
+    beta: Optional[float] = None               # 베타 (US)
+
+
 class Financials(BaseModel):
     per: Optional[float] = None
     pbr: Optional[float] = None
@@ -346,6 +367,7 @@ class StockReport(BaseModel):
     news_summary: str                   # legacy 호환용 — 줄바꿈 텍스트
     news_items: Optional[List[NewsItem]] = None   # 구조화된 뉴스 (앱이 우선 사용)
     financials: Financials
+    etf_info: Optional[EtfInfo] = None  # ETF면 채워짐, 일반 주식이면 None
     updated_at: str
 
 
@@ -371,6 +393,7 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
 
     price_an = sem.analyze_price(price)
     fin_an = sem.analyze_financials(fin)
+    etf_raw = bundle.get("etf_info")  # ETF면 Dict, 아니면 None
 
     # Gemini 호출은 실패해도 계속 진행
     try:
@@ -395,7 +418,7 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
         ]
         sent_score, sent_counts = 0.0, {"긍정": 0, "부정": 0, "중립": len(picks)}
 
-    verdict = grader.grade(price_an, fin_an, sent_score, sent_counts)
+    verdict = grader.grade(price_an, fin_an, sent_score, sent_counts, is_etf=bool(etf_raw))
 
     # 한 줄 요약
     if picks and not picks[0].get("error"):
@@ -864,6 +887,10 @@ def stock_report(ticker: str, refresh: bool = False):
             debt_ratio_basis=debt_ratio_basis,
         )
 
+        # ETF 정보 모델 변환
+        etf_raw = r.get("_internals", {}).get("bundle", {}).get("etf_info")
+        etf_info_model = EtfInfo(**etf_raw) if etf_raw else None
+
         report = StockReport(
             ticker=r["ticker"],
             name=r["name"],
@@ -872,6 +899,7 @@ def stock_report(ticker: str, refresh: bool = False):
             news_summary=news_summary,
             news_items=news_items_out or None,
             financials=financials,
+            etf_info=etf_info_model,
             updated_at=datetime.now().isoformat(),
         )
         cache_set(cache_key, report.model_dump())

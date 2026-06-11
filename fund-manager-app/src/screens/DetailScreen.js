@@ -186,14 +186,18 @@ export default function DetailScreen({ route, navigation }) {
           )}
         </Section>
 
-        <Section title="주요 재무 수치">
-          <FinancialRow label="PER" value={f.per} suffix="배" basis={f.per_basis} />
-          <FinancialRow label="PBR" value={f.pbr} suffix="배" basis={f.pbr_basis} />
-          <FinancialRow label="ROE" value={f.roe} suffix="%" basis={f.roe_basis} />
-          <FinancialRow label="매출 성장률" value={f.revenue_growth} suffix="%" basis={f.revenue_growth_basis} />
-          <FinancialRow label="영업이익률" value={f.operating_margin} suffix="%" basis={f.operating_margin_basis} />
-          <FinancialRow label="부채비율" value={f.debt_ratio} suffix="%" basis={f.debt_ratio_basis} />
-        </Section>
+        <EtfSection etf={report.etf_info} />
+
+        {!report.etf_info && (
+          <Section title="주요 재무 수치">
+            <FinancialRow label="PER" value={f.per} suffix="배" basis={f.per_basis} />
+            <FinancialRow label="PBR" value={f.pbr} suffix="배" basis={f.pbr_basis} />
+            <FinancialRow label="ROE" value={f.roe} suffix="%" basis={f.roe_basis} />
+            <FinancialRow label="매출 성장률" value={f.revenue_growth} suffix="%" basis={f.revenue_growth_basis} />
+            <FinancialRow label="영업이익률" value={f.operating_margin} suffix="%" basis={f.operating_margin_basis} />
+            <FinancialRow label="부채비율" value={f.debt_ratio} suffix="%" basis={f.debt_ratio_basis} />
+          </Section>
+        )}
 
         {report.updated_at && (
           <Text style={styles.updatedAt}>
@@ -236,6 +240,87 @@ function Section({ title, children }) {
       <Text style={styles.sectionTitle}>{title}</Text>
       <View style={styles.sectionBody}>{children}</View>
     </View>
+  );
+}
+
+
+function EtfRow({ label, value, suffix = '', color }) {
+  const display = value === null || value === undefined ? '-' : `${value}${suffix}`;
+  const valStyle = [styles.finValue];
+  if (color === 'auto' && value !== null && value !== undefined) {
+    if (value > 0) valStyle.push({ color: '#16A34A' });
+    else if (value < 0) valStyle.push({ color: '#DC2626' });
+  }
+  return (
+    <View style={styles.finRow}>
+      <Text style={styles.finLabel}>{label}</Text>
+      <Text style={valStyle}>{display}</Text>
+    </View>
+  );
+}
+
+function EtfSection({ etf }) {
+  if (!etf) return null;
+  const isKR = etf.market === 'KR';
+  return (
+    <Section title="ETF 정보">
+      {etf.fund_name ? (
+        <Text style={[styles.body, { marginBottom: 8, fontWeight: '600' }]}>{etf.fund_name}</Text>
+      ) : null}
+      {etf.fund_family ? <EtfRow label="운용사" value={etf.fund_family} /> : null}
+      {etf.category    ? <EtfRow label="카테고리" value={etf.category} /> : null}
+
+      {isKR && etf.nav != null ? (
+        <EtfRow label="NAV" value={etf.nav?.toLocaleString()} suffix="원" />
+      ) : null}
+      {isKR && etf.nav_diff_pct != null ? (
+        <EtfRow label="괴리율" value={etf.nav_diff_pct} suffix="%" color="auto" />
+      ) : null}
+
+      {etf.total_assets_billion != null ? (
+        <EtfRow
+          label="총운용자산"
+          value={isKR
+            ? `${etf.total_assets_billion?.toLocaleString()}억원`
+            : `$${etf.total_assets_billion}B`}
+        />
+      ) : null}
+      {etf.expense_ratio_pct != null ? (
+        <EtfRow label="운용보수(TER)" value={etf.expense_ratio_pct} suffix="%" />
+      ) : null}
+      {etf.dividend_yield_pct != null ? (
+        <EtfRow label="배당수익률" value={etf.dividend_yield_pct} suffix="%" />
+      ) : null}
+
+      <View style={styles.etfReturnRow}>
+        {[
+          { label: '1개월', val: etf.return_1m },
+          { label: '3개월', val: etf.return_3m },
+          { label: isKR ? '1년' : 'YTD', val: isKR ? etf.return_1y : etf.return_ytd },
+        ].map(({ label, val }) => (
+          <View key={label} style={styles.etfReturnCell}>
+            <Text style={styles.etfReturnLabel}>{label}</Text>
+            <Text style={[
+              styles.etfReturnValue,
+              val != null && val > 0 ? { color: '#16A34A' } :
+              val != null && val < 0 ? { color: '#DC2626' } : {},
+            ]}>
+              {val != null ? `${val > 0 ? '+' : ''}${val}%` : '-'}
+            </Text>
+          </View>
+        ))}
+      </View>
+
+      {!isKR && etf.return_3y_ann != null ? (
+        <EtfRow label="3년 연평균" value={etf.return_3y_ann} suffix="%" color="auto" />
+      ) : null}
+      {!isKR && etf.return_5y_ann != null ? (
+        <EtfRow label="5년 연평균" value={etf.return_5y_ann} suffix="%" color="auto" />
+      ) : null}
+      {!isKR && etf.beta != null ? (
+        <EtfRow label="베타 (3년)" value={etf.beta} />
+      ) : null}
+    </Section>
   );
 }
 
@@ -464,4 +549,16 @@ const styles = StyleSheet.create({
     marginTop: 4,
     fontWeight: '600',
   },
+
+  etfReturnRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingVertical: 12,
+    marginVertical: 4,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+  },
+  etfReturnCell: { alignItems: 'center', flex: 1 },
+  etfReturnLabel: { color: '#64748B', fontSize: 11, marginBottom: 4 },
+  etfReturnValue: { color: '#0F172A', fontSize: 15, fontWeight: '700' },
 });

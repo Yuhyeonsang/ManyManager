@@ -454,9 +454,14 @@ class InvestmentGrader:
         fin_an: Dict,
         sent_score: float,
         sent_counts: Dict[str, int],
+        is_etf: bool = False,
     ) -> Dict:
         ps, pr = self._score_price(price_an)
-        fs, fr = self._score_financials(fin_an)
+        if is_etf:
+            # ETF는 재무 점수 없음 — 가격 추세 + 뉴스만 반영
+            fs, fr = 0, ["ETF — 재무지표 미적용 (가격·뉴스만 채점)"]
+        else:
+            fs, fr = self._score_financials(fin_an)
         ss, sr = self._score_sentiment(sent_score, sent_counts)
         total = ps + fs + ss
         grade = next(g for thr, g in self.GRADE_TABLE if total >= thr)

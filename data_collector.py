@@ -172,6 +172,37 @@ def get_pykrx_fundamentals() -> Optional[pd.DataFrame]:
     return None
 
 
+
+# ─────────────────────────────────────────────────────────────
+# KR ETF 목록 캐시 — ETF 자동 감지용 (pykrx 기반)
+# ─────────────────────────────────────────────────────────────
+_kr_etf_set_cache: Optional[set] = None
+_kr_etf_set_date: Optional[str] = None
+
+
+def get_kr_etf_set() -> set:
+    """KRX 상장 ETF 종목코드 집합 (일 1회 갱신). 실패 시 빈 set."""
+    global _kr_etf_set_cache, _kr_etf_set_date
+    if not _PYKRX_AVAILABLE:
+        return _kr_etf_set_cache or set()
+    today = datetime.now().strftime("%Y%m%d")
+    if _kr_etf_set_cache is not None and _kr_etf_set_date == today:
+        return _kr_etf_set_cache
+    try:
+        tickers = pykrx_stock.get_etf_ticker_list()
+        _kr_etf_set_cache = set(tickers)
+        _kr_etf_set_date = today
+        log.info(f"KR ETF 목록 로드: {len(_kr_etf_set_cache)}개")
+        return _kr_etf_set_cache
+    except Exception as e:
+        log.warning(f"KR ETF 목록 로드 실패: {e}")
+        return _kr_etf_set_cache or set()
+
+
+def is_kr_etf(stock_code: str) -> bool:
+    """pykrx ETF 목록 기반 KR ETF 여부 판별."""
+    return bool(stock_code) and stock_code in get_kr_etf_set()
+
 class StockDataCollector:
     def __init__(
         self,
@@ -660,6 +691,111 @@ class StockDataCollector:
         r = self._get_ttm_income_statement(stock_code, annual_fin)
         return r["ttm_net_income"] if r else None
 
+
+    # ─────────────────────────────────────────────
+    # ETF 전용 지표 수집
+    # ─────────────────────────────────────────────
+
+    def get_kr_etf_metrics(self, stock_code: str) -> Dict:
+        """KR ETF 전용: NAV·괴리율·순자산총액·수익률 (pykrx)."""
+        result: Dict = {"is_etf": True, "market": "KR"}
+        if not _PYKRX_AVAILABLE:
+            return result
+
+        # NAV + 괴리율 + 순자산총액
+        try:
+            end = datetime.now()
+            start = end - timedelta(days=7)
+            df = pykrx_stock.get_etf_price_and_nav(
+                start.strftime("%Y%m%d"),
+                end.strftime("%Y%m%d"),
+                stock_code,
+            )
+            if df is not None and not df.empty:
+                last = df.iloc[-1]
+                nav = float(last.get("NAV") or last.get("기준가") or 0)
+                price_close = float(last.get("종가") or 0)
+                total_assets = float(last.get("순자산총액") or 0)
+                if nav > 0:
+                    result["nav"] = nav
+                    if price_close > 0:
+                        result["nav_diff_pct"] = round((price_close - nav) / nav * 100, 2)
+                if total_assets > 0:
+                    result["total_assets_billion"] = round(total_assets / 1e8, 1)
+        except Exception as e:
+            log.debug(f"KR ETF NAV 실패 ({stock_code}): {e}")
+
+        # 수익률 (1개월/3개월/1년)
+        try:
+            end = datetime.now()
+            start_1y = end - timedelta(days=380)
+            df_ohlcv = pykrx_stock.get_etf_ohlcv_by_date(
+                start_1y.strftime("%Y%m%d"),
+                end.strftime("%Y%m%d"),
+                stock_code,
+            )
+            if df_ohlcv is not None and not df_ohlcv.empty and "종가" in df_ohlcv.columns:
+                closes = df_ohlcv["종가"].dropna().astype(float)
+                if len(closes) >= 1:
+                    last_p = closes.iloc[-1]
+                    def _ret(n):
+                        if len(closes) < n + 1:
+                            return None
+                        old = closes.iloc[-(n + 1)]
+                        return round((last_p - old) / old * 100, 2) if old else None
+                    result["return_1m"] = _ret(20)
+                    result["return_3m"] = _ret(60)
+                    result["return_1y"] = _ret(240)
+        except Exception as e:
+            log.debug(f"KR ETF 수익률 실패 ({stock_code}): {e}")
+
+        # ETF 이름 (Naver 실시간)
+        try:
+            if _NAVER_AVAILABLE:
+                rt = _naver.get_realtime(f"{stock_code}.KS")
+                if rt and rt.get("name"):
+                    result["fund_name"] = rt["name"]
+        except Exception as e:
+            log.debug(f"KR ETF 이름 실패 ({stock_code}): {e}")
+
+        return result
+
+    def get_us_etf_metrics(self, ticker: str) -> Optional[Dict]:
+        """US ETF 전용: yfinance .info 기반. ETF 아니면 None."""
+        try:
+            info = yf.Ticker(ticker).info or {}
+            if info.get("quoteType") not in ("ETF", "MUTUALFUND"):
+                return None
+
+            def _f(key):
+                v = info.get(key)
+                return float(v) if isinstance(v, (int, float)) and v == v else None
+
+            ta = _f("totalAssets")
+            er = _f("expenseRatio")
+            dy = _f("yield")
+            ytd = _f("ytdReturn")
+            r3 = _f("threeYearAverageReturn")
+            r5 = _f("fiveYearAverageReturn")
+
+            return {
+                "is_etf": True,
+                "market": "US",
+                "fund_name": info.get("longName") or info.get("shortName"),
+                "fund_family": info.get("fundFamily"),
+                "category": info.get("category"),
+                "total_assets_billion": round(ta / 1e9, 2) if ta else None,  # USD 십억
+                "expense_ratio_pct": round(er * 100, 3) if er else None,
+                "dividend_yield_pct": round(dy * 100, 2) if dy else None,
+                "return_ytd": round(ytd * 100, 2) if ytd is not None else None,
+                "return_3y_ann": round(r3 * 100, 2) if r3 is not None else None,
+                "return_5y_ann": round(r5 * 100, 2) if r5 is not None else None,
+                "beta": _f("beta3Year"),
+            }
+        except Exception as e:
+            log.debug(f"US ETF 메트릭 실패 ({ticker}): {e}")
+            return None
+
     def _get_us_annual_financials(self, ticker: str) -> Dict:
         """yfinance 연간 재무제표로 US 종목 정확한 지표 계산.
         영업이익률·매출성장률: 연간 Income Statement 기준 (분기 왜곡 방지)
@@ -745,10 +881,23 @@ class StockDataCollector:
         stock_code: Optional[str] = None,
         year: Optional[int] = None,
     ) -> Dict:
+        # ★ ETF 감지 — KR: pykrx 목록, US: yfinance quoteType
+        etf_info = None
+        kr_etf = stock_code and is_kr_etf(stock_code)
+
         price = self.get_price_data(ticker)
         news = self.get_news_data(news_query) if news_query else None
-        fin = self.get_financial_statements(stock_code, year) if stock_code else None
+        # ETF는 DART 재무제표 불필요
+        fin = (self.get_financial_statements(stock_code, year) if stock_code and not kr_etf else None)
         mm = self.get_market_metrics(ticker)
+
+        if kr_etf:
+            etf_info = self.get_kr_etf_metrics(stock_code)
+        elif not stock_code:
+            # US 종목 — ETF 여부 mm 에서 확인 (yfinance quoteType)
+            us_etf = self.get_us_etf_metrics(ticker)
+            if us_etf:
+                etf_info = us_etf
 
         # ★ KR 종목: 네이버 금융을 1순위로 — yfinance 한국 데이터 부정확 문제 해결
         if stock_code and isinstance(mm, dict) and _NAVER_AVAILABLE and hasattr(_naver, "get_summary"):
@@ -964,6 +1113,7 @@ class StockDataCollector:
             "news": news,
             "financials": fin,
             "market_metrics": mm,
+            "etf_info": etf_info,   # ETF면 Dict, 아니면 None
         }
 
 
