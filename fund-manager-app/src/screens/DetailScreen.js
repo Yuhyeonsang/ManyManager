@@ -429,4 +429,39 @@ const styles = StyleSheet.create({
   newsRow: {
     paddingVertical: 10,
     paddingHorizontal: 2,
-    borderBottomWidth: StyleSheet.ha
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E2E8F0',
+  },
+  newsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  impactBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+  },
+  impactBadgeText: {
+    fontSize: 11,
+    fontWeight: '700',
+  },
+  newsTime: {
+    fontSize: 11,
+    color: '#94A3B8',
+    fontWeight: '500',
+  },
+  newsTitle: {
+    color: '#0F172A',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '500',
+  },
+  newsLink: {
+    color: '#2563EB',
+    fontSize: 11,
+    marginTop: 4,
+    fontWeight: '600',
+  },
+});

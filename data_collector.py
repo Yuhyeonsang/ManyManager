@@ -445,7 +445,7 @@ class StockDataCollector:
                 "net_margin_pct": round(ni / rev * 100, 2) if rev and ni else None,
                 "roe_pct": round(ni / avg_eq * 100, 2) if ni and avg_eq and avg_eq > 0 else None,
                 "roa_pct": round(ni / assets * 100, 2) if ni and assets else None,
-                "debt_to_equity_pct": round(li / eq * 100, 2) if li and eq else None,
+                "debt_to_equity_pct": round(li / eq * 100, 2) if li and eq and eq != 0 else None,
             }
 
             ni_prev = result.get("net_income", {}).get("previous")

@@ -343,12 +343,13 @@ class InvestmentGrader:
     환각 방지를 위해 모든 분기 조건은 파이썬에서만 평가.
     """
  
+    # 총점 범위: 가격±4 + 재무±3 + 뉴스±5 = -12 ~ +12
     GRADE_TABLE = [
-        (4, "적극 매수"),
-        (2, "매수"),
-        (0, "보유"),
-        (-2, "관망"),
-        (-99, "비중 축소"),
+        (7,  "적극 매수"),
+        (3,  "매수"),
+        (0,  "보유"),
+        (-3, "관망"),
+        (-99,"비중 축소"),
     ]
  
     @staticmethod
@@ -380,8 +381,8 @@ class InvestmentGrader:
                 s += 1; reasons.append(f"52주 고점권({pos}%, +1)")
             elif pos <= 20:
                 s -= 1; reasons.append(f"52주 저점권({pos}%, -1)")
-        return max(-2, min(2, s)), reasons
- 
+        return max(-4, min(4, s)), reasons
+
     @staticmethod
     def _score_financials(fin_an: Dict) -> Tuple[int, List[str]]:
         if fin_an.get("error"):
@@ -413,26 +414,38 @@ class InvestmentGrader:
                 s -= 1; reasons.append(f"부채비율 과다 {debt}%(-1)")
             elif debt <= 80:
                 s += 1; reasons.append(f"부채비율 양호 {debt}%(+1)")
-        return max(-2, min(2, s)), reasons
- 
+        return max(-3, min(3, s)), reasons
+
     @staticmethod
     def _score_sentiment(sent_score: float, counts: Dict[str, int]) -> Tuple[int, List[str]]:
+        """뉴스 감성 점수 -5 ~ +5 (뉴스 기반 앱이므로 가중치 높임)."""
+        pos = counts.get("긍정", 0)
+        neg = counts.get("부정", 0)
+        neu = counts.get("중립", 0)
+        total = pos + neg + neu
         s = 0
         reasons = []
-        if sent_score >= 0.5:
-            s = 2; reasons.append(f"뉴스 감성 강한 긍정({sent_score})")
-        elif sent_score >= 0.2:
-            s = 1; reasons.append(f"뉴스 감성 우호({sent_score})")
-        elif sent_score <= -0.5:
-            s = -2; reasons.append(f"뉴스 감성 강한 부정({sent_score})")
-        elif sent_score <= -0.2:
-            s = -1; reasons.append(f"뉴스 감성 부정({sent_score})")
+        if total == 0:
+            return 0, ["뉴스 없음 (0점)"]
+        if sent_score >= 0.7:
+            s = 5; reasons.append(f"뉴스 감성 매우 강한 긍정({sent_score}, +5)")
+        elif sent_score >= 0.5:
+            s = 4; reasons.append(f"뉴스 감성 강한 긍정({sent_score}, +4)")
+        elif sent_score >= 0.3:
+            s = 3; reasons.append(f"뉴스 감성 긍정({sent_score}, +3)")
+        elif sent_score >= 0.1:
+            s = 2; reasons.append(f"뉴스 감성 우호({sent_score}, +2)")
+        elif sent_score > -0.1:
+            s = 1; reasons.append(f"뉴스 감성 중립({sent_score}, +1)")
+        elif sent_score >= -0.3:
+            s = -1; reasons.append(f"뉴스 감성 약한 부정({sent_score}, -1)")
+        elif sent_score >= -0.5:
+            s = -3; reasons.append(f"뉴스 감성 부정({sent_score}, -3)")
+        elif sent_score >= -0.7:
+            s = -4; reasons.append(f"뉴스 감성 강한 부정({sent_score}, -4)")
         else:
-            reasons.append(f"뉴스 감성 중립({sent_score})")
-        reasons.append(
-            f"뉴스 분포 → 긍정 {counts.get('긍정',0)} / "
-            f"부정 {counts.get('부정',0)} / 중립 {counts.get('중립',0)}"
-        )
+            s = -5; reasons.append(f"뉴스 감성 매우 강한 부정({sent_score}, -5)")
+        reasons.append(f"뉴스 분포 → 긍정 {pos} / 부정 {neg} / 중립 {neu}")
         return s, reasons
  
     def grade(
