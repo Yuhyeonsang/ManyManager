@@ -187,12 +187,12 @@ export default function DetailScreen({ route, navigation }) {
         </Section>
 
         <Section title="주요 재무 수치">
-          <FinancialRow label="PER" value={f.per} suffix="배" />
-          <FinancialRow label="PBR" value={f.pbr} suffix="배" />
-          <FinancialRow label="ROE" value={f.roe} suffix="%" />
-          <FinancialRow label="매출 성장률" value={f.revenue_growth} suffix="%" />
-          <FinancialRow label="영업이익률" value={f.operating_margin} suffix="%" />
-          <FinancialRow label="부채비율" value={f.debt_ratio} suffix="%" />
+          <FinancialRow label="PER" value={f.per} suffix="배" basis={f.per_basis} />
+          <FinancialRow label="PBR" value={f.pbr} suffix="배" basis={f.pbr_basis} />
+          <FinancialRow label="ROE" value={f.roe} suffix="%" basis={f.roe_basis} />
+          <FinancialRow label="매출 성장률" value={f.revenue_growth} suffix="%" basis={f.revenue_growth_basis} />
+          <FinancialRow label="영업이익률" value={f.operating_margin} suffix="%" basis={f.operating_margin_basis} />
+          <FinancialRow label="부채비율" value={f.debt_ratio} suffix="%" basis={f.debt_ratio_basis} />
         </Section>
 
         {report.updated_at && (
@@ -239,12 +239,19 @@ function Section({ title, children }) {
   );
 }
 
-function FinancialRow({ label, value, suffix }) {
+function FinancialRow({ label, value, suffix, basis }) {
   const display =
     value === null || value === undefined ? '-' : `${value}${suffix ?? ''}`;
   return (
     <View style={styles.finRow}>
-      <Text style={styles.finLabel}>{label}</Text>
+      <View style={styles.finLabelWrap}>
+        <Text style={styles.finLabel}>{label}</Text>
+        {basis ? (
+          <View style={styles.basisBadge}>
+            <Text style={styles.basisText}>{basis}</Text>
+          </View>
+        ) : null}
+      </View>
       <Text style={styles.finValue}>{display}</Text>
     </View>
   );
@@ -384,7 +391,15 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
     borderBottomColor: '#E2E8F0',
   },
+  finLabelWrap: { flexDirection: 'row', alignItems: 'center', gap: 6 },
   finLabel: { color: '#64748B' },
+  basisBadge: {
+    backgroundColor: '#EFF6FF',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  basisText: { color: '#3B82F6', fontSize: 10, fontWeight: '600' },
   finValue: { color: '#0F172A', fontWeight: '600' },
   updatedAt: {
     color: '#94A3B8',
@@ -414,39 +429,4 @@ const styles = StyleSheet.create({
   newsRow: {
     paddingVertical: 10,
     paddingHorizontal: 2,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: '#E2E8F0',
-  },
-  newsHeaderRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    marginBottom: 6,
-  },
-  impactBadge: {
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
-  },
-  impactBadgeText: {
-    fontSize: 11,
-    fontWeight: '700',
-  },
-  newsTime: {
-    fontSize: 11,
-    color: '#94A3B8',
-    fontWeight: '500',
-  },
-  newsTitle: {
-    color: '#0F172A',
-    fontSize: 14,
-    lineHeight: 20,
-    fontWeight: '500',
-  },
-  newsLink: {
-    color: '#2563EB',
-    fontSize: 11,
-    marginTop: 4,
-    fontWeight: '600',
-  },
-});
+    borderBottomWidth: StyleSheet.ha

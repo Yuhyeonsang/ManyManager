@@ -590,37 +590,71 @@ class StockDataCollector:
         except Exception as e:
             return {"ticker": ticker, "error": str(e)}
 
-    def _get_ttm_net_income(self, stock_code: str, annual_fin: Dict) -> Optional[float]:
-        """TTM 순이익 = (연간 NI) - (Q1 전년) + (Q1 당해).
-        Q1 당해 보고서(11013)가 있어야 의미 있음. 실패 시 None 반환."""
+    def _get_ttm_income_statement(self, stock_code: str, annual_fin: Dict) -> Optional[Dict]:
+        """TTM 손익 = (연간) - (Q1 전년) + (Q1 당해).
+        반환: {ttm_net_income, ttm_revenue, ttm_operating_income, equity_curr, equity_prev}
+        Q1 당해 보고서(11013)가 없으면 None 반환."""
         try:
-            annual_ni = annual_fin.get("indicators", {}).get("net_income", {}).get("current")
+            ind = annual_fin.get("indicators", {})
+            annual_ni  = ind.get("net_income", {}).get("current")
+            annual_rev = ind.get("revenue", {}).get("current")
+            annual_op  = ind.get("operating_income", {}).get("current")
+            eq_curr    = ind.get("total_equity", {}).get("current")
+            eq_prev    = ind.get("total_equity", {}).get("previous")
             if not annual_ni:
                 return None
             base_year = annual_fin.get("year", datetime.now().year - 1)
             curr_year = datetime.now().year
 
-            # Q1 당해 (예: 2026 Q1)
+            # Q1 당해
             q1_curr = self.get_financial_statements(stock_code, year=curr_year, report_code="11013")
             if q1_curr.get("error"):
                 return None
-            q1_curr_ni = q1_curr.get("indicators", {}).get("net_income", {}).get("current")
-            if not q1_curr_ni:
+            ci = q1_curr.get("indicators", {})
+            q1c_ni  = ci.get("net_income", {}).get("current")
+            q1c_rev = ci.get("revenue", {}).get("current")
+            q1c_op  = ci.get("operating_income", {}).get("current")
+            if not q1c_ni:
                 return None
 
-            # Q1 전년 (예: 2025 Q1) — annual_fin 의 base_year 와 같은 해
+            # Q1 전년
             q1_prev = self.get_financial_statements(stock_code, year=base_year, report_code="11013")
             if q1_prev.get("error"):
                 return None
-            q1_prev_ni = q1_prev.get("indicators", {}).get("net_income", {}).get("current")
-            if not q1_prev_ni:
+            pi = q1_prev.get("indicators", {})
+            q1p_ni  = pi.get("net_income", {}).get("current")
+            q1p_rev = pi.get("revenue", {}).get("current")
+            q1p_op  = pi.get("operating_income", {}).get("current")
+            if not q1p_ni:
                 return None
 
-            ttm = annual_ni - q1_prev_ni + q1_curr_ni
-            return ttm if ttm > 0 else None
+            def _ttm(annual, prev, curr):
+                if annual is None or prev is None or curr is None:
+                    return None
+                return annual - prev + curr
+
+            ttm_ni  = _ttm(annual_ni,  q1p_ni,  q1c_ni)
+            ttm_rev = _ttm(annual_rev, q1p_rev, q1c_rev)
+            ttm_op  = _ttm(annual_op,  q1p_op,  q1c_op)
+
+            if not ttm_ni or ttm_ni <= 0:
+                return None
+
+            return {
+                "ttm_net_income":       ttm_ni,
+                "ttm_revenue":          ttm_rev,
+                "ttm_operating_income": ttm_op,
+                "equity_curr":          eq_curr,
+                "equity_prev":          eq_prev,
+            }
         except Exception as e:
-            log.debug(f"TTM NI 계산 실패 ({stock_code}): {e}")
+            log.debug(f"TTM income statement 계산 실패 ({stock_code}): {e}")
             return None
+
+    def _get_ttm_net_income(self, stock_code: str, annual_fin: Dict) -> Optional[float]:
+        """하위 호환용 래퍼 — _get_ttm_income_statement 위임."""
+        r = self._get_ttm_income_statement(stock_code, annual_fin)
+        return r["ttm_net_income"] if r else None
 
     def _get_us_annual_financials(self, ticker: str) -> Dict:
         """yfinance 연간 재무제표로 US 종목 정확한 지표 계산.
@@ -718,11 +752,13 @@ class StockDataCollector:
                 ns = _naver.get_summary(stock_code)
                 if ns:
                     if ns.get("per") is not None:
-                        mm["per"] = ns["per"]
+                        mm["per"]        = ns["per"]
                         mm["per_source"] = "naver_scrape"
+                        mm["per_basis"]  = "TTM"
                     if ns.get("pbr") is not None:
-                        mm["pbr"] = ns["pbr"]
+                        mm["pbr"]        = ns["pbr"]
                         mm["pbr_source"] = "naver_scrape"
+                        mm["pbr_basis"]  = "분기말"
                     if ns.get("eps") is not None:
                         mm["eps"] = ns["eps"]
                     if ns.get("bps") is not None:
@@ -731,14 +767,17 @@ class StockDataCollector:
                         mm["dividend_yield_pct"] = ns["dividend_yield_pct"]
                         mm["dividend_yield_source"] = "naver_scrape"
                     if ns.get("operating_margin_pct") is not None:
-                        mm["operating_margin_pct"] = ns["operating_margin_pct"]
+                        mm["operating_margin_pct"]    = ns["operating_margin_pct"]
                         mm["operating_margin_source"] = "naver_scrape"
+                        mm["operating_margin_basis"]  = "연간"
                     if ns.get("roe_pct") is not None:
-                        mm["roe_pct"] = ns["roe_pct"]
+                        mm["roe_pct"]    = ns["roe_pct"]
                         mm["roe_source"] = "naver_scrape"
+                        mm["roe_basis"]  = "연간"
                     if ns.get("revenue_growth_pct") is not None:
-                        mm["revenue_growth_pct"] = ns["revenue_growth_pct"]
+                        mm["revenue_growth_pct"]    = ns["revenue_growth_pct"]
                         mm["revenue_growth_source"] = "naver_scrape"
+                        mm["revenue_growth_basis"]  = "YoY"
             except Exception as e:
                 log.debug(f"Naver summary 1순위 실패 ({stock_code}): {e}")
 
@@ -756,11 +795,13 @@ class StockDataCollector:
                         mm["market_cap"] = krx["market_cap"]
                         mm["market_cap_source"] = "krx"
                     if mm.get("per") is None and krx.get("per") is not None:
-                        mm["per"] = krx["per"]
+                        mm["per"]        = krx["per"]
                         mm["per_source"] = "krx"
+                        mm["per_basis"]  = "TTM"
                     if mm.get("pbr") is None and krx.get("pbr") is not None:
-                        mm["pbr"] = krx["pbr"]
+                        mm["pbr"]        = krx["pbr"]
                         mm["pbr_source"] = "krx"
+                        mm["pbr_basis"]  = "분기말"
                     mm["eps"] = krx.get("eps")
                     mm["bps"] = krx.get("bps")
                     mm["shares_outstanding"] = krx.get("shares_outstanding")
@@ -772,11 +813,13 @@ class StockDataCollector:
                 pk = self.get_kr_fundamentals_pykrx(stock_code)
                 if pk:
                     if mm.get("per") is None and pk.get("per") is not None:
-                        mm["per"] = pk["per"]
+                        mm["per"]        = pk["per"]
                         mm["per_source"] = "pykrx"
+                        mm["per_basis"]  = "TTM"
                     if mm.get("pbr") is None and pk.get("pbr") is not None:
-                        mm["pbr"] = pk["pbr"]
+                        mm["pbr"]        = pk["pbr"]
                         mm["pbr_source"] = "pykrx"
+                        mm["pbr_basis"]  = "분기말"
                     if mm.get("eps") is None and pk.get("eps") is not None:
                         mm["eps"] = pk["eps"]
                     if mm.get("bps") is None and pk.get("bps") is not None:
@@ -799,11 +842,13 @@ class StockDataCollector:
                     ns = _naver.get_summary(stock_code)
                     if ns:
                         if mm.get("per") is None and ns.get("per") is not None:
-                            mm["per"] = ns["per"]
+                            mm["per"]        = ns["per"]
                             mm["per_source"] = "naver_scrape"
+                            mm["per_basis"]  = "TTM"
                         if mm.get("pbr") is None and ns.get("pbr") is not None:
-                            mm["pbr"] = ns["pbr"]
+                            mm["pbr"]        = ns["pbr"]
                             mm["pbr_source"] = "naver_scrape"
+                            mm["pbr_basis"]  = "분기말"
                         if mm.get("eps") is None and ns.get("eps") is not None:
                             mm["eps"] = ns["eps"]
                         if mm.get("bps") is None and ns.get("bps") is not None:
@@ -813,41 +858,68 @@ class StockDataCollector:
                             mm["dividend_yield_source"] = "naver_scrape"
                         # ★ 추가: 영업이익률·ROE·매출성장률
                         if mm.get("operating_margin_pct") is None and ns.get("operating_margin_pct") is not None:
-                            mm["operating_margin_pct"] = ns["operating_margin_pct"]
+                            mm["operating_margin_pct"]    = ns["operating_margin_pct"]
                             mm["operating_margin_source"] = "naver_scrape"
+                            mm["operating_margin_basis"]  = "연간"
                         if mm.get("roe_pct") is None and ns.get("roe_pct") is not None:
-                            mm["roe_pct"] = ns["roe_pct"]
+                            mm["roe_pct"]    = ns["roe_pct"]
                             mm["roe_source"] = "naver_scrape"
+                            mm["roe_basis"]  = "연간"
                         if mm.get("revenue_growth_pct") is None and ns.get("revenue_growth_pct") is not None:
-                            mm["revenue_growth_pct"] = ns["revenue_growth_pct"]
+                            mm["revenue_growth_pct"]    = ns["revenue_growth_pct"]
                             mm["revenue_growth_source"] = "naver_scrape"
+                            mm["revenue_growth_basis"]  = "YoY"
                 except Exception as e:
                     log.debug(f"Naver summary fallback 실패 ({stock_code}): {e}")
 
         if fin and "ratios" in fin and isinstance(mm, dict):
             r = fin["ratios"]
             if mm.get("roe_pct") is None and r.get("roe_pct") is not None:
-                mm["roe_pct"] = r["roe_pct"]
+                mm["roe_pct"]    = r["roe_pct"]
                 mm["roe_source"] = "dart_calc"
+                mm["roe_basis"]  = "연간"
             mc = mm.get("market_cap")
             ni = fin["indicators"].get("net_income", {}).get("current")
             eq = fin["indicators"].get("total_equity", {}).get("current")
             if mm.get("per") is None and mc and ni and ni > 0:
-                mm["per"] = round(mc / ni, 2)
+                mm["per"]        = round(mc / ni, 2)
                 mm["per_source"] = "dart_calc"
+                mm["per_basis"]  = "연간"
             if mm.get("pbr") is None and mc and eq and eq > 0:
-                mm["pbr"] = round(mc / eq, 2)
+                mm["pbr"]        = round(mc / eq, 2)
                 mm["pbr_source"] = "dart_calc"
+                mm["pbr_basis"]  = "분기말"
 
-        # ★ KR 종목 TTM PER: 연간NI - Q1전년 + Q1당해 → Naver/KRX PER 보다 정확
+        # ★ KR 종목 TTM: PER / ROE / 영업이익률을 TTM 기준으로 통일
         if stock_code and fin and not fin.get("error") and isinstance(mm, dict):
             mc = mm.get("market_cap")
-            if mc:
-                ttm_ni = self._get_ttm_net_income(stock_code, fin)
-                if ttm_ni and ttm_ni > 0:
-                    mm["per"] = round(mc / ttm_ni, 2)
+            ttm = self._get_ttm_income_statement(stock_code, fin)
+            if ttm:
+                ttm_ni  = ttm["ttm_net_income"]
+                ttm_rev = ttm["ttm_revenue"]
+                ttm_op  = ttm["ttm_operating_income"]
+                eq_c    = ttm["equity_curr"]
+                eq_p    = ttm["equity_prev"]
+
+                # TTM PER
+                if mc and ttm_ni > 0:
+                    mm["per"]        = round(mc / ttm_ni, 2)
                     mm["per_source"] = "dart_ttm"
-                    log.debug(f"TTM PER 적용 ({stock_code}): mc={mc}, ttm_ni={ttm_ni}, per={mm['per']}")
+                    mm["per_basis"]  = "TTM"
+                    log.debug(f"TTM PER ({stock_code}): mc={mc}, ni={ttm_ni}, per={mm['per']}")
+
+                # TTM ROE = TTM순이익 / 평균자기자본
+                if eq_c and eq_p and eq_c > 0:
+                    avg_eq = (eq_c + eq_p) / 2
+                    mm["roe_pct"]    = round(ttm_ni / avg_eq * 100, 2)
+                    mm["roe_source"] = "dart_ttm"
+                    mm["roe_basis"]  = "TTM"
+
+                # TTM 영업이익률
+                if ttm_rev and ttm_op and ttm_rev != 0:
+                    mm["operating_margin_pct"]    = round(ttm_op / ttm_rev * 100, 2)
+                    mm["operating_margin_source"] = "dart_ttm"
+                    mm["operating_margin_basis"]  = "TTM"
 
         # ★ US 종목: yfinance 연간 재무제표로 정확한 지표 덮어쓰기
         # revenueGrowth(분기YoY)/operatingMargins(분기)/debtToEquity(금융부채만) 오류 수정
@@ -855,14 +927,17 @@ class StockDataCollector:
             us_fin = self._get_us_annual_financials(ticker)
             if us_fin:
                 if us_fin.get("operating_margin_pct") is not None:
-                    mm["operating_margin_pct"] = us_fin["operating_margin_pct"]
+                    mm["operating_margin_pct"]    = us_fin["operating_margin_pct"]
                     mm["operating_margin_source"] = "yf_annual"
+                    mm["operating_margin_basis"]  = "연간"
                 if us_fin.get("revenue_growth_pct") is not None:
-                    mm["revenue_growth_pct"] = us_fin["revenue_growth_pct"]
+                    mm["revenue_growth_pct"]    = us_fin["revenue_growth_pct"]
                     mm["revenue_growth_source"] = "yf_annual"
+                    mm["revenue_growth_basis"]  = "YoY"
                 if us_fin.get("debt_to_equity_pct") is not None:
-                    mm["debt_to_equity_pct"] = us_fin["debt_to_equity_pct"]
+                    mm["debt_to_equity_pct"]    = us_fin["debt_to_equity_pct"]
                     mm["debt_to_equity_source"] = "yf_annual"
+                    mm["debt_to_equity_basis"]  = "분기말"
 
         return {
             "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1239,7 +1314,6 @@ def get_hot_stocks_us(limit: int = 5) -> List[Dict]:
         "ticker": s["code"],
         "region": "US",
     } for s in pool[:limit]]
-
 
 
 def get_hot_stocks_mixed(kr_limit: int = 6, us_limit: int = 4) -> List[Dict]:

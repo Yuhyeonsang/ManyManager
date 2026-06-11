@@ -322,6 +322,13 @@ class Financials(BaseModel):
     revenue_growth: Optional[float] = None
     operating_margin: Optional[float] = None
     debt_ratio: Optional[float] = None
+    # 계산 기준 (TTM / 연간 / YoY / 분기말)
+    per_basis: Optional[str] = None
+    pbr_basis: Optional[str] = None
+    roe_basis: Optional[str] = None
+    revenue_growth_basis: Optional[str] = None
+    operating_margin_basis: Optional[str] = None
+    debt_ratio_basis: Optional[str] = None
 
 
 class NewsItem(BaseModel):
@@ -839,6 +846,9 @@ def stock_report(ticker: str, refresh: bool = False):
         if debt_ratio is None:
             debt_ratio = mm_safe.get("debt_to_equity_pct")
 
+        # 부채비율 basis: DART 연간 → "분기말", yfinance → "분기말"
+        debt_ratio_basis = "분기말"
+
         financials = Financials(
             per=per,
             pbr=pbr,
@@ -846,6 +856,12 @@ def stock_report(ticker: str, refresh: bool = False):
             revenue_growth=revenue_growth,
             operating_margin=operating_margin,
             debt_ratio=debt_ratio,
+            per_basis=mm_safe.get("per_basis"),
+            pbr_basis=mm_safe.get("pbr_basis", "분기말"),
+            roe_basis=mm_safe.get("roe_basis"),
+            revenue_growth_basis=mm_safe.get("revenue_growth_basis", "YoY"),
+            operating_margin_basis=mm_safe.get("operating_margin_basis"),
+            debt_ratio_basis=debt_ratio_basis,
         )
 
         report = StockReport(
@@ -1215,31 +1231,4 @@ async def auto_trade_fix_conditions(req: FixConditionsRequest):
 
 # ─────────────────────────────────────────────
 # 백테스트 엔드포인트
-# ─────────────────────────────────────────────
-try:
-    import backtester as _backtester
-    _BACKTESTER_AVAILABLE = True
-except ImportError:
-    _BACKTESTER_AVAILABLE = False
-    log.warning("backtester 모듈 없음")
-
-
-class BacktestRequest(BaseModel):
-    conditions: dict
-    period_days: int = 90
-    initial_cash: float = 10_000_000
-
-
-@app.post("/api/backtest/run")
-async def run_backtest(req: BacktestRequest):
-    if not _BACKTESTER_AVAILABLE:
-        raise HTTPException(503, "backtester 모듈 없음")
-    try:
-        result = _backtester.run(
-            req.conditions,
-            period_days=req.period_days,
-            initial_cash=req.initial_cash,
-        )
-        return result
-    except Exception as e:
-        raise HTTPException(500, str(e))
+# ──────────────────────────
