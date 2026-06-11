@@ -203,6 +203,58 @@ def is_kr_etf(stock_code: str) -> bool:
     """pykrx ETF 목록 기반 KR ETF 여부 판별."""
     return bool(stock_code) and stock_code in get_kr_etf_set()
 
+
+# ─── KR ETF 이름 캐시 (KRX API) ───────────────────────────────
+_kr_etf_info_cache: Optional[List[Dict]] = None
+_kr_etf_info_date: Optional[str] = None
+
+
+def get_kr_etf_info_list() -> List[Dict]:
+    """KRX API로 전체 ETF 코드+이름+기초지수 목록. 일 1회 캐시.
+    반환: [{"code": "069500", "name": "KODEX 200", "underlying": "...", "mgmt": "..."}]"""
+    global _kr_etf_info_cache, _kr_etf_info_date
+    today = datetime.now().strftime("%Y%m%d")
+    if _kr_etf_info_cache is not None and _kr_etf_info_date == today:
+        return _kr_etf_info_cache
+    try:
+        url = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+        # 전일 데이터 기준 (오늘 장중엔 당일 미집계)
+        for delta in range(0, 5):
+            trd = (datetime.now() - timedelta(days=delta)).strftime("%Y%m%d")
+            r = requests.post(
+                url,
+                data={
+                    "bld": "dbms/MDC/STAT/standard/MDCSTAT04601",
+                    "locale": "ko_KR",
+                    "trdDd": trd,
+                    "share": "1",
+                    "money": "1",
+                    "csvxls_isNo": "false",
+                },
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10,
+            )
+            items = r.json().get("output") or []
+            if not items:
+                continue
+            result = []
+            for item in items:
+                code = str(item.get("ISU_SRT_CD") or "").strip()
+                name = str(item.get("ISU_ABBRV") or "").strip()
+                idx  = str(item.get("IDX_NM_KOR") or "").strip()
+                mgmt = str(item.get("MGMT_CO") or "").strip()
+                if code and name:
+                    result.append({"code": code, "name": name,
+                                   "underlying": idx, "mgmt": mgmt})
+            if result:
+                _kr_etf_info_cache = result
+                _kr_etf_info_date = today
+                log.info(f"KR ETF 이름 목록 로드: {len(result)}개 (기준일 {trd})")
+                return result
+    except Exception as e:
+        log.warning(f"KR ETF 이름 목록 조회 실패: {e}")
+    return _kr_etf_info_cache or []
+
 class StockDataCollector:
     def __init__(
         self,
@@ -1346,17 +1398,46 @@ def search_stocks(query: str, limit: int = 20) -> List[Dict]:
             if len(out) >= limit:
                 return out
 
+    # ★ KR ETF 이름 검색 (KRX 전체 ETF 목록 — "KODEX 200", "SOL AI반도체" 등)
+    if len(out) < limit:
+        for etf in get_kr_etf_info_list():
+            code = etf.get("code", "")
+            name = etf.get("name", "")
+            if qu in code or q in name or qu in name.upper():
+                if code not in seen:
+                    seen.add(code)
+                    out.append({
+                        "code": code,
+                        "name": name,
+                        "market": "ETF",
+                        "ticker": f"{code}.KS",
+                        "region": "KR",
+                        "type": "ETF",
+                    })
+                if len(out) >= limit:
+                    break
+
     # 유니버스에 없는 티커를 정확히 입력한 경우 — 그대로 허용
-    # 예: "SPXL" 이 유니버스에 있으면 위에서 잡히지만, 없는 ETF도 통과
-    if not out and qu and not qu.isdigit():
-        out.append({
-            "code": qu,
-            "name": qu,
-            "market": "US",
-            "ticker": qu,
-            "region": "US",
-            "type": "UNKNOWN",
-        })
+    if not out and qu:
+        if qu.isdigit() and len(qu) == 6:
+            # 6자리 숫자: KR 종목(주식 or ETF) 직접 입력
+            out.append({
+                "code": qu,
+                "name": qu,
+                "market": "KR",
+                "ticker": f"{qu}.KS",
+                "region": "KR",
+                "type": "UNKNOWN",
+            })
+        elif not qu.isdigit():
+            out.append({
+                "code": qu,
+                "name": qu,
+                "market": "US",
+                "ticker": qu,
+                "region": "US",
+                "type": "UNKNOWN",
+            })
     return out
 
 
