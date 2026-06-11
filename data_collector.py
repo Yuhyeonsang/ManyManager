@@ -614,7 +614,8 @@ class StockDataCollector:
             q1c_ni     = ci.get("net_income", {}).get("current")
             q1c_rev    = ci.get("revenue", {}).get("current")
             q1c_op     = ci.get("operating_income", {}).get("current")
-            q1c_equity = ci.get("total_equity", {}).get("current")   # ★ 최신 분기 자본총계
+            q1c_equity      = ci.get("total_equity", {}).get("current")       # ★ 최신 분기 자본총계
+            q1c_liabilities = ci.get("total_liabilities", {}).get("current")  # ★ 최신 분기 부채총계
             if q1c_ni is None:
                 return None
 
@@ -647,7 +648,8 @@ class StockDataCollector:
                 "ttm_operating_income": ttm_op,
                 "equity_curr":          eq_curr,
                 "equity_prev":          eq_prev,
-                "latest_equity":        q1c_equity,   # ★ 최신 분기 자본 (PBR 계산용)
+                "latest_equity":        q1c_equity,      # ★ 최신 분기 자본 (PBR 계산용)
+                "latest_liabilities":   q1c_liabilities, # ★ 최신 분기 부채 (부채비율 계산용)
             }
         except Exception as e:
             log.debug(f"TTM income statement 계산 실패 ({stock_code}): {e}")
@@ -930,6 +932,13 @@ class StockDataCollector:
                     mm["pbr"]        = round(mc / latest_eq, 2)
                     mm["pbr_source"] = "dart_q1"
                     mm["pbr_basis"]  = "분기말"
+
+                # 부채비율 = 최신 분기 부채총계 / 최신 분기 자본총계 (연간 → 분기 교체)
+                latest_li = ttm.get("latest_liabilities")
+                if latest_li and latest_eq and latest_eq != 0:
+                    mm["debt_to_equity_pct"]    = round(latest_li / latest_eq * 100, 2)
+                    mm["debt_to_equity_source"] = "dart_q1"
+                    mm["debt_to_equity_basis"]  = "분기말"
 
         # ★ US 종목: yfinance 연간 재무제표로 정확한 지표 덮어쓰기
         # revenueGrowth(분기YoY)/operatingMargins(분기)/debtToEquity(금융부채만) 오류 수정
