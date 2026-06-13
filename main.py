@@ -1324,4 +1324,4 @@ async def auto_trade_fix_conditions(req: FixConditionsRequest):
         fixed = _json.loads(raw)
         return fixed
     except Exception as e:
-   
+        raise HTTPException(500, f"수정 실패: {e}")
