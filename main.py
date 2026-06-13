@@ -350,6 +350,13 @@ class Financials(BaseModel):
     revenue_growth_basis: Optional[str] = None
     operating_margin_basis: Optional[str] = None
     debt_ratio_basis: Optional[str] = None
+    # 값이 없을 때 이유 (앱 UI 표시용)
+    per_na_reason: Optional[str] = None
+    pbr_na_reason: Optional[str] = None
+    roe_na_reason: Optional[str] = None
+    revenue_growth_na_reason: Optional[str] = None
+    operating_margin_na_reason: Optional[str] = None
+    debt_ratio_na_reason: Optional[str] = None
 
 
 class NewsItem(BaseModel):
@@ -881,6 +888,41 @@ def stock_report(ticker: str, refresh: bool = False):
         # 부채비율 basis: DART 연간 → "분기말", yfinance → "분기말"
         debt_ratio_basis = "분기말"
 
+        # ── 빈값 이유 계산 ──────────────────────────
+        def _na_reason(val, field: str) -> Optional[str]:
+            """값이 None일 때 짧은 이유 반환."""
+            if val is not None:
+                return None
+            # 적자 판정: ROE/영업이익률 음수면 적자
+            is_loss = (
+                (roe is not None and roe < 0)
+                or (operating_margin is not None and operating_margin < 0)
+            )
+            # 데이터 소스 오류 여부
+            has_fin_error = bool(fin_an.get("error"))
+            has_mm_error  = bool(market_metrics.get("error"))
+
+            if field == "per":
+                if is_loss:           return "적자"
+                if has_mm_error:      return "오류"
+                return "미제공"
+            if field == "pbr":
+                if has_mm_error:      return "오류"
+                return "미제공"
+            if field == "roe":
+                if has_fin_error:     return "오류"
+                return "미제공"
+            if field == "revenue_growth":
+                if has_fin_error:     return "오류"
+                return "미제공"
+            if field == "operating_margin":
+                if has_fin_error:     return "오류"
+                return "미제공"
+            if field == "debt_ratio":
+                if has_fin_error:     return "오류"
+                return "미제공"
+            return "미제공"
+
         financials = Financials(
             per=per,
             pbr=pbr,
@@ -894,6 +936,12 @@ def stock_report(ticker: str, refresh: bool = False):
             revenue_growth_basis=mm_safe.get("revenue_growth_basis", "YoY"),
             operating_margin_basis=mm_safe.get("operating_margin_basis"),
             debt_ratio_basis=debt_ratio_basis,
+            per_na_reason=_na_reason(per, "per"),
+            pbr_na_reason=_na_reason(pbr, "pbr"),
+            roe_na_reason=_na_reason(roe, "roe"),
+            revenue_growth_na_reason=_na_reason(revenue_growth, "revenue_growth"),
+            operating_margin_na_reason=_na_reason(operating_margin, "operating_margin"),
+            debt_ratio_na_reason=_na_reason(debt_ratio, "debt_ratio"),
         )
 
         # ETF 정보 모델 변환
@@ -1200,70 +1248,4 @@ def save_template(req: SaveTemplateRequest):
     if not _TEMPLATES_AVAILABLE:
         raise HTTPException(503, "strategy_templates 모듈 없음")
     try:
-        _templates.save_template(req.name, req.strategy)
-        return {"ok": True}
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-
-
-@app.delete("/api/templates/{name}")
-def delete_template(name: str):
-    if not _TEMPLATES_AVAILABLE:
-        raise HTTPException(503, "strategy_templates 모듈 없음")
-    try:
-        _templates.delete_template(name)
-        return {"ok": True}
-    except ValueError as e:
-        raise HTTPException(400, str(e))
-    except KeyError:
-        raise HTTPException(404, f"템플릿 없음: {name}")
-
-
-# ── 조건 초기화 / 수정 API ──────────────────────
-@app.post("/api/auto-trade/reset-conditions")
-def auto_trade_reset_conditions():
-    if not _AUTO_TRADER_AVAILABLE:
-        raise HTTPException(503, "auto_trader 모듈 없음")
-    auto_trader.reset_conditions()
-    return {"ok": True}
-
-
-class FixConditionsRequest(BaseModel):
-    existing: dict
-    fix_text: str
-
-@app.post("/api/auto-trade/fix-conditions")
-async def auto_trade_fix_conditions(req: FixConditionsRequest):
-    try:
-        import groq as _groq
-        import json as _json
-        import re as _re
-        client = _groq.Groq()
-        prompt = f"""아래는 현재 자동매매 앱에 설정된 조건 JSON입니다.
-사용자의 수정 요청에 따라 조건을 수정하고, 수정된 전체 JSON을 반환하세요.
-반드시 동일한 JSON 구조를 유지하세요.
-
-현재 조건:
-{_json.dumps(req.existing, ensure_ascii=False, indent=2)}
-
-수정 요청:
-{req.fix_text}
-
-수정된 JSON만 반환하세요 (마크다운 없이):"""
-        resp = client.chat.completions.create(
-            model="llama-3.3-70b-versatile",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            max_tokens=4096,
-        )
-        raw = resp.choices[0].message.content.strip()
-        m = _re.search(r'\{.*\}', raw, _re.DOTALL)
-        if m:
-            raw = m.group(0)
-        fixed = _json.loads(raw)
-        return fixed
-    except Exception as e:
-        raise HTTPException(500, f"수정 실패: {e}")
-
-
-# ─────────────────────────────────────�
+        _tem
