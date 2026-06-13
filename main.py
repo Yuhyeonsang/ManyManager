@@ -893,34 +893,47 @@ def stock_report(ticker: str, refresh: bool = False):
             """값이 None일 때 짧은 이유 반환."""
             if val is not None:
                 return None
-            # 적자 판정: ROE/영업이익률 음수면 적자
+
+            has_fin_error = bool(fin_an.get("error"))
+            has_mm_error  = bool(market_metrics.get("error"))
+
+            # 적자 판정: 확정된 값 기준
             is_loss = (
                 (roe is not None and roe < 0)
                 or (operating_margin is not None and operating_margin < 0)
             )
-            # 데이터 소스 오류 여부
-            has_fin_error = bool(fin_an.get("error"))
-            has_mm_error  = bool(market_metrics.get("error"))
+            # 자본잠식: PBR 계산 불가
+            is_impaired = is_loss and pbr is None and not has_mm_error
 
             if field == "per":
-                if is_loss:           return "적자"
-                if has_mm_error:      return "오류"
+                if is_loss:        return "적자"        # EPS 음수 → PER 불가
+                if has_mm_error:   return "오류"
                 return "미제공"
+
             if field == "pbr":
-                if has_mm_error:      return "오류"
+                if is_impaired:    return "자본잠식 의심"
+                if has_mm_error:   return "오류"
                 return "미제공"
+
             if field == "roe":
-                if has_fin_error:     return "오류"
+                if is_loss:        return "적자"        # TTM 순손실
+                if has_fin_error:  return "오류"
                 return "미제공"
+
             if field == "revenue_growth":
-                if has_fin_error:     return "오류"
-                return "미제공"
+                # 신규 상장·분기보고서 미제출 등
+                if has_fin_error:  return "오류"
+                return "전기 비교불가"                  # 과거 1년치 없을 때
+
             if field == "operating_margin":
-                if has_fin_error:     return "오류"
+                if is_loss:        return "적자"
+                if has_fin_error:  return "오류"
                 return "미제공"
+
             if field == "debt_ratio":
-                if has_fin_error:     return "오류"
+                if has_fin_error:  return "오류"
                 return "미제공"
+
             return "미제공"
 
         financials = Financials(
@@ -1235,17 +1248,4 @@ def get_template(name: str):
     if not _TEMPLATES_AVAILABLE:
         raise HTTPException(503, "strategy_templates 모듈 없음")
     try:
-        return _templates.get_template(name)
-    except KeyError:
-        raise HTTPException(404, f"템플릿 없음: {name}")
-
-class SaveTemplateRequest(BaseModel):
-    name: str
-    strategy: dict
-
-@app.post("/api/templates")
-def save_template(req: SaveTemplateRequest):
-    if not _TEMPLATES_AVAILABLE:
-        raise HTTPException(503, "strategy_templates 모듈 없음")
-    try:
-        _tem
+        retu
