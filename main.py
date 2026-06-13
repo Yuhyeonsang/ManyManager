@@ -943,12 +943,12 @@ def stock_report(ticker: str, refresh: bool = False):
             revenue_growth=revenue_growth,
             operating_margin=operating_margin,
             debt_ratio=debt_ratio,
-            per_basis=mm_safe.get("per_basis"),
-            pbr_basis=mm_safe.get("pbr_basis", "분기말"),
-            roe_basis=mm_safe.get("roe_basis"),
-            revenue_growth_basis=mm_safe.get("revenue_growth_basis", "YoY"),
-            operating_margin_basis=mm_safe.get("operating_margin_basis"),
-            debt_ratio_basis=debt_ratio_basis,
+            per_basis=mm_safe.get("per_basis") or "연간",
+            pbr_basis=mm_safe.get("pbr_basis") or "분기말",
+            roe_basis=mm_safe.get("roe_basis") or "연간",
+            revenue_growth_basis=mm_safe.get("revenue_growth_basis") or "YoY",
+            operating_margin_basis=mm_safe.get("operating_margin_basis") or "연간",
+            debt_ratio_basis=debt_ratio_basis or "분기말",
             per_na_reason=_na_reason(per, "per"),
             pbr_na_reason=_na_reason(pbr, "pbr"),
             roe_na_reason=_na_reason(roe, "roe"),
@@ -1324,6 +1324,4 @@ async def auto_trade_fix_conditions(req: FixConditionsRequest):
         fixed = _json.loads(raw)
         return fixed
     except Exception as e:
-        raise HTTPException(500, f"수정 실패: {e}")
-
-
+   
