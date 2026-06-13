@@ -190,12 +190,12 @@ export default function DetailScreen({ route, navigation }) {
 
         {!report.etf_info && (
           <Section title="주요 재무 수치">
-            <FinancialRow label="PER" value={f.per} suffix="배" basis={f.per_basis} naReason={f.per_na_reason} />
-            <FinancialRow label="PBR" value={f.pbr} suffix="배" basis={f.pbr_basis} naReason={f.pbr_na_reason} />
-            <FinancialRow label="ROE" value={f.roe} suffix="%" basis={f.roe_basis} naReason={f.roe_na_reason} />
-            <FinancialRow label="매출 성장률" value={f.revenue_growth} suffix="%" basis={f.revenue_growth_basis} naReason={f.revenue_growth_na_reason} />
-            <FinancialRow label="영업이익률" value={f.operating_margin} suffix="%" basis={f.operating_margin_basis} naReason={f.operating_margin_na_reason} />
-            <FinancialRow label="부채비율" value={f.debt_ratio} suffix="%" basis={f.debt_ratio_basis} naReason={f.debt_ratio_na_reason} />
+            <FinancialRow label="PER" value={f.per} suffix="배" basis={f.per_basis} naReason={f.per_na_reason} source={f.per_source} />
+            <FinancialRow label="PBR" value={f.pbr} suffix="배" basis={f.pbr_basis} naReason={f.pbr_na_reason} source={f.pbr_source} />
+            <FinancialRow label="ROE" value={f.roe} suffix="%" basis={f.roe_basis} naReason={f.roe_na_reason} source={f.roe_source} />
+            <FinancialRow label="매출 성장률" value={f.revenue_growth} suffix="%" basis={f.revenue_growth_basis} naReason={f.revenue_growth_na_reason} source={f.revenue_growth_source} />
+            <FinancialRow label="영업이익률" value={f.operating_margin} suffix="%" basis={f.operating_margin_basis} naReason={f.operating_margin_na_reason} source={f.operating_margin_source} />
+            <FinancialRow label="부채비율" value={f.debt_ratio} suffix="%" basis={f.debt_ratio_basis} naReason={f.debt_ratio_na_reason} source={f.debt_ratio_source} />
           </Section>
         )}
 
@@ -324,7 +324,7 @@ function EtfSection({ etf }) {
   );
 }
 
-function FinancialRow({ label, value, suffix, basis, naReason }) {
+function FinancialRow({ label, value, suffix, basis, naReason, source }) {
   const isNull = value === null || value === undefined;
   const display = isNull ? (naReason ?? '-') : `${value}${suffix ?? ''}`;
   // 이유 텍스트 스타일: 적자=주황, 오류=빨강, 미제공=회색
@@ -339,6 +339,11 @@ function FinancialRow({ label, value, suffix, basis, naReason }) {
         {basis ? (
           <View style={styles.basisBadge}>
             <Text style={styles.basisText}>{basis}</Text>
+          </View>
+        ) : null}
+        {source ? (
+          <View style={styles.sourceBadge}>
+            <Text style={styles.sourceText}>{source}</Text>
           </View>
         ) : null}
       </View>
@@ -492,6 +497,13 @@ const styles = StyleSheet.create({
     paddingVertical: 1,
   },
   basisText: { color: '#3B82F6', fontSize: 10, fontWeight: '600' },
+  sourceBadge: {
+    backgroundColor: '#F0FDF4',
+    borderRadius: 4,
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+  },
+  sourceText: { color: '#16A34A', fontSize: 10, fontWeight: '600' },
   finValue: { color: '#0F172A', fontWeight: '600' },
   updatedAt: {
     color: '#94A3B8',
@@ -547,4 +559,25 @@ const styles = StyleSheet.create({
   newsTitle: {
     color: '#0F172A',
     fontSize: 14,
-    l
+    lineHeight: 20,
+    fontWeight: '500',
+  },
+  newsLink: {
+    color: '#2563EB',
+    fontSize: 11,
+    marginTop: 4,
+    fontWeight: '600',
+  },
+
+  etfReturnRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingVertical: 12,
+    marginVertical: 4,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 8,
+  },
+  etfReturnCell: { alignItems: 'center', flex: 1 },
+  etfReturnLabel: { color: '#64748B', fontSize: 11, marginBottom: 4 },
+  etfReturnValue: { color: '#0F172A', fontSize: 15, fontWeight: '700' },
+});

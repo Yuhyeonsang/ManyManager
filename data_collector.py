@@ -210,35 +210,50 @@ _kr_etf_info_date: Optional[str] = None
 
 
 def get_kr_etf_info_list() -> List[Dict]:
-    """pykrx로 전체 ETF 코드+이름 목록. 일 1회 캐시.
-    pykrx의 get_market_ticker_name이 내부적으로 KRX 이름 테이블을 일괄 캐시하므로
-    첫 호출 이후 빠름."""
+    """KRX API로 전체 ETF 코드+이름+기초지수 목록. 일 1회 캐시.
+    반환: [{"code": "069500", "name": "KODEX 200", "underlying": "...", "mgmt": "..."}]"""
     global _kr_etf_info_cache, _kr_etf_info_date
     today = datetime.now().strftime("%Y%m%d")
     if _kr_etf_info_cache is not None and _kr_etf_info_date == today:
         return _kr_etf_info_cache
-    if not _PYKRX_AVAILABLE:
-        return _kr_etf_info_cache or []
     try:
-        codes = list(get_kr_etf_set())
-        if not codes:
-            return _kr_etf_info_cache or []
-        result = []
-        for code in codes:
-            try:
-                name = pykrx_stock.get_market_ticker_name(code)
-                if name:
-                    result.append({"code": code, "name": name})
-            except Exception:
-                pass
-        if result:
-            _kr_etf_info_cache = result
-            _kr_etf_info_date = today
-            log.info(f"KR ETF 이름 목록: {len(result)}개")
-        return result or _kr_etf_info_cache or []
+        url = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
+        # 전일 데이터 기준 (오늘 장중엔 당일 미집계)
+        for delta in range(0, 5):
+            trd = (datetime.now() - timedelta(days=delta)).strftime("%Y%m%d")
+            r = requests.post(
+                url,
+                data={
+                    "bld": "dbms/MDC/STAT/standard/MDCSTAT04601",
+                    "locale": "ko_KR",
+                    "trdDd": trd,
+                    "share": "1",
+                    "money": "1",
+                    "csvxls_isNo": "false",
+                },
+                headers={"User-Agent": "Mozilla/5.0"},
+                timeout=10,
+            )
+            items = r.json().get("output") or []
+            if not items:
+                continue
+            result = []
+            for item in items:
+                code = str(item.get("ISU_SRT_CD") or "").strip()
+                name = str(item.get("ISU_ABBRV") or "").strip()
+                idx  = str(item.get("IDX_NM_KOR") or "").strip()
+                mgmt = str(item.get("MGMT_CO") or "").strip()
+                if code and name:
+                    result.append({"code": code, "name": name,
+                                   "underlying": idx, "mgmt": mgmt})
+            if result:
+                _kr_etf_info_cache = result
+                _kr_etf_info_date = today
+                log.info(f"KR ETF 이름 목록 로드: {len(result)}개 (기준일 {trd})")
+                return result
     except Exception as e:
-        log.warning(f"KR ETF 이름 목록 실패: {e}")
-        return _kr_etf_info_cache or []
+        log.warning(f"KR ETF 이름 목록 조회 실패: {e}")
+    return _kr_etf_info_cache or []
 
 class StockDataCollector:
     def __init__(
@@ -669,7 +684,7 @@ class StockDataCollector:
             annual_op  = ind.get("operating_income", {}).get("current")
             eq_curr    = ind.get("total_equity", {}).get("current")
             eq_prev    = ind.get("total_equity", {}).get("previous")
-            if annual_ni is None:
+            if not annual_ni:
                 return None
             base_year = annual_fin.get("year", datetime.now().year - 1)
             curr_year = datetime.now().year
@@ -937,12 +952,9 @@ class StockDataCollector:
                 etf_info = us_etf
 
         # ★ KR 종목: 네이버 금융을 1순위로 — yfinance 한국 데이터 부정확 문제 해결
-        # _ns_cache: get_summary 결과 캐시 (이 함수 호출 1회만 API 요청)
-        _ns_cache: Optional[Dict] = None
         if stock_code and isinstance(mm, dict) and _NAVER_AVAILABLE and hasattr(_naver, "get_summary"):
             try:
-                _ns_cache = _naver.get_summary(stock_code)
-                ns = _ns_cache
+                ns = _naver.get_summary(stock_code)
                 if ns:
                     if ns.get("per") is not None:
                         mm["per"]        = ns["per"]
@@ -1032,8 +1044,7 @@ class StockDataCollector:
             )
             if need_basic or need_margins:
                 try:
-                    # ★ _ns_cache 재사용 — API 중복 호출 방지
-                    ns = _ns_cache if _ns_cache is not None else _naver.get_summary(stock_code)
+                    ns = _naver.get_summary(stock_code)
                     if ns:
                         if mm.get("per") is None and ns.get("per") is not None:
                             mm["per"]        = ns["per"]

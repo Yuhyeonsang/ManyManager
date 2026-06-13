@@ -357,6 +357,13 @@ class Financials(BaseModel):
     revenue_growth_na_reason: Optional[str] = None
     operating_margin_na_reason: Optional[str] = None
     debt_ratio_na_reason: Optional[str] = None
+    # 데이터 출처
+    per_source: Optional[str] = None
+    pbr_source: Optional[str] = None
+    roe_source: Optional[str] = None
+    revenue_growth_source: Optional[str] = None
+    operating_margin_source: Optional[str] = None
+    debt_ratio_source: Optional[str] = None
 
 
 class NewsItem(BaseModel):
@@ -888,6 +895,20 @@ def stock_report(ticker: str, refresh: bool = False):
         # 부채비율 basis: DART 연간 → "분기말", yfinance → "분기말"
         debt_ratio_basis = "분기말"
 
+        # ── 데이터 출처 표시 ──────────────────────────
+        def _fmt_source(s: Optional[str]) -> Optional[str]:
+            if not s:
+                return None
+            if s == "naver_scrape":
+                return "네이버"
+            if s in ("krx", "pykrx"):
+                return "KRX"
+            if s.startswith("dart"):
+                return "DART"
+            if s == "yf_annual":
+                return "Yahoo"
+            return s
+
         # ── 빈값 이유 계산 ──────────────────────────
         def _na_reason(val, field: str) -> Optional[str]:
             """값이 None일 때 짧은 이유 반환."""
@@ -955,6 +976,12 @@ def stock_report(ticker: str, refresh: bool = False):
             revenue_growth_na_reason=_na_reason(revenue_growth, "revenue_growth"),
             operating_margin_na_reason=_na_reason(operating_margin, "operating_margin"),
             debt_ratio_na_reason=_na_reason(debt_ratio, "debt_ratio"),
+            per_source=_fmt_source(mm_safe.get("per_source")),
+            pbr_source=_fmt_source(mm_safe.get("pbr_source")),
+            roe_source=_fmt_source(mm_safe.get("roe_source")),
+            revenue_growth_source=_fmt_source(mm_safe.get("revenue_growth_source")),
+            operating_margin_source=_fmt_source(mm_safe.get("operating_margin_source")),
+            debt_ratio_source=_fmt_source(mm_safe.get("debt_to_equity_source")),
         )
 
         # ETF 정보 모델 변환
