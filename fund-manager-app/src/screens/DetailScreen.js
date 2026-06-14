@@ -12,13 +12,14 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import GradeBadge from '../components/GradeBadge';
-import { fetchStockReport, fetchClipboardText } from '../services/api';
+import { fetchStockReport, fetchClipboardText, syncFavoritesToServer } from '../services/api';
 import {
   cacheReport,
   getCachedReport,
   addFavorite,
   removeFavorite,
   isFavorite,
+  getFavorites,
 } from '../services/database';
 import {
   copyToClipboard,
@@ -49,6 +50,9 @@ export default function DetailScreen({ route, navigation }) {
         await addFavorite(ticker, name);
         setFavorited(true);
       }
+      // 서버에 관심종목 동기화 (워머 사전 캐싱용)
+      const updatedFavs = await getFavorites();
+      syncFavoritesToServer(updatedFavs);
     } catch (e) {
       console.warn('관심종목 토글 실패', e?.message);
     }

@@ -202,10 +202,16 @@ CACHE_WARM_PARALLEL = int(os.getenv("CACHE_WARM_PARALLEL", "3"))             # �
 
 
 def _warm_hot_stocks_cache():
-    """전체 watchlist 분석 → hot_stocks 캐시 + 개별 report 캐시 동시 갱신."""
+    """전체 watchlist + 관심종목 분석 → hot_stocks 캐시 + 개별 report 캐시 동시 갱신."""
     try:
         from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
         watchlist = build_watchlist()
+        # 관심종목 추가 (중복 제거)
+        hot_tickers = {w["ticker"] for w in watchlist}
+        for fav in _get_user_favorites_as_watchlist():
+            if fav["ticker"] not in hot_tickers:
+                watchlist.append(fav)
+                hot_tickers.add(fav["ticker"])
         results: Dict[str, Dict] = {}
 
         def _job(w):
@@ -300,6 +306,12 @@ def init_db():
                 ticker TEXT PRIMARY KEY,
                 payload TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS user_favorites (
+                ticker TEXT PRIMARY KEY,
+                name   TEXT,
+                code   TEXT,
+                synced_at TEXT NOT NULL
             );
         """)
         conn.commit()
@@ -807,6 +819,63 @@ def api_search(q: str, limit: int = 20):
         return []
     hits = search_stocks(q.strip(), limit=limit)
     return [SearchHit(**h) for h in hits]
+
+
+# ─────────────────────────────────────────────
+# 관심종목 서버 동기화 (워머 사전 캐싱용)
+# ─────────────────────────────────────────────
+class FavoriteItem(BaseModel):
+    ticker: str
+    name: Optional[str] = None
+    code: Optional[str] = None
+
+
+@app.post("/api/user/favorites")
+def sync_favorites(items: List[FavoriteItem]):
+    """앱 관심종목 목록을 서버에 저장. 워머가 이 목록도 사전 분석함."""
+    now = datetime.now().isoformat()
+    with db_conn() as conn:
+        conn.execute("DELETE FROM user_favorites")
+        for item in items:
+            conn.execute(
+                "INSERT OR REPLACE INTO user_favorites (ticker, name, code, synced_at) VALUES (?, ?, ?, ?)",
+                (item.ticker, item.name, item.code, now),
+            )
+        conn.commit()
+    log.info(f"[favorites] 동기화 완료 — {len(items)}건")
+    return {"ok": True, "count": len(items)}
+
+
+@app.get("/api/user/favorites")
+def get_favorites():
+    """서버에 저장된 관심종목 목록 조회."""
+    with db_conn() as conn:
+        rows = conn.execute(
+            "SELECT ticker, name, code FROM user_favorites ORDER BY synced_at DESC"
+        ).fetchall()
+    return [{"ticker": r[0], "name": r[1], "code": r[2]} for r in rows]
+
+
+def _get_user_favorites_as_watchlist() -> List[Dict]:
+    """user_favorites 테이블 → 워머용 watchlist 포맷."""
+    try:
+        with db_conn() as conn:
+            rows = conn.execute(
+                "SELECT ticker, name, code FROM user_favorites"
+            ).fetchall()
+        out = []
+        for ticker, name, code in rows:
+            c = code or (ticker.replace(".KS", "").replace(".KQ", "") if ticker else "")
+            out.append({
+                "ticker": ticker,
+                "name": name or ticker,
+                "code": c,
+                "region": "KR" if c.isdigit() and len(c) == 6 else "US",
+            })
+        return out
+    except Exception as e:
+        log.warning(f"[favorites] 조회 실패: {e}")
+        return []
 
 
 def _build_report_from_analysis(entry: dict, r: dict) -> "StockReport":

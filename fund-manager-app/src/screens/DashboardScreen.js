@@ -10,7 +10,7 @@ import {
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import StockCard from '../components/StockCard';
-import { fetchHotStocks } from '../services/api';
+import { fetchHotStocks, syncFavoritesToServer } from '../services/api';
 import {
   cacheHotStocks,
   getCachedHotStocks,
@@ -27,11 +27,13 @@ export default function DashboardScreen({ navigation }) {
   const [error, setError] = useState(null);
   const [favSet, setFavSet] = useState(new Set());
 
-  // 관심종목 Set 로드
+  // 관심종목 Set 로드 + 서버 동기화
   const loadFavs = useCallback(async () => {
     try {
       const favs = await getFavorites();
       setFavSet(new Set(favs.map((f) => f.ticker)));
+      // 앱 시작 시 서버에 관심종목 동기화 (워머가 사전 캐싱하도록)
+      syncFavoritesToServer(favs);
     } catch {}
   }, []);
 
@@ -84,6 +86,9 @@ export default function DashboardScreen({ navigation }) {
       await addFavorite(ticker, stock.name);
       setFavSet((prev) => new Set(prev).add(ticker));
     }
+    // 서버에 관심종목 동기화 (워머 사전 캐싱용)
+    const updatedFavs = await getFavorites();
+    syncFavoritesToServer(updatedFavs);
   }, [favSet]);
 
   if (loading) {

@@ -273,3 +273,18 @@ export async function runBacktest(conditions, periodDays = 90, initialCash = 100
   }, { timeout: 120000 });
   return data;
 }
+
+export async function syncFavoritesToServer(favorites) {
+  try {
+    const c = await getClient();
+    const items = favorites.map(f => ({
+      ticker: f.ticker,
+      name: f.name || null,
+      code: f.ticker.replace('.KS', '').replace('.KQ', '') || null,
+    }));
+    await c.post('/api/user/favorites', items, { timeout: 10000 });
+  } catch (e) {
+    // 오프라인이어도 앱 동작에 영향 없음
+    console.log('[favorites sync] 서버 동기화 실패 (무시):', e.message);
+  }
+}
