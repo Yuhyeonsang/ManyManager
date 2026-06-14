@@ -1425,6 +1425,58 @@ class FixConditionsRequest(BaseModel):
     existing: dict
     fix_text: str
 
+# ─────────────────────────────────────────────────────────────
+# ETF 네이버 코드 관리 (사용자가 직접 등록)
+# wisereport 구성종목 동적 조회에 사용
+# ─────────────────────────────────────────────────────────────
+ETF_NAVER_CODES_PATH = os.path.join(os.path.dirname(__file__), "etf_naver_codes.json")
+
+
+def _load_etf_naver_codes() -> Dict[str, str]:
+    try:
+        with open(ETF_NAVER_CODES_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+def _save_etf_naver_codes(codes: Dict[str, str]) -> None:
+    with open(ETF_NAVER_CODES_PATH, "w", encoding="utf-8") as f:
+        json.dump(codes, f, ensure_ascii=False, indent=2)
+
+
+class EtfNaverCodeBody(BaseModel):
+    naver_code: str
+
+
+@app.get("/api/etf/naver-codes")
+def get_etf_naver_codes():
+    """등록된 ETF KRX→네이버 코드 매핑 전체 반환"""
+    return _load_etf_naver_codes()
+
+
+@app.put("/api/etf/naver-code/{krx_code}")
+def put_etf_naver_code(krx_code: str, body: EtfNaverCodeBody):
+    """ETF 네이버 코드 등록/수정. wisereport 구성종목 조회에 즉시 반영."""
+    naver_code = body.naver_code.strip()
+    if not naver_code:
+        raise HTTPException(400, "naver_code가 비어있습니다")
+    codes = _load_etf_naver_codes()
+    codes[krx_code] = naver_code
+    _save_etf_naver_codes(codes)
+    return {"ok": True, "krx_code": krx_code, "naver_code": naver_code}
+
+
+@app.delete("/api/etf/naver-code/{krx_code}")
+def delete_etf_naver_code(krx_code: str):
+    """ETF 네이버 코드 삭제"""
+    codes = _load_etf_naver_codes()
+    removed = codes.pop(krx_code, None)
+    if removed is not None:
+        _save_etf_naver_codes(codes)
+    return {"ok": True, "removed": removed is not None}
+
+
 @app.post("/api/auto-trade/fix-conditions")
 async def auto_trade_fix_conditions(req: FixConditionsRequest):
     try:

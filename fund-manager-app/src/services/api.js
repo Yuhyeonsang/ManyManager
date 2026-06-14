@@ -274,6 +274,31 @@ export async function runBacktest(conditions, periodDays = 90, initialCash = 100
   return data;
 }
 
+// ─────────────────────────────────────────────
+// ETF 네이버 코드 관리 API
+// ─────────────────────────────────────────────
+
+/** 등록된 ETF 네이버 코드 전체 조회 (KRX코드 → 네이버코드 맵) */
+export async function getEtfNaverCodes() {
+  const c = await getClient();
+  const { data } = await c.get('/api/etf/naver-codes');
+  return data; // { "476010": "0167A0", ... }
+}
+
+/** ETF 네이버 코드 등록/수정 */
+export async function putEtfNaverCode(krxCode, naverCode) {
+  const c = await getClient();
+  const { data } = await c.put(`/api/etf/naver-code/${krxCode}`, { naver_code: naverCode });
+  return data;
+}
+
+/** ETF 네이버 코드 삭제 */
+export async function deleteEtfNaverCode(krxCode) {
+  const c = await getClient();
+  const { data } = await c.delete(`/api/etf/naver-code/${krxCode}`);
+  return data;
+}
+
 export async function syncFavoritesToServer(favorites) {
   try {
     const c = await getClient();

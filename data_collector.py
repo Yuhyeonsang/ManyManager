@@ -837,9 +837,58 @@ class StockDataCollector:
 
         return result
 
+    def _load_etf_naver_codes(self) -> Dict[str, str]:
+        """etf_naver_codes.json 에서 KRX→네이버 코드 매핑 로드"""
+        try:
+            path = os.path.join(os.path.dirname(__file__), "etf_naver_codes.json")
+            with open(path, "r", encoding="utf-8") as f:
+                import json as _json
+                return _json.load(f)
+        except Exception:
+            return {}
+
+    def _get_kr_etf_constituents_wisereport(self, naver_code: str, top_n: int = 5) -> List[str]:
+        """wisereport HTML 파싱으로 ETF 구성종목 동적 조회.
+        STK_NM_KOR / ETF_WEIGHT JSON 패턴을 파싱해서 비중 상위 top_n 반환."""
+        import re
+        url = f"https://navercomp.wisereport.co.kr/v2/ETF/index.aspx?cmp_cd={naver_code}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Referer": "https://finance.naver.com/",
+            "Accept-Charset": "EUC-KR,utf-8",
+        }
+        try:
+            r = requests.get(url, headers=headers, timeout=15)
+            # wisereport 페이지는 EUC-KR 인코딩
+            content = r.content.decode("euc-kr", errors="replace")
+            names = re.findall(r'"STK_NM_KOR"\s*:\s*"([^"]+)"', content)
+            weights_raw = re.findall(r'"ETF_WEIGHT"\s*:\s*([\d.]+)', content)
+            if not names:
+                log.debug(f"wisereport 구성종목 없음 ({naver_code}) — HTML 길이: {len(content)}")
+                return []
+            if weights_raw and len(weights_raw) == len(names):
+                pairs = sorted(zip(names, [float(w) for w in weights_raw]), key=lambda x: -x[1])
+                result = [n for n, _ in pairs[:top_n]]
+            else:
+                result = names[:top_n]
+            log.info(f"wisereport ETF 구성종목 ({naver_code}): {result}")
+            return result
+        except Exception as e:
+            log.debug(f"wisereport 구성종목 파싱 실패 ({naver_code}): {e}")
+            return []
+
     def get_kr_etf_constituents(self, stock_code: str, top_n: int = 5) -> List[str]:
         """KR ETF 상위 구성종목 이름 목록 (비중순, pykrx 기반).
-        뉴스 수집 시 ETF 자체 + 구성종목 뉴스를 합치기 위해 사용."""
+        뉴스 수집 시 ETF 자체 + 구성종목 뉴스를 합치기 위해 사용.
+        우선순위: wisereport(naver_code 등록 시) → pykrx → top_holdings 하드코드"""
+        # ★ wisereport 시도 (사용자가 네이버 코드 등록한 경우)
+        naver_codes = self._load_etf_naver_codes()
+        naver_code = naver_codes.get(stock_code)
+        if naver_code:
+            result = self._get_kr_etf_constituents_wisereport(naver_code, top_n=top_n)
+            if result:
+                return result
+
         if not _PYKRX_AVAILABLE:
             return []
         for delta in range(7):
@@ -871,6 +920,14 @@ class StockDataCollector:
                     return names
             except Exception as e:
                 log.debug(f"ETF 구성종목 조회 실패 ({stock_code}, {trd}): {e}")
+        # pykrx 실패 시 KR_ETF_UNIVERSE 하드코드 top_holdings fallback
+        for etf in KR_ETF_UNIVERSE:
+            if etf.get("code") == stock_code:
+                holdings = etf.get("top_holdings", [])
+                if holdings:
+                    log.info(f"ETF {stock_code} 구성종목 하드코드 fallback: {holdings[:top_n]}")
+                    return holdings[:top_n]
+                break
         return []
 
     def get_us_etf_metrics(self, ticker: str) -> Optional[Dict]:
@@ -1466,16 +1523,25 @@ KR_ETF_UNIVERSE: List[Dict] = [
     {"code": "102110", "name": "TIGER 200",                           "market": "ETF", "type": "ETF"},
     {"code": "232080", "name": "TIGER 코스닥150",                     "market": "ETF", "type": "ETF"},
     {"code": "143860", "name": "TIGER 코스닥150레버리지",             "market": "ETF", "type": "LEV"},
-    {"code": "218420", "name": "TIGER 반도체",                       "market": "ETF", "type": "ETF"},
-    {"code": "305540", "name": "TIGER 2차전지테마",                   "market": "ETF", "type": "ETF"},
-    {"code": "381180", "name": "TIGER AI반도체핵심공정",              "market": "ETF", "type": "ETF"},
-    {"code": "473530", "name": "TIGER AI반도체TOP10",                 "market": "ETF", "type": "ETF"},
-    {"code": "396500", "name": "TIGER 반도체TOP10",                   "market": "ETF", "type": "ETF"},
-    {"code": "494790", "name": "TIGER 피지컬AI",                     "market": "ETF", "type": "ETF"},
+    {"code": "218420", "name": "TIGER 반도체",                       "market": "ETF", "type": "ETF",
+     "top_holdings": ["SK하이닉스", "삼성전자", "DB하이텍", "리노공업", "HPSP"]},
+    {"code": "305540", "name": "TIGER 2차전지테마",                   "market": "ETF", "type": "ETF",
+     "top_holdings": ["LG에너지솔루션", "삼성SDI", "SK이노베이션", "에코프로비엠", "포스코퓨처엠"]},
+    {"code": "381180", "name": "TIGER AI반도체핵심공정",              "market": "ETF", "type": "ETF",
+     "top_holdings": ["한미반도체", "HPSP", "이오테크닉스", "원익IPS", "코미코"]},
+    {"code": "473530", "name": "TIGER AI반도체TOP10",                 "market": "ETF", "type": "ETF",
+     "top_holdings": ["삼성전자", "SK하이닉스", "한미반도체", "HPSP", "리노공업"]},
+    {"code": "396500", "name": "TIGER 반도체TOP10",                   "market": "ETF", "type": "ETF",
+     "top_holdings": ["SK하이닉스", "삼성전자", "HPSP", "리노공업", "DB하이텍"]},
+    {"code": "494790", "name": "TIGER 피지컬AI",                     "market": "ETF", "type": "ETF",
+     "top_holdings": ["레인보우로보틱스", "두산로보틱스", "HD현대로보틱스", "삼성전자", "LG전자"]},
     # SOL (신한자산운용)
-    {"code": "476010", "name": "SOL 반도체AI TOP2 플러스",            "market": "ETF", "type": "ETF"},
-    {"code": "468380", "name": "SOL AI반도체칩메이커",                "market": "ETF", "type": "ETF"},
-    {"code": "442010", "name": "SOL 2차전지소부장Fn",                 "market": "ETF", "type": "ETF"},
+    {"code": "476010", "name": "SOL 반도체AI TOP2 플러스",            "market": "ETF", "type": "ETF",
+     "top_holdings": ["SK하이닉스", "삼성전자"]},
+    {"code": "468380", "name": "SOL AI반도체칩메이커",                "market": "ETF", "type": "ETF",
+     "top_holdings": ["엔비디아", "TSMC", "브로드컴", "SK하이닉스", "삼성전자"]},
+    {"code": "442010", "name": "SOL 2차전지소부장Fn",                 "market": "ETF", "type": "ETF",
+     "top_holdings": ["에코프로비엠", "포스코퓨처엠", "엘앤에프", "SK이노베이션", "삼성SDI"]},
     {"code": "411060", "name": "SOL 한국형글로벌반도체",              "market": "ETF", "type": "ETF"},
     # ARIRANG (한화자산운용)
     {"code": "152100", "name": "ARIRANG 200",                         "market": "ETF", "type": "ETF"},

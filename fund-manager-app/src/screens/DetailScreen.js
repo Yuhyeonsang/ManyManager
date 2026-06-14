@@ -8,11 +8,12 @@ import {
   ActivityIndicator,
   Alert,
   Linking,
+  TextInput,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import GradeBadge from '../components/GradeBadge';
-import { fetchStockReport, fetchClipboardText, syncFavoritesToServer } from '../services/api';
+import { fetchStockReport, fetchClipboardText, syncFavoritesToServer, getEtfNaverCodes, putEtfNaverCode } from '../services/api';
 import {
   cacheReport,
   getCachedReport,
@@ -202,16 +203,24 @@ export default function DetailScreen({ route, navigation }) {
           </Section>
         )}
 
-        <EtfSection etf={report.etf_info} />
+        <EtfSection
+          etf={report.etf_info}
+          krxCode={ticker.split('.')[0]}
+        />
 
         {!report.etf_info && (
           <Section title="주요 재무 수치">
-            <FinancialRow label="PER" value={f.per} suffix="배" basis={f.per_basis} naReason={f.per_na_reason} source={f.per_source} />
-            <FinancialRow label="PBR" value={f.pbr} suffix="배" basis={f.pbr_basis} naReason={f.pbr_na_reason} source={f.pbr_source} />
-            <FinancialRow label="ROE" value={f.roe} suffix="%" basis={f.roe_basis} naReason={f.roe_na_reason} source={f.roe_source} />
-            <FinancialRow label="매출 성장률" value={f.revenue_growth} suffix="%" basis={f.revenue_growth_basis} naReason={f.revenue_growth_na_reason} source={f.revenue_growth_source} />
-            <FinancialRow label="영업이익률" value={f.operating_margin} suffix="%" basis={f.operating_margin_basis} naReason={f.operating_margin_na_reason} source={f.operating_margin_source} />
-            <FinancialRow label="부채비율" value={f.debt_ratio} suffix="%" basis={f.debt_ratio_basis} naReason={f.debt_ratio_na_reason} source={f.debt_ratio_source} />
+            {(() => {
+              const usSrc = report.region === 'US' ? 'Yahoo' : null;
+              return (<>
+                <FinancialRow label="PER" value={f.per} suffix="배" basis={f.per_basis} naReason={f.per_na_reason} source={f.per_source || usSrc} />
+                <FinancialRow label="PBR" value={f.pbr} suffix="배" basis={f.pbr_basis} naReason={f.pbr_na_reason} source={f.pbr_source || usSrc} />
+                <FinancialRow label="ROE" value={f.roe} suffix="%" basis={f.roe_basis} naReason={f.roe_na_reason} source={f.roe_source || usSrc} />
+                <FinancialRow label="매출 성장률" value={f.revenue_growth} suffix="%" basis={f.revenue_growth_basis} naReason={f.revenue_growth_na_reason} source={f.revenue_growth_source || usSrc} />
+                <FinancialRow label="영업이익률" value={f.operating_margin} suffix="%" basis={f.operating_margin_basis} naReason={f.operating_margin_na_reason} source={f.operating_margin_source || usSrc} />
+                <FinancialRow label="부채비율" value={f.debt_ratio} suffix="%" basis={f.debt_ratio_basis} naReason={f.debt_ratio_na_reason} source={f.debt_ratio_source || usSrc} />
+              </>);
+            })()}
           </Section>
         )}
 
@@ -275,7 +284,81 @@ function EtfRow({ label, value, suffix = '', color }) {
   );
 }
 
-function EtfSection({ etf }) {
+/** ETF 네이버 코드 등록/수정 인라인 편집기 */
+function EtfNaverCodeEditor({ krxCode }) {
+  const [currentCode, setCurrentCode] = useState(null); // null=로딩중
+  const [editCode, setEditCode] = useState('');
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    getEtfNaverCodes()
+      .then(codes => {
+        const code = codes[krxCode] || '';
+        setCurrentCode(code);
+        setEditCode(code);
+      })
+      .catch(() => setCurrentCode(''));
+  }, [krxCode]);
+
+  const handleSave = async () => {
+    if (!editCode.trim()) return;
+    setSaving(true);
+    try {
+      await putEtfNaverCode(krxCode, editCode.trim());
+      setCurrentCode(editCode.trim());
+      setEditing(false);
+      Alert.alert('저장 완료', '다음 분석부터 구성종목을 자동으로 가져옵니다.');
+    } catch (e) {
+      Alert.alert('저장 실패', e?.message || '오류');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (currentCode === null) return null;
+
+  return (
+    <View style={styles.naverCodeRow}>
+      <Text style={styles.naverCodeLabel}>네이버 ETF 코드</Text>
+      {editing ? (
+        <View style={styles.naverCodeEditWrap}>
+          <TextInput
+            style={styles.naverCodeInput}
+            value={editCode}
+            onChangeText={setEditCode}
+            placeholder="예: 0167A0"
+            placeholderTextColor="#8E8E93"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <Pressable
+            style={[styles.naverCodeBtn, { backgroundColor: '#007AFF' }]}
+            onPress={handleSave}
+            disabled={saving}
+          >
+            <Text style={styles.naverCodeBtnText}>{saving ? '...' : '저장'}</Text>
+          </Pressable>
+          <Pressable
+            style={[styles.naverCodeBtn, { backgroundColor: '#8E8E93', marginLeft: 4 }]}
+            onPress={() => { setEditing(false); setEditCode(currentCode); }}
+          >
+            <Text style={styles.naverCodeBtnText}>취소</Text>
+          </Pressable>
+        </View>
+      ) : (
+        <Pressable onPress={() => setEditing(true)} style={styles.naverCodeValueWrap}>
+          <Text style={[styles.naverCodeValue, !currentCode && { color: '#8E8E93' }]}>
+            {currentCode || '미등록 (탭하여 등록)'}
+          </Text>
+          <Text style={styles.naverCodeEdit}>✏️</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+function EtfSection({ etf, krxCode }) {
   if (!etf) return null;
   const isKR = etf.market === 'KR';
   return (
@@ -336,6 +419,8 @@ function EtfSection({ etf }) {
       {!isKR && etf.beta != null ? (
         <EtfRow label="베타 (3년)" value={etf.beta} />
       ) : null}
+
+      {isKR && krxCode ? <EtfNaverCodeEditor krxCode={krxCode} /> : null}
     </Section>
   );
 }
@@ -596,4 +681,40 @@ const styles = StyleSheet.create({
   etfReturnCell: { alignItems: 'center', flex: 1 },
   etfReturnLabel: { color: '#64748B', fontSize: 11, marginBottom: 4 },
   etfReturnValue: { color: '#0F172A', fontSize: 15, fontWeight: '700' },
+
+  // ETF 네이버 코드 편집기
+  naverCodeRow: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E2E8F0',
+  },
+  naverCodeLabel: { fontSize: 11, color: '#64748B', marginBottom: 6 },
+  naverCodeValueWrap: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  naverCodeValue: { fontSize: 13, color: '#0F172A', fontWeight: '500' },
+  naverCodeEdit: { fontSize: 13 },
+  naverCodeEditWrap: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  naverCodeInput: {
+    flex: 1,
+    height: 34,
+    borderWidth: 1,
+    borderColor: '#CBD5E1',
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    fontSize: 13,
+    color: '#0F172A',
+    backgroundColor: '#fff',
+  },
+  naverCodeBtn: {
+    height: 34,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  naverCodeBtnText: { color: '#fff', fontSize: 13, fontWeight: '600' },
 });
