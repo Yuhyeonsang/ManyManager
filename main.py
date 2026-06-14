@@ -196,13 +196,13 @@ install_gemini_rate_limit(gemini_filter, related_inferer)
 import threading
 import time as _time
 
-CACHE_WARM_INTERVAL_SEC = int(os.getenv("CACHE_WARM_INTERVAL_SEC", "300"))   # 5분
-CACHE_WARM_ENABLED = os.getenv("CACHE_WARM_ENABLED", "0") in ("1", "true", "True")
+CACHE_WARM_INTERVAL_SEC = int(os.getenv("CACHE_WARM_INTERVAL_SEC", "3600"))  # 1시간
+CACHE_WARM_ENABLED = os.getenv("CACHE_WARM_ENABLED", "1") in ("1", "true", "True")
 CACHE_WARM_PARALLEL = int(os.getenv("CACHE_WARM_PARALLEL", "3"))             # 워머는 3개만 (서버 부담 ↓)
 
 
 def _warm_hot_stocks_cache():
-    """hot_stocks 엔드포인트를 직접 호출해서 캐시 채우기."""
+    """전체 watchlist 분석 → hot_stocks 캐시 + 개별 report 캐시 동시 갱신."""
     try:
         from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
         watchlist = build_watchlist()
@@ -211,6 +211,12 @@ def _warm_hot_stocks_cache():
         def _job(w):
             try:
                 r = analyze_one(w["ticker"], w["code"], w["name"])
+                # 개별 report 캐시 미리 저장
+                try:
+                    report = _build_report_from_analysis(w, r)
+                    cache_set(f"report:{r['ticker']}", report.model_dump())
+                except Exception as re:
+                    log.warning(f"[warmer] report cache 저장 실패 {w['ticker']}: {re}")
                 return {
                     "ticker": r["ticker"], "name": r["name"], "price": r["price"],
                     "change_pct": r["change_pct"], "grade": r["grade"],
@@ -236,7 +242,7 @@ def _warm_hot_stocks_cache():
                 out.append(d)
         if out:
             cache_set(HOT_STOCKS_CACHE_KEY, out)
-            log.info(f"[warmer] hot_stocks 캐시 갱신 완료 — {len(out)}건")
+            log.info(f"[warmer] 갱신 완료 — hot_stocks {len(out)}건 + 개별 report 캐시")
     except Exception as e:
         log.exception(f"[warmer] 실패: {e}")
 
@@ -803,6 +809,144 @@ def api_search(q: str, limit: int = 20):
     return [SearchHit(**h) for h in hits]
 
 
+def _build_report_from_analysis(entry: dict, r: dict) -> "StockReport":
+    """analyze_one() 결과 → StockReport 변환 (워머/엔드포인트 공용)."""
+    intr = r["_internals"]
+    fin_an = intr["fin_an"]
+    picks = intr["picks"]
+    bundle = intr["bundle"]
+    market_metrics = (bundle or {}).get("market_metrics") or {}
+
+    news_items_out: List[NewsItem] = []
+    if picks and not picks[0].get("error"):
+        seen_titles = set()
+        for p in picks:
+            title = (p.get("title") or "").strip()
+            if not title:
+                continue
+            norm = "".join(ch for ch in title if ch.isalnum())[:60].lower()
+            if norm in seen_titles:
+                continue
+            seen_titles.add(norm)
+            news_items_out.append(NewsItem(
+                title=title,
+                link=p.get("link"),
+                pub_date=p.get("pub_date"),
+                impact=p.get("impact") or "중립",
+            ))
+        news_lines = [f"• [{ni.impact or '-'}] {ni.title}" for ni in news_items_out]
+        news_summary = "\n".join(news_lines) if news_lines else "최신 뉴스 부족"
+    else:
+        news_summary = "최신 뉴스 부족 또는 Gemini 키 미설정"
+
+    margins = (fin_an.get("margins") or {}) if not fin_an.get("error") else {}
+    growth = (fin_an.get("yoy_growth_pct") or {}) if not fin_an.get("error") else {}
+    mm_safe = market_metrics if not market_metrics.get("error") else {}
+
+    per = mm_safe.get("per")
+    pbr = mm_safe.get("pbr")
+    roe = mm_safe.get("roe_pct")
+
+    revenue_growth = mm_safe.get("revenue_growth_pct")
+    if revenue_growth is None:
+        revenue_growth = growth.get("revenue")
+
+    operating_margin = mm_safe.get("operating_margin_pct")
+    if operating_margin is None:
+        operating_margin = margins.get("operating_margin_pct")
+
+    debt_ratio = mm_safe.get("debt_to_equity_pct")
+    if debt_ratio is None:
+        debt_ratio = fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None
+
+    def _fmt_source(s: Optional[str]) -> Optional[str]:
+        if not s:
+            return None
+        if s == "naver_scrape":
+            return "네이버"
+        if s in ("krx", "pykrx"):
+            return "KRX"
+        if s.startswith("dart"):
+            return "DART"
+        if s == "yf_annual":
+            return "Yahoo"
+        return s
+
+    def _na_reason(val, field: str) -> Optional[str]:
+        if val is not None:
+            return None
+        has_fin_error = bool(fin_an.get("error"))
+        has_mm_error = bool(market_metrics.get("error"))
+        is_loss = (
+            (roe is not None and roe < 0)
+            or (operating_margin is not None and operating_margin < 0)
+        )
+        is_impaired = is_loss and pbr is None and not has_mm_error
+        if field == "per":
+            if is_loss: return "적자"
+            if has_mm_error: return "오류"
+            return "미제공"
+        if field == "pbr":
+            if is_impaired: return "자본잠식 의심"
+            if has_mm_error: return "오류"
+            return "미제공"
+        if field == "roe":
+            if is_loss: return "적자"
+            if has_fin_error: return "오류"
+            return "미제공"
+        if field == "revenue_growth":
+            if has_fin_error: return "오류"
+            return "전기 비교불가"
+        if field == "operating_margin":
+            if is_loss: return "적자"
+            if has_fin_error: return "오류"
+            return "미제공"
+        if field == "debt_ratio":
+            if has_fin_error: return "오류"
+            return "미제공"
+        return "미제공"
+
+    financials = Financials(
+        per=per, pbr=pbr, roe=roe,
+        revenue_growth=revenue_growth,
+        operating_margin=operating_margin,
+        debt_ratio=debt_ratio,
+        per_basis=mm_safe.get("per_basis") or "연간",
+        pbr_basis=mm_safe.get("pbr_basis") or "분기말",
+        roe_basis=mm_safe.get("roe_basis") or "연간",
+        revenue_growth_basis=mm_safe.get("revenue_growth_basis") or "YoY",
+        operating_margin_basis=mm_safe.get("operating_margin_basis") or "연간",
+        debt_ratio_basis="분기말",
+        per_na_reason=_na_reason(per, "per"),
+        pbr_na_reason=_na_reason(pbr, "pbr"),
+        roe_na_reason=_na_reason(roe, "roe"),
+        revenue_growth_na_reason=_na_reason(revenue_growth, "revenue_growth"),
+        operating_margin_na_reason=_na_reason(operating_margin, "operating_margin"),
+        debt_ratio_na_reason=_na_reason(debt_ratio, "debt_ratio"),
+        per_source=_fmt_source(mm_safe.get("per_source")),
+        pbr_source=_fmt_source(mm_safe.get("pbr_source")),
+        roe_source=_fmt_source(mm_safe.get("roe_source")),
+        revenue_growth_source=_fmt_source(mm_safe.get("revenue_growth_source")),
+        operating_margin_source=_fmt_source(mm_safe.get("operating_margin_source")),
+        debt_ratio_source=_fmt_source(mm_safe.get("debt_to_equity_source")),
+    )
+
+    etf_raw = r.get("_internals", {}).get("bundle", {}).get("etf_info")
+    etf_info_model = EtfInfo(**etf_raw) if etf_raw else None
+
+    return StockReport(
+        ticker=r["ticker"],
+        name=r["name"],
+        grade=r["grade"],
+        score=r["score"],
+        news_summary=news_summary,
+        news_items=news_items_out or None,
+        financials=financials,
+        etf_info=etf_info_model,
+        updated_at=datetime.now().isoformat(),
+    )
+
+
 @app.get("/api/stocks/{ticker}/report", response_model=StockReport)
 def stock_report(ticker: str, refresh: bool = False):
     """상세 페이지용 - 백그라운드 데몬 캐시 무조건 반환 (TTL 무시).
@@ -834,171 +978,7 @@ def stock_report(ticker: str, refresh: bool = False):
             log.exception(f"report failed for {ticker}")
             raise HTTPException(500, f"analysis failed: {e}")
 
-        intr = r["_internals"]
-        fin_an = intr["fin_an"]
-        picks = intr["picks"]
-        bundle = intr["bundle"]
-        market_metrics = (bundle or {}).get("market_metrics") or {}
-
-        # 뉴스 — 구조화 + 중복 제거 (제목 정규화 기준)
-        news_items_out: List[NewsItem] = []
-        if picks and not picks[0].get("error"):
-            seen_titles = set()
-            for p in picks:
-                title = (p.get("title") or "").strip()
-                if not title:
-                    continue
-                # 정규화 키: 공백/특수문자 제거 + 앞 60자
-                norm = "".join(ch for ch in title if ch.isalnum())[:60].lower()
-                if norm in seen_titles:
-                    continue
-                seen_titles.add(norm)
-                news_items_out.append(NewsItem(
-                    title=title,
-                    link=p.get("link"),
-                    pub_date=p.get("pub_date"),
-                    impact=p.get("impact") or "중립",
-                ))
-            news_lines = [
-                f"• [{ni.impact or '-'}] {ni.title}" for ni in news_items_out
-            ]
-            news_summary = "\n".join(news_lines) if news_lines else "최신 뉴스 부족"
-        else:
-            news_summary = "최신 뉴스 부족 또는 Gemini 키 미설정"
-
-        # 재무 지표 추출 - 1순위 DART (한국), 2순위 yfinance.info (미국)
-        margins = (fin_an.get("margins") or {}) if not fin_an.get("error") else {}
-        growth = (fin_an.get("yoy_growth_pct") or {}) if not fin_an.get("error") else {}
-        mm_safe = market_metrics if not market_metrics.get("error") else {}
-
-        per = mm_safe.get("per")
-        pbr = mm_safe.get("pbr")
-        roe = mm_safe.get("roe_pct")
-
-        # 매출 성장률 / 영업이익률 / 부채비율
-        # ★ KR 종목: mm_safe(TTM/Naver/DART Q1)가 더 최신 → 1순위
-        #   US 종목: margins(yfinance annual)이 정확 → 폴백 순서 같음
-        revenue_growth = mm_safe.get("revenue_growth_pct")
-        if revenue_growth is None:
-            revenue_growth = growth.get("revenue")
-
-        # 영업이익률: TTM(mm_safe) 우선, DART annual 폴백
-        operating_margin = mm_safe.get("operating_margin_pct")
-        if operating_margin is None:
-            operating_margin = margins.get("operating_margin_pct")
-
-        # 부채비율: DART Q1(mm_safe = 분기말 최신) 우선, DART annual 폴백
-        debt_ratio = mm_safe.get("debt_to_equity_pct")
-        if debt_ratio is None:
-            debt_ratio = fin_an.get("debt_to_equity_pct") if not fin_an.get("error") else None
-
-        # 부채비율 basis: DART 연간 → "분기말", yfinance → "분기말"
-        debt_ratio_basis = "분기말"
-
-        # ── 데이터 출처 표시 ──────────────────────────
-        def _fmt_source(s: Optional[str]) -> Optional[str]:
-            if not s:
-                return None
-            if s == "naver_scrape":
-                return "네이버"
-            if s in ("krx", "pykrx"):
-                return "KRX"
-            if s.startswith("dart"):
-                return "DART"
-            if s == "yf_annual":
-                return "Yahoo"
-            return s
-
-        # ── 빈값 이유 계산 ──────────────────────────
-        def _na_reason(val, field: str) -> Optional[str]:
-            """값이 None일 때 짧은 이유 반환."""
-            if val is not None:
-                return None
-
-            has_fin_error = bool(fin_an.get("error"))
-            has_mm_error  = bool(market_metrics.get("error"))
-
-            # 적자 판정: 확정된 값 기준
-            is_loss = (
-                (roe is not None and roe < 0)
-                or (operating_margin is not None and operating_margin < 0)
-            )
-            # 자본잠식: PBR 계산 불가
-            is_impaired = is_loss and pbr is None and not has_mm_error
-
-            if field == "per":
-                if is_loss:        return "적자"        # EPS 음수 → PER 불가
-                if has_mm_error:   return "오류"
-                return "미제공"
-
-            if field == "pbr":
-                if is_impaired:    return "자본잠식 의심"
-                if has_mm_error:   return "오류"
-                return "미제공"
-
-            if field == "roe":
-                if is_loss:        return "적자"        # TTM 순손실
-                if has_fin_error:  return "오류"
-                return "미제공"
-
-            if field == "revenue_growth":
-                # 신규 상장·분기보고서 미제출 등
-                if has_fin_error:  return "오류"
-                return "전기 비교불가"                  # 과거 1년치 없을 때
-
-            if field == "operating_margin":
-                if is_loss:        return "적자"
-                if has_fin_error:  return "오류"
-                return "미제공"
-
-            if field == "debt_ratio":
-                if has_fin_error:  return "오류"
-                return "미제공"
-
-            return "미제공"
-
-        financials = Financials(
-            per=per,
-            pbr=pbr,
-            roe=roe,
-            revenue_growth=revenue_growth,
-            operating_margin=operating_margin,
-            debt_ratio=debt_ratio,
-            per_basis=mm_safe.get("per_basis") or "연간",
-            pbr_basis=mm_safe.get("pbr_basis") or "분기말",
-            roe_basis=mm_safe.get("roe_basis") or "연간",
-            revenue_growth_basis=mm_safe.get("revenue_growth_basis") or "YoY",
-            operating_margin_basis=mm_safe.get("operating_margin_basis") or "연간",
-            debt_ratio_basis=debt_ratio_basis or "분기말",
-            per_na_reason=_na_reason(per, "per"),
-            pbr_na_reason=_na_reason(pbr, "pbr"),
-            roe_na_reason=_na_reason(roe, "roe"),
-            revenue_growth_na_reason=_na_reason(revenue_growth, "revenue_growth"),
-            operating_margin_na_reason=_na_reason(operating_margin, "operating_margin"),
-            debt_ratio_na_reason=_na_reason(debt_ratio, "debt_ratio"),
-            per_source=_fmt_source(mm_safe.get("per_source")),
-            pbr_source=_fmt_source(mm_safe.get("pbr_source")),
-            roe_source=_fmt_source(mm_safe.get("roe_source")),
-            revenue_growth_source=_fmt_source(mm_safe.get("revenue_growth_source")),
-            operating_margin_source=_fmt_source(mm_safe.get("operating_margin_source")),
-            debt_ratio_source=_fmt_source(mm_safe.get("debt_to_equity_source")),
-        )
-
-        # ETF 정보 모델 변환
-        etf_raw = r.get("_internals", {}).get("bundle", {}).get("etf_info")
-        etf_info_model = EtfInfo(**etf_raw) if etf_raw else None
-
-        report = StockReport(
-            ticker=r["ticker"],
-            name=r["name"],
-            grade=r["grade"],
-            score=r["score"],
-            news_summary=news_summary,
-            news_items=news_items_out or None,
-            financials=financials,
-            etf_info=etf_info_model,
-            updated_at=datetime.now().isoformat(),
-        )
+        report = _build_report_from_analysis(entry, r)
         cache_set(cache_key, report.model_dump())
         return report
 
