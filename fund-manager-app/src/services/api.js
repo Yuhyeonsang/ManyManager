@@ -128,9 +128,12 @@ export async function fetchHotStocks() {
  *   "updated_at": "2026-05-03T09:30:00"
  * }
  */
-export async function fetchStockReport(ticker) {
+export async function fetchStockReport(ticker, { refresh = false } = {}) {
   const c = await getClient();
-  const { data } = await c.get(`/api/stocks/${ticker}/report`);
+  const { data } = await c.get(`/api/stocks/${ticker}/report`, {
+    params: refresh ? { refresh: true } : undefined,
+    timeout: refresh ? 120000 : 60000,   // 강제 재분석은 최대 2분
+  });
   return data;
 }
 

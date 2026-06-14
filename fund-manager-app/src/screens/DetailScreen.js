@@ -59,25 +59,38 @@ export default function DetailScreen({ route, navigation }) {
     }
   }, [favorited, ticker, report]);
 
-  // 헤더 우측 별 버튼 등록 (favorited 상태 변할 때마다 갱신)
+  // 헤더 우측 버튼: 새로고침 + 별 (favorited/refreshing 상태 변할 때마다 갱신)
   useEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <Pressable
-          onPress={handleToggleFavorite}
-          hitSlop={12}
-          style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1, marginRight: 4 }]}
-        >
-          <Text style={{ fontSize: 22 }}>{favorited ? '⭐' : '☆'}</Text>
-        </Pressable>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginRight: 4 }}>
+          <Pressable
+            onPress={() => load({ forceRefresh: true })}
+            hitSlop={12}
+            disabled={refreshing}
+            style={({ pressed }) => [{ opacity: (pressed || refreshing) ? 0.4 : 1, paddingHorizontal: 4 }]}
+          >
+            <Text style={{ fontSize: 18 }}>{refreshing ? '⏳' : '🔄'}</Text>
+          </Pressable>
+          <Pressable
+            onPress={handleToggleFavorite}
+            hitSlop={12}
+            style={({ pressed }) => [{ opacity: pressed ? 0.6 : 1 }]}
+          >
+            <Text style={{ fontSize: 22 }}>{favorited ? '⭐' : '☆'}</Text>
+          </Pressable>
+        </View>
       ),
     });
-  }, [navigation, handleToggleFavorite, favorited]);
+  }, [navigation, handleToggleFavorite, favorited, refreshing, load]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const load = useCallback(async ({ forceRefresh = false } = {}) => {
+    if (forceRefresh) setRefreshing(true);
+    else setLoading(true);
     try {
-      const data = await fetchStockReport(ticker);
+      const data = await fetchStockReport(ticker, { refresh: forceRefresh });
       setReport(data);
       setOffline(false);
       cacheReport(data).catch((e) => console.warn('cache 실패', e));
@@ -95,6 +108,7 @@ export default function DetailScreen({ route, navigation }) {
       }
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   }, [ticker]);
 
