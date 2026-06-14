@@ -914,6 +914,10 @@ class StockDataCollector:
                     str(r[name_col]).strip()
                     for _, r in df.head(top_n).iterrows()
                     if str(r[name_col]).strip() not in ("", "nan", "None")
+                    # 인코딩 깨진 이름(◆ 등 대체문자 포함) 제외
+                    and "�" not in str(r[name_col])
+                    and "◆" not in str(r[name_col])
+                    and "?" not in str(r[name_col])
                 ]
                 if names:
                     log.info(f"ETF {stock_code} 구성종목 상위 {len(names)}개: {names}")
