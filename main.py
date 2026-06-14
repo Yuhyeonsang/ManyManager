@@ -354,6 +354,15 @@ class EtfInfo(BaseModel):
     return_5y_ann: Optional[float] = None      # 5년 연평균 % (US)
     beta: Optional[float] = None               # 베타 (US)
     benchmark_index: Optional[str] = None     # 기초지수 (KR)
+    # 물타기 / 불타기 점수 (ETF 전용)
+    water_score: Optional[int] = None          # 0-100 (높을수록 저점 매수 적기)
+    fire_score: Optional[int] = None           # 0-100 (높을수록 모멘텀 추가 적기)
+    water_reasons: Optional[List[str]] = None  # 물타기 근거
+    fire_reasons: Optional[List[str]] = None   # 불타기 근거
+    # 시세 추가 정보
+    price_52w_high: Optional[float] = None
+    price_52w_low: Optional[float] = None
+    avg_volume_20d: Optional[float] = None
 
 
 class Financials(BaseModel):
@@ -411,6 +420,84 @@ class ClipboardText(BaseModel):
 
 
 # ─────────────────────────────────────────────
+# ETF 물타기/불타기 점수 계산
+# ─────────────────────────────────────────────
+def _calc_etf_trade_scores(price_an: Dict, price: Dict, etf_raw: Dict) -> Dict:
+    """
+    물타기 점수(water): 저점 매수 적기도 (0=비추, 100=최적)
+    불타기 점수(fire):  모멘텀 추가 매수 적기도 (0=비추, 100=최적)
+    """
+    pos = price_an.get("position_52w_pct")   # 52주 위치 %
+    mom = price_an.get("momentum_10d_pct")   # 10일 모멘텀 %
+    ma = price_an.get("ma_summary") or {}
+    ma20 = ma.get("MA20")
+    ma60 = ma.get("MA60")
+    cp = price_an.get("current_price")
+    r1m = etf_raw.get("return_1m")
+    r3m = etf_raw.get("return_3m")
+
+    # ── 물타기 점수 ──────────────────────────────
+    water = 0
+    water_r: List[str] = []
+
+    if pos is not None:
+        if pos < 15:
+            water += 40; water_r.append(f"52주 저점 근처 ({pos:.0f}%)")
+        elif pos < 30:
+            water += 25; water_r.append(f"52주 하단권 ({pos:.0f}%)")
+        elif pos < 50:
+            water += 10; water_r.append(f"52주 중하단 ({pos:.0f}%)")
+
+    if ma20 and cp and cp < ma20:
+        water += 15; water_r.append(f"MA20 하향 이탈")
+    if ma60 and cp and cp < ma60:
+        water += 20; water_r.append(f"MA60 하향 (중기 약세)")
+    if mom is not None and mom < -5:
+        water += 10; water_r.append(f"10일 하락 ({mom:+.1f}%)")
+    if r1m is not None and r1m < -5:
+        water += 10; water_r.append(f"1개월 수익률 {r1m:+.1f}%")
+    elif r3m is not None and r3m < -10:
+        water += 5; water_r.append(f"3개월 수익률 {r3m:+.1f}%")
+
+    water = min(water, 100)
+
+    # ── 불타기 점수 ──────────────────────────────
+    fire = 0
+    fire_r: List[str] = []
+
+    if pos is not None:
+        if pos > 85:
+            fire += 40; fire_r.append(f"52주 신고점 근처 ({pos:.0f}%)")
+        elif pos > 70:
+            fire += 25; fire_r.append(f"52주 상단권 ({pos:.0f}%)")
+        elif pos > 50:
+            fire += 10; fire_r.append(f"52주 중상단 ({pos:.0f}%)")
+
+    if ma20 and cp and cp > ma20:
+        fire += 15; fire_r.append(f"MA20 상향 돌파")
+    if ma60 and cp and cp > ma60:
+        fire += 20; fire_r.append(f"MA60 상향 (중기 강세)")
+    if mom is not None and mom > 5:
+        fire += 10; fire_r.append(f"10일 상승 ({mom:+.1f}%)")
+    if r1m is not None and r1m > 5:
+        fire += 10; fire_r.append(f"1개월 수익률 {r1m:+.1f}%")
+    elif r3m is not None and r3m > 10:
+        fire += 5; fire_r.append(f"3개월 수익률 {r3m:+.1f}%")
+
+    fire = min(fire, 100)
+
+    return {
+        "water_score": water,
+        "fire_score": fire,
+        "water_reasons": water_r if water_r else ["뚜렷한 저점 신호 없음"],
+        "fire_reasons": fire_r if fire_r else ["뚜렷한 상승 신호 없음"],
+        "price_52w_high": price.get("high_52w"),
+        "price_52w_low": price.get("low_52w"),
+        "avg_volume_20d": price.get("avg_volume_20d"),
+    }
+
+
+# ─────────────────────────────────────────────
 # 핵심 분석 함수
 # ─────────────────────────────────────────────
 def analyze_one(ticker: str, code: str, name: str) -> Dict:
@@ -433,6 +520,11 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
     if etf_raw and name:
         etf_raw = dict(etf_raw)
         etf_raw["fund_name"] = name
+
+    # ★ ETF 물타기/불타기 점수 계산
+    if etf_raw and not price_an.get("error"):
+        trade_scores = _calc_etf_trade_scores(price_an, price, etf_raw)
+        etf_raw.update(trade_scores)
 
     # Gemini 호출은 실패해도 계속 진행
     try:

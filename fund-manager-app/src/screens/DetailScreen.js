@@ -358,6 +358,30 @@ function EtfNaverCodeEditor({ krxCode }) {
   );
 }
 
+/** 물타기/불타기 점수 바 컴포넌트 */
+function TradeScoreBar({ label, score, color, reasons }) {
+  if (score == null) return null;
+  const pct = Math.min(Math.max(score, 0), 100);
+  return (
+    <View style={styles.tradeScoreBlock}>
+      <View style={styles.tradeScoreHeader}>
+        <Text style={[styles.tradeScoreLabel, { color }]}>{label}</Text>
+        <Text style={[styles.tradeScoreNum, { color }]}>{score}점</Text>
+      </View>
+      <View style={styles.tradeScoreTrack}>
+        <View style={[styles.tradeScoreFill, { width: `${pct}%`, backgroundColor: color }]} />
+      </View>
+      {reasons && reasons.length > 0 ? (
+        <View style={styles.tradeScoreReasons}>
+          {reasons.map((r, i) => (
+            <Text key={i} style={styles.tradeScoreReason}>• {r}</Text>
+          ))}
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function EtfSection({ etf, krxCode }) {
   if (!etf) return null;
   const isKR = etf.market === 'KR';
@@ -392,6 +416,22 @@ function EtfSection({ etf, krxCode }) {
         <EtfRow label="배당수익률" value={etf.dividend_yield_pct} suffix="%" />
       ) : null}
 
+      {/* 시세 정보 */}
+      {(etf.price_52w_high != null || etf.price_52w_low != null) ? (
+        <View style={styles.etf52wRow}>
+          <Text style={styles.etf52wLabel}>52주</Text>
+          <Text style={styles.etf52wVal}>
+            {etf.price_52w_low != null ? `최저 ${etf.price_52w_low?.toLocaleString()}` : ''}
+            {etf.price_52w_low != null && etf.price_52w_high != null ? ' · ' : ''}
+            {etf.price_52w_high != null ? `최고 ${etf.price_52w_high?.toLocaleString()}` : ''}
+          </Text>
+        </View>
+      ) : null}
+      {etf.avg_volume_20d != null ? (
+        <EtfRow label="20일 평균거래량" value={Math.round(etf.avg_volume_20d)?.toLocaleString()} suffix="주" />
+      ) : null}
+
+      {/* 수익률 */}
       <View style={styles.etfReturnRow}>
         {[
           { label: '1개월', val: etf.return_1m },
@@ -419,6 +459,28 @@ function EtfSection({ etf, krxCode }) {
       ) : null}
       {!isKR && etf.beta != null ? (
         <EtfRow label="베타 (3년)" value={etf.beta} />
+      ) : null}
+
+      {/* 물타기 / 불타기 점수 */}
+      {(etf.water_score != null || etf.fire_score != null) ? (
+        <View style={styles.tradeScoreSection}>
+          <Text style={styles.tradeScoreTitle}>매수 타이밍</Text>
+          <TradeScoreBar
+            label="💧 물타기 (저점 매수)"
+            score={etf.water_score}
+            color="#2563EB"
+            reasons={etf.water_reasons}
+          />
+          <TradeScoreBar
+            label="🔥 불타기 (모멘텀 추가)"
+            score={etf.fire_score}
+            color="#EA580C"
+            reasons={etf.fire_reasons}
+          />
+          <Text style={styles.tradeScoreNote}>
+            점수가 높을수록 해당 전략 매수 시점에 가깝습니다 (참고용)
+          </Text>
+        </View>
       ) : null}
 
       {isKR && krxCode ? <EtfNaverCodeEditor krxCode={krxCode} /> : null}
@@ -682,6 +744,68 @@ const styles = StyleSheet.create({
   etfReturnCell: { alignItems: 'center', flex: 1 },
   etfReturnLabel: { color: '#64748B', fontSize: 11, marginBottom: 4 },
   etfReturnValue: { color: '#0F172A', fontSize: 15, fontWeight: '700' },
+
+  // ETF 52주 고저
+  etf52wRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: '#E2E8F0',
+  },
+  etf52wLabel: { fontSize: 12, color: '#64748B', fontWeight: '500' },
+  etf52wVal: { fontSize: 12, color: '#0F172A' },
+
+  // 물타기/불타기 점수
+  tradeScoreSection: {
+    marginTop: 16,
+    paddingTop: 14,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: '#E2E8F0',
+  },
+  tradeScoreTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
+    marginBottom: 12,
+  },
+  tradeScoreBlock: {
+    marginBottom: 14,
+  },
+  tradeScoreHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  tradeScoreLabel: { fontSize: 13, fontWeight: '600' },
+  tradeScoreNum: { fontSize: 15, fontWeight: '800' },
+  tradeScoreTrack: {
+    height: 8,
+    backgroundColor: '#E2E8F0',
+    borderRadius: 4,
+    overflow: 'hidden',
+  },
+  tradeScoreFill: {
+    height: 8,
+    borderRadius: 4,
+  },
+  tradeScoreReasons: {
+    marginTop: 6,
+    gap: 2,
+  },
+  tradeScoreReason: {
+    fontSize: 11,
+    color: '#64748B',
+    lineHeight: 16,
+  },
+  tradeScoreNote: {
+    fontSize: 10,
+    color: '#94A3B8',
+    marginTop: 8,
+    fontStyle: 'italic',
+  },
 
   // ETF 네이버 코드 편집기
   naverCodeRow: {
