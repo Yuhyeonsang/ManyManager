@@ -200,8 +200,18 @@ def get_kr_etf_set() -> set:
 
 
 def is_kr_etf(stock_code: str) -> bool:
-    """pykrx ETF 목록 기반 KR ETF 여부 판별."""
-    return bool(stock_code) and stock_code in get_kr_etf_set()
+    """KR ETF 여부 판별.
+    1순위: KR_ETF_UNIVERSE 하드코드 (pykrx 없어도 항상 작동)
+    2순위: pykrx 동적 목록 (전체 KRX ETF 커버)"""
+    if not stock_code:
+        return False
+    # 하드코드 우선 확인 (Python 함수는 호출 시 평가되므로 KR_ETF_UNIVERSE 참조 가능)
+    try:
+        if any(s["code"] == stock_code for s in KR_ETF_UNIVERSE):
+            return True
+    except NameError:
+        pass
+    return stock_code in get_kr_etf_set()
 
 
 # ─── KR ETF 이름 캐시 (KRX API) ───────────────────────────────
