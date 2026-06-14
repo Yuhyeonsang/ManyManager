@@ -217,7 +217,8 @@ for i in range(len(tqqq)):
             tp1_done = True
 
         if not tp2_done and profit >= TP2_PCT:
-            sell(date, tp, init_shares_ref * TP2_RATIO, f"TP2(+{TP2_PCT}%)")
+            # TP2 최소 수량 = TP1 매도 후 남은 현재 수량 기준
+            sell(date, tp, shares * TP2_RATIO, f"TP2(+{TP2_PCT}%)")
             tp2_done = True
 
         if not tp3_done and profit >= TP3_PCT:
@@ -237,7 +238,13 @@ for i in range(len(tqqq)):
                 pass
             elif cash > 0:
                 if not dip1_done and shares == 0:
-                    pass  # 현금100% + GC: Dip1 대기
+                    # Phase 0 예외: 현금 100% 상태에서 GC 발동 시
+                    # Dip1 가격 확인 없이 현재 GC 가격에 즉시 100% 진입
+                    bought = buy(date, tp, cash, "GC_풀매수(Phase0_즉시)")
+                    if bought > 0:
+                        dip1_done = True   # Dip1/Dip2 재진입 방지
+                        dip2_done = True
+                        init_shares_ref = shares
                 else:
                     bought = buy(date, tp, cash, "GC_풀매수")
                     if bought > 0 and init_shares_ref == 0:

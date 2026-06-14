@@ -426,6 +426,10 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
     price_an = sem.analyze_price(price)
     fin_an = sem.analyze_financials(fin)
     etf_raw = bundle.get("etf_info")  # ETF면 Dict, 아니면 None
+    # ★ fund_name 보정: naver/pykrx 이름보다 검색 name이 더 정확 (잘못된 코드 매핑 대응)
+    if etf_raw and name:
+        etf_raw = dict(etf_raw)
+        etf_raw["fund_name"] = name
 
     # Gemini 호출은 실패해도 계속 진행
     try:

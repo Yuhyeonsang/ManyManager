@@ -797,6 +797,42 @@ class StockDataCollector:
 
         return result
 
+    def get_kr_etf_constituents(self, stock_code: str, top_n: int = 5) -> List[str]:
+        """KR ETF 상위 구성종목 이름 목록 (비중순, pykrx 기반).
+        뉴스 수집 시 ETF 자체 + 구성종목 뉴스를 합치기 위해 사용."""
+        if not _PYKRX_AVAILABLE:
+            return []
+        for delta in range(7):
+            trd = (datetime.now() - timedelta(days=delta)).strftime("%Y%m%d")
+            try:
+                df = pykrx_stock.get_etf_portfolio_deposit_file(trd, stock_code)
+                if df is None or df.empty:
+                    continue
+                # 컬럼명 동적 탐지 (pykrx 버전마다 다를 수 있음)
+                name_col = next(
+                    (c for c in df.columns if "종목명" in str(c) or c.lower() == "name"),
+                    None,
+                )
+                weight_col = next(
+                    (c for c in df.columns if "비중" in str(c) or "weight" in str(c).lower()),
+                    None,
+                )
+                if name_col is None:
+                    break
+                if weight_col:
+                    df = df.sort_values(weight_col, ascending=False)
+                names = [
+                    str(r[name_col]).strip()
+                    for _, r in df.head(top_n).iterrows()
+                    if str(r[name_col]).strip() not in ("", "nan", "None")
+                ]
+                if names:
+                    log.info(f"ETF {stock_code} 구성종목 상위 {len(names)}개: {names}")
+                    return names
+            except Exception as e:
+                log.debug(f"ETF 구성종목 조회 실패 ({stock_code}, {trd}): {e}")
+        return []
+
     def get_us_etf_metrics(self, ticker: str) -> Optional[Dict]:
         """US ETF 전용: yfinance .info 기반. ETF 아니면 None."""
         try:
@@ -930,6 +966,23 @@ class StockDataCollector:
 
         if kr_etf:
             etf_info = self.get_kr_etf_metrics(stock_code)
+            # ★ ETF 구성종목 뉴스 수집 (상위 3개 종목, 각 5건)
+            # ETF 자체 뉴스 + 구성종목 뉴스를 합쳐 Gemini가 핵심 3개 선별
+            constituents = self.get_kr_etf_constituents(stock_code, top_n=3)
+            for cname in constituents:
+                try:
+                    cnews = self.get_news_data(cname, display=5)
+                    extra = cnews.get("items") or []
+                    for it in extra:
+                        it["_constituent"] = cname
+                        # 제목에 종목명 prefix → Gemini가 맥락 파악
+                        it["title"] = f"[{cname}] {it.get('title', '')}"
+                    if extra:
+                        if news is None:
+                            news = {"items": [], "query": news_query or stock_code}
+                        news.setdefault("items", []).extend(extra)
+                except Exception as e:
+                    log.debug(f"ETF 구성종목 뉴스 실패 ({cname}): {e}")
         elif not stock_code:
             # US 종목 — ETF 여부 mm 에서 확인 (yfinance quoteType)
             us_etf = self.get_us_etf_metrics(ticker)
@@ -1356,38 +1409,45 @@ US_ETF_UNIVERSE: List[Dict] = [
 # ─────────────────────────────────────────────────────────────
 KR_ETF_UNIVERSE: List[Dict] = [
     # KODEX (삼성자산운용)
-    {"code": "069500", "name": "KODEX 200",                       "market": "ETF", "type": "ETF"},
-    {"code": "229200", "name": "KODEX 코스닥150",                 "market": "ETF", "type": "ETF"},
-    {"code": "252670", "name": "KODEX 200선물인버스2X",           "market": "ETF", "type": "INV"},
-    {"code": "233740", "name": "KODEX 코스닥150레버리지",         "market": "ETF", "type": "LEV"},
-    {"code": "278540", "name": "KODEX MSCI Korea TR",             "market": "ETF", "type": "ETF"},
-    {"code": "091160", "name": "KODEX 반도체",                   "market": "ETF", "type": "ETF"},
-    {"code": "266370", "name": "KODEX 200IT",                     "market": "ETF", "type": "ETF"},
-    {"code": "364980", "name": "KODEX 2차전지산업",               "market": "ETF", "type": "ETF"},
-    {"code": "371460", "name": "KODEX AI반도체핵심장비",          "market": "ETF", "type": "ETF"},
-    {"code": "463890", "name": "KODEX AI전력핵심인프라",          "market": "ETF", "type": "ETF"},
+    {"code": "069500", "name": "KODEX 200",                           "market": "ETF", "type": "ETF"},
+    {"code": "229200", "name": "KODEX 코스닥150",                     "market": "ETF", "type": "ETF"},
+    {"code": "252670", "name": "KODEX 200선물인버스2X",               "market": "ETF", "type": "INV"},
+    {"code": "233740", "name": "KODEX 코스닥150레버리지",             "market": "ETF", "type": "LEV"},
+    {"code": "278540", "name": "KODEX MSCI Korea TR",                 "market": "ETF", "type": "ETF"},
+    {"code": "091160", "name": "KODEX 반도체",                       "market": "ETF", "type": "ETF"},
+    {"code": "266370", "name": "KODEX 200IT",                         "market": "ETF", "type": "ETF"},
+    {"code": "364980", "name": "KODEX 2차전지산업",                   "market": "ETF", "type": "ETF"},
+    {"code": "371460", "name": "KODEX AI반도체핵심장비",              "market": "ETF", "type": "ETF"},
+    {"code": "463890", "name": "KODEX AI전력핵심인프라",              "market": "ETF", "type": "ETF"},
+    {"code": "486290", "name": "KODEX AI핵심설비",                    "market": "ETF", "type": "ETF"},
+    {"code": "489600", "name": "KODEX 미국AI반도체핵심기술",          "market": "ETF", "type": "ETF"},
     # TIGER (미래에셋자산운용)
-    {"code": "102110", "name": "TIGER 200",                       "market": "ETF", "type": "ETF"},
-    {"code": "232080", "name": "TIGER 코스닥150",                 "market": "ETF", "type": "ETF"},
-    {"code": "143860", "name": "TIGER 코스닥150레버리지",         "market": "ETF", "type": "LEV"},
-    {"code": "218420", "name": "TIGER 반도체",                   "market": "ETF", "type": "ETF"},
-    {"code": "305540", "name": "TIGER 2차전지테마",               "market": "ETF", "type": "ETF"},
-    {"code": "381180", "name": "TIGER AI반도체핵심공정",          "market": "ETF", "type": "ETF"},
-    {"code": "473530", "name": "TIGER AI반도체TOP10",             "market": "ETF", "type": "ETF"},
+    {"code": "102110", "name": "TIGER 200",                           "market": "ETF", "type": "ETF"},
+    {"code": "232080", "name": "TIGER 코스닥150",                     "market": "ETF", "type": "ETF"},
+    {"code": "143860", "name": "TIGER 코스닥150레버리지",             "market": "ETF", "type": "LEV"},
+    {"code": "218420", "name": "TIGER 반도체",                       "market": "ETF", "type": "ETF"},
+    {"code": "305540", "name": "TIGER 2차전지테마",                   "market": "ETF", "type": "ETF"},
+    {"code": "381180", "name": "TIGER AI반도체핵심공정",              "market": "ETF", "type": "ETF"},
+    {"code": "473530", "name": "TIGER AI반도체TOP10",                 "market": "ETF", "type": "ETF"},
+    {"code": "396500", "name": "TIGER 반도체TOP10",                   "market": "ETF", "type": "ETF"},
+    {"code": "494790", "name": "TIGER 피지컬AI",                     "market": "ETF", "type": "ETF"},
     # SOL (신한자산운용)
-    {"code": "396500", "name": "SOL 반도체AI TOP2 플러스",        "market": "ETF", "type": "ETF"},
-    {"code": "468380", "name": "SOL AI반도체칩메이커",            "market": "ETF", "type": "ETF"},
-    {"code": "442010", "name": "SOL 2차전지소부장Fn",             "market": "ETF", "type": "ETF"},
-    {"code": "411060", "name": "SOL 한국형글로벌반도체",          "market": "ETF", "type": "ETF"},
+    {"code": "476010", "name": "SOL 반도체AI TOP2 플러스",            "market": "ETF", "type": "ETF"},
+    {"code": "468380", "name": "SOL AI반도체칩메이커",                "market": "ETF", "type": "ETF"},
+    {"code": "442010", "name": "SOL 2차전지소부장Fn",                 "market": "ETF", "type": "ETF"},
+    {"code": "411060", "name": "SOL 한국형글로벌반도체",              "market": "ETF", "type": "ETF"},
     # ARIRANG (한화자산운용)
-    {"code": "152100", "name": "ARIRANG 200",                     "market": "ETF", "type": "ETF"},
-    {"code": "253150", "name": "ARIRANG 코스닥150",               "market": "ETF", "type": "ETF"},
+    {"code": "152100", "name": "ARIRANG 200",                         "market": "ETF", "type": "ETF"},
+    {"code": "253150", "name": "ARIRANG 코스닥150",                   "market": "ETF", "type": "ETF"},
     # KBSTAR (KB자산운용)
-    {"code": "261220", "name": "KBSTAR 200",                      "market": "ETF", "type": "ETF"},
-    {"code": "381170", "name": "KBSTAR AI&로봇",                  "market": "ETF", "type": "ETF"},
+    {"code": "261220", "name": "KBSTAR 200",                          "market": "ETF", "type": "ETF"},
+    {"code": "381170", "name": "KBSTAR AI&로봇",                      "market": "ETF", "type": "ETF"},
     # HANARO (NH아문디)
-    {"code": "292150", "name": "HANARO 200",                      "market": "ETF", "type": "ETF"},
-    {"code": "411900", "name": "HANARO 반도체TOP10",              "market": "ETF", "type": "ETF"},
+    {"code": "292150", "name": "HANARO 200",                          "market": "ETF", "type": "ETF"},
+    {"code": "411900", "name": "HANARO 반도체TOP10",                  "market": "ETF", "type": "ETF"},
+    # 현대차자산운용
+    {"code": "494490", "name": "현대차 피지컬AI",                     "market": "ETF", "type": "ETF"},
+    {"code": "486490", "name": "현대차 AI코어인프라",                  "market": "ETF", "type": "ETF"},
 ]
 
 
@@ -1399,6 +1459,13 @@ def to_yf_ticker(code: str, market: str = "KR") -> str:
     return code
 
 
+def _token_match(tokens: List[str], name: str) -> bool:
+    """공백으로 분리된 토큰이 모두 이름에 포함되면 True (대소문자 무관).
+    예) tokens=["현대차","피지컬"] → "현대차 피지컬AI Active" 매칭"""
+    name_u = name.upper()
+    return all(t in name_u for t in tokens)
+
+
 def search_stocks(query: str, limit: int = 20) -> List[Dict]:
     """종목 코드/이름 부분 일치 검색. 국장 + 미국 + ETF/레버리지 통합.
     유니버스에 없는 티커를 정확히 입력한 경우에도 결과를 반환한다."""
@@ -1406,14 +1473,21 @@ def search_stocks(query: str, limit: int = 20) -> List[Dict]:
     if not q:
         return []
     qu = q.upper()
+    # 공백 토큰 분리 (ETF 이름 부분 검색에 활용)
+    q_tokens = [t for t in qu.split() if t]
     out: List[Dict] = []
     seen: set = set()
+
+    def _matches(name: str, code: str) -> bool:
+        nu = name.upper()
+        return (qu in code.upper() or qu in nu or
+                (len(q_tokens) > 1 and _token_match(q_tokens, name)))
 
     all_universe = KR_STOCK_UNIVERSE + KR_ETF_UNIVERSE + US_STOCK_UNIVERSE + US_ETF_UNIVERSE
     for s in all_universe:
         name = s.get("name", "")
         code = s.get("code", "")
-        if qu in code.upper() or q in name or qu in name.upper():
+        if _matches(name, code):
             if code not in seen:
                 seen.add(code)
                 out.append({
@@ -1432,7 +1506,7 @@ def search_stocks(query: str, limit: int = 20) -> List[Dict]:
         for etf in get_kr_etf_info_list():
             code = etf.get("code", "")
             name = etf.get("name", "")
-            if qu in code or q in name or qu in name.upper():
+            if _matches(name, code):
                 if code not in seen:
                     seen.add(code)
                     out.append({

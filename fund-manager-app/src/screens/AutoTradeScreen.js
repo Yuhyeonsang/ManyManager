@@ -1072,7 +1072,10 @@ export default function AutoTradeScreen() {
       <Modal visible={textModalVisible} transparent animationType="slide" onRequestClose={() => setTextModalVisible(false)}>
         <View style={{ flex: 1, justifyContent: 'flex-end' }}>
           <TouchableOpacity style={StyleSheet.absoluteFill} activeOpacity={1} onPress={() => { setTextModalVisible(false); Keyboard.dismiss(); }} />
-          <View style={[styles.textModalBox, { marginBottom: kbHeight, paddingBottom: Platform.OS === 'ios' ? 34 : 16 }]}>
+          <View style={[styles.textModalBox, {
+            paddingBottom: Platform.OS === 'ios' ? 34 : 16,
+            maxHeight: SCREEN_H - kbHeight - 40,
+          }]}>
             <Text style={styles.modalTitle}>📝 전략 텍스트 붙여넣기</Text>
             {(conditions || activeStrategy) ? (
               <Text style={[styles.modalLabel, { marginTop: 0, marginBottom: 8, color: '#F59E0B' }]}>
@@ -1084,10 +1087,10 @@ export default function AutoTradeScreen() {
               </Text>
             )}
             <TextInput
-              style={styles.textModalInput}
+              style={[styles.textModalInput, { height: kbHeight > 0 ? 80 : 160 }]}
               value={pasteText}
               onChangeText={setPasteText}
-              placeholder={conditions
+              placeholder={(conditions || activeStrategy)
                 ? '예)\nRSI 35 조건이 이상→이하로 잘못됨, 수정 필요\n데드크로스 매도 수량 100% 전량 매도로 추가'
                 : '예)\nTQQQ: QQQ 고점 대비 -10% 시 30% 매수\nTP1: +15% 시 최초수량 50% 매도\n락: QQQ -40% 이하 시 전량 청산'
               }
@@ -1098,11 +1101,9 @@ export default function AutoTradeScreen() {
               <TouchableOpacity style={styles.modalCancel} onPress={() => { setTextModalVisible(false); setPasteText(''); Keyboard.dismiss(); }}>
                 <Text style={styles.modalCancelText}>취소</Text>
               </TouchableOpacity>
-              {(conditions || activeStrategy) && (
-                <TouchableOpacity style={[styles.modalSave, { backgroundColor: '#F59E0B' }]} onPress={applyFix}>
-                  <Text style={styles.modalSaveText}>🔧 수정 적용</Text>
-                </TouchableOpacity>
-              )}
+              <TouchableOpacity style={[styles.modalSave, { backgroundColor: '#F59E0B' }]} onPress={applyFix}>
+                <Text style={styles.modalSaveText}>🔧 수정 적용</Text>
+              </TouchableOpacity>
               <TouchableOpacity style={styles.modalSave} onPress={analyzeText}>
                 <Text style={styles.modalSaveText}>✨ AI 분석</Text>
               </TouchableOpacity>

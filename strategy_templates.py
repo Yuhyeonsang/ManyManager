@@ -20,6 +20,9 @@ SNOWBALL_TQQQ = {
     "description": "QQQ 낙폭 기반 TQQQ 분할 매수 + GC 풀매수 + 분할 익절 전략",
     "ticker": "TQQQ",
     "ref_ticker": "QQQ",
+    # 고점 기준: QQQ 126일 장중 최고가 (Lookback Period)
+    "lookback_days": 126,
+    "lookback_price": "intraday_high",
     "initial_phase": 0,
     "phases": {
         "0": "대기 — 현금 100%, 진입 대기",
@@ -38,7 +41,8 @@ SNOWBALL_TQQQ = {
             "type": "buy",
             "ticker": "TQQQ",
             "ref_ticker": "QQQ",
-            "condition": "고점 대비 -10% 이하",
+            # 고점 = 126일 장중 최고가 기준
+            "condition": "126일 고점 대비 -10% 이하",
             "action": {"type": "buy", "weight_pct": 30, "weight_mode": "target"},
             "required_phase": [0],
             "next_phase": 1,
@@ -51,7 +55,8 @@ SNOWBALL_TQQQ = {
             "type": "buy",
             "ticker": "TQQQ",
             "ref_ticker": "QQQ",
-            "condition": "고점 대비 -22% 이하 & 200일선 대비 -7% 이하",
+            # 고점 = 126일 장중 최고가 기준
+            "condition": "126일 고점 대비 -22% 이하 & 200일선 대비 -7% 이하",
             "action": {"type": "buy", "weight_pct": 70, "weight_mode": "target"},
             "required_phase": [1],
             "next_phase": 2,
@@ -68,6 +73,7 @@ SNOWBALL_TQQQ = {
             "action": {"type": "buy", "weight_pct": 10, "weight_mode": "add"},
             "required_phase": [1, 2, 3],
             "next_phase": None,
+            # 중복 적용 불가 (RSI35 + RSI25 동시 발생해도 각 1회만)
             "one_time": True,
             "reset_on_trigger": False,
         },
@@ -81,6 +87,7 @@ SNOWBALL_TQQQ = {
             "action": {"type": "buy", "weight_pct": 15, "weight_mode": "add"},
             "required_phase": [1, 2, 3],
             "next_phase": None,
+            # 중복 적용 불가
             "one_time": True,
             "reset_on_trigger": False,
         },
@@ -96,6 +103,9 @@ SNOWBALL_TQQQ = {
             "next_phase": 3,
             "one_time": False,
             "reset_on_trigger": False,
+            # Phase 0 예외: 현금 100% 상태에서 GC 발생 시 Dip1 가격 확인 없이
+            # 당시 GC 가격에 즉시 100% 진입
+            "phase0_immediate_entry": True,
         },
         # ── 매도 ──────────────────────────────────
         {
@@ -105,6 +115,7 @@ SNOWBALL_TQQQ = {
             "ticker": "TQQQ",
             "ref_ticker": "TQQQ",
             "condition": "수익률 +15% 도달",
+            # 최초 수량의 50% 매도
             "action": {"type": "sell", "sell_pct": 50, "sell_mode": "initial_qty"},
             "required_phase": [1, 2, 3],
             "next_phase": 4,
@@ -118,7 +129,8 @@ SNOWBALL_TQQQ = {
             "ticker": "TQQQ",
             "ref_ticker": "TQQQ",
             "condition": "수익률 +100% 도달",
-            "action": {"type": "sell", "sell_pct": 35, "sell_mode": "initial_qty"},
+            # TP2 최소 수량(= TP1 매도 후 남은 현재 수량)의 35% 매도
+            "action": {"type": "sell", "sell_pct": 35, "sell_mode": "current_qty"},
             "required_phase": [4],
             "next_phase": 5,
             "one_time": True,
@@ -148,26 +160,37 @@ SNOWBALL_TQQQ = {
             "required_phase": [1, 2, 3, 4, 5],
             "next_phase": 0,
             "one_time": False,
-            "reset_on_trigger": True,  # 모든 트리거/플래그 초기화
+            # Phase 0 리셋: rsi35/rsi25/tp1/tp2 의 1회 카운트 모두 초기화
+            "reset_on_trigger": True,
+            "reset_flags": ["rsi35", "rsi25", "tp1", "tp2"],
         },
     ],
     "lock_conditions": [
         {
             "id": "extreme_drop",
-            "condition": "고점 대비 -40% 이하",
+            # QQQ 126일 고점 대비 -40% 이하 시 모든 매수 잠금
+            "condition": "126일 고점 대비 -40% 이하",
             "ticker": "QQQ",
             "ref_ticker": "QQQ",
             "action": "lock_buy",
-            "release_condition": "고점 대비 -39% 이상",
+            # QQQ 낙폭이 -40% 위로 반등 시 즉시 해제 (예: -39%)
+            "release_condition": "126일 고점 대비 -39% 이상",
             "required_phase": "any",
         },
         {
             "id": "tp3_lock",
+            # TP3 전량 청산 후 재진입 잠금
             "condition": "phase == 6",
             "ticker": "TQQQ",
             "ref_ticker": "QQQ",
             "action": "lock_buy",
-            "release_condition": "고점 대비 -10% 이하",
+            # 해제 조건: 순서 조건 — ① Dip1(-10%) 먼저 발생 → ② 그 다음 GC 발생
+            # 단순 -10% 이하만으로는 해제되지 않음
+            "release_condition": "Dip1(-10%) 발생 후 GC 발생 (순서 조건)",
+            "release_steps": [
+                {"step": 1, "condition": "126일 고점 대비 -10% 이하"},
+                {"step": 2, "condition": "5일선 220일선 골든크로스"},
+            ],
             "required_phase": [6],
         },
     ],
