@@ -174,7 +174,7 @@ export default function DetailScreen({ route, navigation }) {
           </Text>
         </View>
 
-        <Section title="AI 뉴스 요약">
+        <Section title={report.etf_info ? 'ETF 뉴스' : 'AI 뉴스 요약'}>
           {Array.isArray(report.news_items) && report.news_items.length > 0 ? (
             report.news_items.map((item, idx) => (
               <NewsRow
@@ -189,6 +189,18 @@ export default function DetailScreen({ route, navigation }) {
             </Text>
           )}
         </Section>
+
+        {Array.isArray(report.etf_constituent_news_items) && report.etf_constituent_news_items.length > 0 && (
+          <Section title="구성종목 주요 뉴스">
+            {report.etf_constituent_news_items.map((item, idx) => (
+              <NewsRow
+                key={`c-${idx}-${item.title}`}
+                item={item}
+                isLast={idx === report.etf_constituent_news_items.length - 1}
+              />
+            ))}
+          </Section>
+        )}
 
         <EtfSection etf={report.etf_info} />
 

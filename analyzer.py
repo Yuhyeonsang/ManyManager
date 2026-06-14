@@ -639,6 +639,122 @@ class ReportBuilder:
         self.grader = grader or InvestmentGrader()
         self.sem = SemanticLayer()
  
+    def _build_etf(self, ticker: str, bundle: Dict, company_name: Optional[str], top_k_news: int) -> str:
+        """ETF 전용 텍스트 리포트. 재무제표 대신 수익률/AUM/구성종목 뉴스 중심."""
+        price = bundle.get("price") or {}
+        etf = bundle.get("etf_info") or {}
+        news = bundle.get("news") or {}
+        const_news = bundle.get("etf_constituent_news") or {}
+        etf_items = news.get("items", []) if news else []
+        const_items = const_news.get("items", []) if const_news else []
+
+        price_an = self.sem.analyze_price(price)
+        etf_picks = self.gemini.filter_news(etf_items, top_k=top_k_news) if etf_items else []
+        const_picks = self.gemini.filter_news(const_items, top_k=top_k_news) if const_items else []
+        sent_score, sent_counts = self.gemini.sentiment_score(etf_picks + const_picks)
+        verdict = self.grader.grade(price_an, {}, sent_score, sent_counts, is_etf=True)
+
+        is_kr = etf.get("market") == "KR"
+        L: List[str] = []
+        L.append("=" * 60)
+        L.append(f"📊 ETF 분석 리포트  |  {company_name or ticker} ({ticker})")
+        L.append(f"생성: {datetime.now():%Y-%m-%d %H:%M}")
+        L.append("=" * 60)
+
+        # [1] ETF 기본 정보
+        L.append("\n[1] ETF 기본 정보")
+        L.append(f"  - ETF명: {company_name or ticker}")
+        if etf.get("fund_family"):
+            L.append(f"  - 운용사: {etf['fund_family']}")
+        if etf.get("category"):
+            L.append(f"  - 카테고리: {etf['category']}")
+        if etf.get("total_assets_billion") is not None:
+            aum = etf["total_assets_billion"]
+            L.append(f"  - 순자산총액(AUM): {'%.1f억원' % aum if is_kr else '$%.2fB' % aum}")
+        if etf.get("expense_ratio_pct") is not None:
+            L.append(f"  - 운용보수(TER): {etf['expense_ratio_pct']}%")
+        if etf.get("dividend_yield_pct") is not None:
+            L.append(f"  - 배당수익률: {etf['dividend_yield_pct']}%")
+        if is_kr and etf.get("nav") is not None:
+            L.append(f"  - NAV: {etf['nav']:,}원")
+        if is_kr and etf.get("nav_diff_pct") is not None:
+            L.append(f"  - 괴리율: {etf['nav_diff_pct']:+.2f}%")
+
+        # [2] 수익률 성과
+        L.append("\n[2] 수익률 성과")
+        r1m = etf.get("return_1m")
+        r3m = etf.get("return_3m")
+        r1y = etf.get("return_1y") if is_kr else etf.get("return_ytd")
+        r3y = etf.get("return_3y_ann")
+        r5y = etf.get("return_5y_ann")
+        def _pct(v): return f"{v:+.2f}%" if v is not None else "N/A"
+        L.append(f"  - 1개월: {_pct(r1m)}")
+        L.append(f"  - 3개월: {_pct(r3m)}")
+        L.append(f"  - {'1년' if is_kr else 'YTD'}: {_pct(r1y)}")
+        if r3y is not None:
+            L.append(f"  - 3년 연평균: {_pct(r3y)}")
+        if r5y is not None:
+            L.append(f"  - 5년 연평균: {_pct(r5y)}")
+
+        # [3] 가격 & 기술적 시그널
+        L.append("\n[3] 가격 & 기술적 시그널")
+        if price_an.get("error"):
+            L.append(f"  - 오류: {price_an['error']}")
+        else:
+            L.append(f"  - 현재가: {price_an['current_price']:,} ({price_an.get('change_pct', 0):+.2f}%)")
+            if price_an.get("position_52w_pct") is not None:
+                L.append(f"  - 52주 위치: {price_an['position_52w_pct']}%")
+            if price_an.get("momentum_10d_pct") is not None:
+                L.append(f"  - 10일 모멘텀: {price_an['momentum_10d_pct']:+.2f}%")
+            for s in price_an.get("signals", []):
+                L.append(f"  - 시그널: {s}")
+
+        # [4] ETF 자체 뉴스
+        L.append("\n[4] ETF 관련 뉴스 (Gemini 선별)")
+        if not etf_picks or etf_picks[0].get("error"):
+            L.append("  - 수집된 뉴스 없음")
+        else:
+            for i, p in enumerate(etf_picks, 1):
+                L.append(f"  {i}. [{p.get('impact','-')}] {p.get('title','')}")
+                if p.get("reason"):
+                    L.append(f"     사유: {p['reason']}")
+
+        # [5] 구성종목 뉴스
+        L.append("\n[5] 구성종목 핵심 뉴스 (Gemini 선별)")
+        if not const_picks or const_picks[0].get("error"):
+            L.append("  - 구성종목 뉴스 없음")
+        else:
+            for i, p in enumerate(const_picks, 1):
+                L.append(f"  {i}. [{p.get('impact','-')}] {p.get('title','')}")
+                if p.get("reason"):
+                    L.append(f"     사유: {p['reason']}")
+
+        # [6] 투자 의견
+        L.append("\n[6] 투자 의견 (가격 모멘텀 + 뉴스 감성)")
+        ax = verdict["axis_scores"]
+        L.append(
+            f"  ▶ 종합 등급: 【{verdict['grade']}】  "
+            f"(총점 {verdict['total_score']} = 가격 {ax['price']:+d} + 감성 {ax['sentiment']:+d})"
+        )
+        for r in verdict["rationale"]["price"]:
+            L.append(f"     · {r}")
+        for r in verdict["rationale"]["sentiment"]:
+            L.append(f"     · {r}")
+
+        # [7] Claude 웹 분석 요청
+        L.append("\n[7] Claude 웹 정밀 분석 요청 템플릿")
+        L.append(
+            "  위 [1~6] 데이터를 바탕으로 다음을 정리해줘:\n"
+            "  (1) 이 ETF의 테마/섹터 현재 모멘텀 판단 (긍정/부정/중립 + 이유).\n"
+            "  (2) [4][5]번 뉴스들이 ETF 수익률에 미칠 단기/중기 영향.\n"
+            "  (3) 유사 ETF 대비 AUM·수익률 경쟁력 (알고 있는 범위에서).\n"
+            "  (4) 구성종목 집중도 리스크 — 상위 종목 비중 쏠림 위험.\n"
+            "  (5) 단기(1~2주) / 중기(1~3개월) 매매 시나리오.\n"
+            "  (6) 이 ETF 테마가 흔들릴 수 있는 거시·정책 리스크 3가지."
+        )
+        L.append("=" * 60)
+        return "\n".join(L)
+
     def build(
         self,
         ticker: str,
@@ -647,6 +763,10 @@ class ReportBuilder:
         top_k_news: int = 3,
         max_related: int = 8,
     ) -> str:
+        # ETF면 전용 리포트 사용
+        if bundle.get("etf_info"):
+            return self._build_etf(ticker, bundle, company_name, top_k_news)
+
         price = bundle.get("price") or {}
         news = bundle.get("news") or {}
         fin = bundle.get("financials") or {}

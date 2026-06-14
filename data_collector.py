@@ -964,25 +964,25 @@ class StockDataCollector:
         fin = (self.get_financial_statements(stock_code, year) if stock_code and not kr_etf else None)
         mm = self.get_market_metrics(ticker)
 
+        etf_constituent_news = None  # ETF 구성종목 뉴스 (별도 키)
         if kr_etf:
             etf_info = self.get_kr_etf_metrics(stock_code)
-            # ★ ETF 구성종목 뉴스 수집 (상위 3개 종목, 각 5건)
-            # ETF 자체 뉴스 + 구성종목 뉴스를 합쳐 Gemini가 핵심 3개 선별
+            # ★ ETF 구성종목 뉴스 별도 수집 (상위 3개 종목, 각 5건)
+            # ETF 자체 뉴스(news)와 분리해서 앱에 각각 3개씩 표시
             constituents = self.get_kr_etf_constituents(stock_code, top_n=3)
+            const_items: List[Dict] = []
             for cname in constituents:
                 try:
                     cnews = self.get_news_data(cname, display=5)
                     extra = cnews.get("items") or []
                     for it in extra:
                         it["_constituent"] = cname
-                        # 제목에 종목명 prefix → Gemini가 맥락 파악
                         it["title"] = f"[{cname}] {it.get('title', '')}"
-                    if extra:
-                        if news is None:
-                            news = {"items": [], "query": news_query or stock_code}
-                        news.setdefault("items", []).extend(extra)
+                    const_items.extend(extra)
                 except Exception as e:
                     log.debug(f"ETF 구성종목 뉴스 실패 ({cname}): {e}")
+            if const_items:
+                etf_constituent_news = {"items": const_items}
         elif not stock_code:
             # US 종목 — ETF 여부 mm 에서 확인 (yfinance quoteType)
             us_etf = self.get_us_etf_metrics(ticker)
@@ -1207,7 +1207,8 @@ class StockDataCollector:
             "news": news,
             "financials": fin,
             "market_metrics": mm,
-            "etf_info": etf_info,   # ETF면 Dict, 아니면 None
+            "etf_info": etf_info,                       # ETF면 Dict, 아니면 None
+            "etf_constituent_news": etf_constituent_news,  # ETF 구성종목 뉴스 (별도)
         }
 
 

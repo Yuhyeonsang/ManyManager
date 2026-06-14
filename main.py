@@ -34,6 +34,7 @@ except ImportError:
 from data_collector import (
     StockDataCollector,
     KR_STOCK_UNIVERSE,
+    KR_ETF_UNIVERSE,
     US_STOCK_UNIVERSE,
     search_stocks,
     get_hot_stocks_kr,
@@ -397,7 +398,8 @@ class StockReport(BaseModel):
     grade: str
     score: int
     news_summary: str                   # legacy 호환용 — 줄바꿈 텍스트
-    news_items: Optional[List[NewsItem]] = None   # 구조화된 뉴스 (앱이 우선 사용)
+    news_items: Optional[List[NewsItem]] = None          # ETF 자체 뉴스 / 일반 종목 뉴스
+    etf_constituent_news_items: Optional[List[NewsItem]] = None  # ETF 구성종목 뉴스 (ETF만)
     financials: Financials
     etf_info: Optional[EtfInfo] = None  # ETF면 채워짐, 일반 주식이면 None
     updated_at: str
@@ -454,6 +456,28 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
         ]
         sent_score, sent_counts = 0.0, {"긍정": 0, "부정": 0, "중립": len(picks)}
 
+    # ★ ETF 구성종목 뉴스 별도 처리 (3개)
+    const_picks: List[Dict] = []
+    if etf_raw:
+        const_items = (bundle.get("etf_constituent_news") or {}).get("items", [])
+        if const_items:
+            try:
+                const_picks = gemini_filter.filter_news(const_items, top_k=3)
+                if not const_picks or const_picks[0].get("error"):
+                    raise ValueError("gemini fallback")
+            except Exception:
+                const_picks = [
+                    {
+                        "title": it.get("title", ""),
+                        "link": it.get("link"),
+                        "pub_date": it.get("pub_date"),
+                        "impact": "중립",
+                        "reason": "raw_fallback",
+                    }
+                    for it in const_items[:3]
+                    if it.get("title")
+                ]
+
     _mm_grade = bundle.get("market_metrics") or {}
     if _mm_grade.get("error"):
         _mm_grade = {}
@@ -480,6 +504,7 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
             "price_an": price_an,
             "fin_an": fin_an,
             "picks": picks,
+            "const_picks": const_picks,
             "sent_score": sent_score,
             "sent_counts": sent_counts,
             "verdict": verdict,
@@ -495,17 +520,21 @@ def find_watch_entry(ticker_or_code: str) -> Optional[Dict]:
     for s in KR_STOCK_UNIVERSE:
         if t == s["code"] or t == s["code"] + ".KS" or t == s["code"] + ".KQ":
             return {"ticker": to_yf_ticker(s["code"]), "code": s["code"], "name": s["name"], "region": "KR"}
-    # 2) 미국 마스터에서
+    # 2) KR ETF 마스터에서 (이름 포함 — 관심종목에서 이름이 표시되도록)
+    for s in KR_ETF_UNIVERSE:
+        if t == s["code"] or t == s["code"] + ".KS":
+            return {"ticker": f"{s['code']}.KS", "code": s["code"], "name": s["name"], "region": "KR"}
+    # 3) 미국 마스터에서
     for s in US_STOCK_UNIVERSE:
         if t == s["code"]:
             return {"ticker": s["code"], "code": s["code"], "name": s["name"], "region": "US"}
-    # 3) 모르는 6자리 → 국장으로 추정
+    # 4) 모르는 6자리 → 국장으로 추정 (name은 빈값 → pykrx/naver에서 채워짐)
     if t.isdigit() and len(t) == 6:
         return {"ticker": f"{t}.KS", "code": t, "name": t, "region": "KR"}
-    # 4) 알파벳만 있으면 미국 티커로 추정
+    # 5) 알파벳만 있으면 미국 티커로 추정
     if t.isalpha() and 1 <= len(t) <= 5:
         return {"ticker": t, "code": t, "name": t, "region": "US"}
-    # 5) 점이 들어있으면 그대로 yfinance 티커로
+    # 6) 점이 들어있으면 그대로 yfinance 티커로
     if "." in t:
         code = t.split(".")[0]
         return {"ticker": t, "code": code, "name": code, "region": "KR"}
@@ -887,6 +916,7 @@ def _build_report_from_analysis(entry: dict, r: dict) -> "StockReport":
     intr = r["_internals"]
     fin_an = intr["fin_an"]
     picks = intr["picks"]
+    const_picks = intr.get("const_picks", [])
     bundle = intr["bundle"]
     market_metrics = (bundle or {}).get("market_metrics") or {}
 
@@ -1007,6 +1037,27 @@ def _build_report_from_analysis(entry: dict, r: dict) -> "StockReport":
     etf_raw = r.get("_internals", {}).get("bundle", {}).get("etf_info")
     etf_info_model = EtfInfo(**etf_raw) if etf_raw else None
 
+    # ★ ETF 구성종목 뉴스 아이템 변환
+    const_news_items_out: List[NewsItem] = []
+    if const_picks:
+        seen_c = set()
+        for p in const_picks:
+            if p.get("error"):
+                continue
+            title = (p.get("title") or "").strip()
+            if not title:
+                continue
+            norm = "".join(ch for ch in title if ch.isalnum())[:60].lower()
+            if norm in seen_c:
+                continue
+            seen_c.add(norm)
+            const_news_items_out.append(NewsItem(
+                title=title,
+                link=p.get("link"),
+                pub_date=p.get("pub_date"),
+                impact=p.get("impact") or "중립",
+            ))
+
     return StockReport(
         ticker=r["ticker"],
         name=r["name"],
@@ -1014,6 +1065,7 @@ def _build_report_from_analysis(entry: dict, r: dict) -> "StockReport":
         score=r["score"],
         news_summary=news_summary,
         news_items=news_items_out or None,
+        etf_constituent_news_items=const_news_items_out or None,
         financials=financials,
         etf_info=etf_info_model,
         updated_at=datetime.now().isoformat(),
