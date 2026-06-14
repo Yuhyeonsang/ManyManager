@@ -367,7 +367,8 @@ function EtfSection({ etf, krxCode }) {
         <Text style={[styles.body, { marginBottom: 8, fontWeight: '600' }]}>{etf.fund_name}</Text>
       ) : null}
       {etf.fund_family ? <EtfRow label="운용사" value={etf.fund_family} /> : null}
-      {etf.category    ? <EtfRow label="카테고리" value={etf.category} /> : null}
+      {etf.category    ? <EtfRow label="유형" value={etf.category} /> : null}
+      {etf.benchmark_index ? <EtfRow label="기초지수" value={etf.benchmark_index} /> : null}
 
       {isKR && etf.nav != null ? (
         <EtfRow label="NAV" value={etf.nav?.toLocaleString()} suffix="원" />

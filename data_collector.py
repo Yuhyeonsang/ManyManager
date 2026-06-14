@@ -744,8 +744,35 @@ class StockDataCollector:
     # ─────────────────────────────────────────────
 
     def get_kr_etf_metrics(self, stock_code: str) -> Dict:
-        """KR ETF 전용: NAV·괴리율·순자산총액·수익률 (pykrx)."""
+        """KR ETF 전용: NAV·괴리율·순자산총액·수익률.
+        우선순위: wisereport(naver_code 등록 시) → pykrx → yfinance"""
         result: Dict = {"is_etf": True, "market": "KR"}
+
+        # ★ wisereport 우선 시도 (naver_code 등록된 경우)
+        naver_codes = self._load_etf_naver_codes()
+        naver_code = naver_codes.get(stock_code)
+        if naver_code:
+            # NAV + 수익률
+            wr_returns = self._get_kr_etf_returns_wisereport(naver_code)
+            if wr_returns:
+                result.update(wr_returns)
+            # AUM + 펀드보수 + 기초지수 + 유형
+            wr_meta = self._get_kr_etf_meta_wisereport(naver_code)
+            if wr_meta:
+                result.update(wr_meta)
+            # wisereport로 충분한 데이터가 있으면 pykrx 생략
+            if result.get("nav") and result.get("return_1m") is not None:
+                log.info(f"ETF {stock_code} wisereport 데이터 사용 완료")
+                # ETF 이름 보완
+                try:
+                    if _NAVER_AVAILABLE:
+                        rt = _naver.get_realtime(f"{stock_code}.KS")
+                        if rt and rt.get("name"):
+                            result["fund_name"] = rt["name"]
+                except Exception:
+                    pass
+                return result
+
         if not _PYKRX_AVAILABLE:
             return result
 
@@ -847,27 +874,50 @@ class StockDataCollector:
         except Exception:
             return {}
 
-    def _get_kr_etf_constituents_wisereport(self, naver_code: str, top_n: int = 5) -> List[str]:
-        """wisereport HTML 파싱으로 ETF 구성종목 동적 조회.
-        STK_NM_KOR / ETF_WEIGHT JSON 패턴을 파싱해서 비중 상위 top_n 반환."""
+    def _wisereport_decode(self, content_bytes: bytes) -> str:
+        """wisereport 응답 bytes → str. UTF-8 우선, 실패 시 EUC-KR."""
+        try:
+            return content_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            return content_bytes.decode("euc-kr", errors="replace")
+
+    def _is_valid_kr_name(self, name: str) -> bool:
+        """회사명 유효성 검사. 한글/영문/숫자/기호만 허용, 깨진 문자 제외."""
+        if not name or len(name) > 30:
+            return False
+        # 대체문자·다이아몬드·물음표 등 인코딩 오류 표시 제외
+        bad = ("◆", "◇", "▲", "▽", "□", "■", "�", "?")
+        if any(b in name for b in bad):
+            return False
+        # 최소 1자 이상 한글 또는 영문 포함
         import re
+        return bool(re.search(r"[가-힣a-zA-Z]", name))
+
+    def _get_wisereport_html(self, naver_code: str) -> str:
+        """wisereport ETF 메인 페이지 HTML 가져오기 (공용)."""
         url = f"https://navercomp.wisereport.co.kr/v2/ETF/index.aspx?cmp_cd={naver_code}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Referer": "https://finance.naver.com/",
-            "Accept-Charset": "EUC-KR,utf-8",
         }
+        r = requests.get(url, headers=headers, timeout=15)
+        return self._wisereport_decode(r.content)
+
+    def _get_kr_etf_constituents_wisereport(self, naver_code: str, top_n: int = 5) -> List[str]:
+        """wisereport HTML 파싱으로 ETF 구성종목 동적 조회 (비중 상위 top_n)."""
+        import re
         try:
-            r = requests.get(url, headers=headers, timeout=15)
-            # wisereport 페이지는 EUC-KR 인코딩
-            content = r.content.decode("euc-kr", errors="replace")
-            names = re.findall(r'"STK_NM_KOR"\s*:\s*"([^"]+)"', content)
+            content = self._get_wisereport_html(naver_code)
+            names_raw = re.findall(r'"STK_NM_KOR"\s*:\s*"([^"]+)"', content)
             weights_raw = re.findall(r'"ETF_WEIGHT"\s*:\s*([\d.]+)', content)
+            # 깨진 이름 필터
+            names = [n for n in names_raw if self._is_valid_kr_name(n)]
             if not names:
                 log.debug(f"wisereport 구성종목 없음 ({naver_code}) — HTML 길이: {len(content)}")
                 return []
-            if weights_raw and len(weights_raw) == len(names):
-                pairs = sorted(zip(names, [float(w) for w in weights_raw]), key=lambda x: -x[1])
+            if weights_raw and len(weights_raw) == len(names_raw):
+                pairs = [(n, float(w)) for n, w in zip(names_raw, weights_raw) if self._is_valid_kr_name(n)]
+                pairs.sort(key=lambda x: -x[1])
                 result = [n for n, _ in pairs[:top_n]]
             else:
                 result = names[:top_n]
@@ -876,6 +926,91 @@ class StockDataCollector:
         except Exception as e:
             log.debug(f"wisereport 구성종목 파싱 실패 ({naver_code}): {e}")
             return []
+
+    def _get_kr_etf_returns_wisereport(self, naver_code: str) -> Dict:
+        """wisereport GetNAVData.aspx → NAV·수익률(1/3/12개월) 반환."""
+        import re, json as _json
+        result: Dict = {}
+        try:
+            end = datetime.now()
+            start = end - timedelta(days=400)
+            url = (
+                f"https://navercomp.wisereport.co.kr/v2/ETF/GetNAVData.aspx"
+                f"?startDT={start.strftime('%Y%m%d')}&endDT={end.strftime('%Y%m%d')}"
+                f"&dataType=D&cmp_cd={naver_code}&cmp_typ=5"
+            )
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": f"https://navercomp.wisereport.co.kr/v2/ETF/index.aspx?cmp_cd={naver_code}",
+            }
+            r = requests.get(url, headers=headers, timeout=10)
+            content = self._wisereport_decode(r.content)
+            data = _json.loads(content)
+            # 응답은 리스트이거나 {"result": [...]} 형태
+            records = data if isinstance(data, list) else data.get("result", data.get("data", []))
+            if not records:
+                return result
+            navs: List[float] = []
+            for rec in records:
+                v = rec.get("NAV") or rec.get("nav") or rec.get("BASE_NAV")
+                if v is not None:
+                    try:
+                        navs.append(float(str(v).replace(",", "")))
+                    except ValueError:
+                        pass
+            if navs:
+                last = navs[-1]
+                result["nav"] = last
+                def _ret(n: int):
+                    if len(navs) < n + 1:
+                        return None
+                    old = navs[-(n + 1)]
+                    return round((last - old) / old * 100, 2) if old else None
+                result["return_1m"] = _ret(20)
+                result["return_3m"] = _ret(60)
+                result["return_1y"] = _ret(240)
+            log.info(f"wisereport NAV 데이터 ({naver_code}): nav={result.get('nav')}, 1m={result.get('return_1m')}")
+        except Exception as e:
+            log.debug(f"wisereport GetNAVData 실패 ({naver_code}): {e}")
+        return result
+
+    def _get_kr_etf_meta_wisereport(self, naver_code: str) -> Dict:
+        """wisereport HTML에서 ETF 메타정보(AUM·보수·기초지수·유형) 파싱."""
+        import re
+        result: Dict = {}
+        try:
+            content = self._get_wisereport_html(naver_code)
+            if len(content) < 1000:
+                return result
+            # 순자산(AUM) — 여러 키 시도
+            for key in ("TOTAL_NAV", "BASE_AMT", "NETASSET", "NET_ASSET"):
+                m = re.search(rf'"{key}"\s*:\s*"?([\d.]+)"?', content)
+                if m:
+                    result["total_assets_billion"] = round(float(m.group(1)) / 1e8, 1)
+                    break
+            # 펀드보수(TER)
+            for key in ("EXPN_RT", "FUND_EXPNS_RATIO", "TER", "MGMT_FEE"):
+                m = re.search(rf'"{key}"\s*:\s*"?([\d.]+)"?', content)
+                if m:
+                    result["expense_ratio_pct"] = float(m.group(1))
+                    break
+            # 기초지수
+            for key in ("BNC_IDX_NM", "BASE_IDX_NM", "BENCHMARK_NM"):
+                m = re.search(rf'"{key}"\s*:\s*"([^"]+)"', content)
+                if m and m.group(1).strip():
+                    result["benchmark_index"] = m.group(1).strip()
+                    break
+            # ETF 유형
+            for key in ("ETF_TP_NM", "FUND_TP_NM", "TYPE_NM"):
+                m = re.search(rf'"{key}"\s*:\s*"([^"]+)"', content)
+                if m and m.group(1).strip():
+                    result["category"] = m.group(1).strip()
+                    break
+            if result:
+                log.info(f"wisereport ETF 메타 ({naver_code}): {result}")
+        except Exception as e:
+            log.debug(f"wisereport ETF 메타 파싱 실패 ({naver_code}): {e}")
+        return result
 
     def get_kr_etf_constituents(self, stock_code: str, top_n: int = 5) -> List[str]:
         """KR ETF 상위 구성종목 이름 목록 (비중순, pykrx 기반).

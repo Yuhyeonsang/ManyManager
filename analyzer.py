@@ -688,6 +688,8 @@ class ReportBuilder:
             L.append(f"  - 운용보수(TER): {etf['expense_ratio_pct']}%")
         if etf.get("dividend_yield_pct") is not None:
             L.append(f"  - 배당수익률: {etf['dividend_yield_pct']}%")
+        if etf.get("benchmark_index"):
+            L.append(f"  - 기초지수: {etf['benchmark_index']}")
         if is_kr and etf.get("nav") is not None:
             L.append(f"  - NAV: {etf['nav']:,}원")
         if is_kr and etf.get("nav_diff_pct") is not None:

@@ -353,6 +353,7 @@ class EtfInfo(BaseModel):
     return_3y_ann: Optional[float] = None      # 3년 연평균 % (US)
     return_5y_ann: Optional[float] = None      # 5년 연평균 % (US)
     beta: Optional[float] = None               # 베타 (US)
+    benchmark_index: Optional[str] = None     # 기초지수 (KR)
 
 
 class Financials(BaseModel):
