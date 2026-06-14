@@ -210,50 +210,35 @@ _kr_etf_info_date: Optional[str] = None
 
 
 def get_kr_etf_info_list() -> List[Dict]:
-    """KRX API로 전체 ETF 코드+이름+기초지수 목록. 일 1회 캐시.
-    반환: [{"code": "069500", "name": "KODEX 200", "underlying": "...", "mgmt": "..."}]"""
+    """pykrx로 전체 ETF 코드+이름 목록. 일 1회 캐시.
+    pykrx의 get_market_ticker_name이 내부적으로 KRX 이름 테이블을 일괄 캐시하므로
+    첫 호출 이후 빠름."""
     global _kr_etf_info_cache, _kr_etf_info_date
     today = datetime.now().strftime("%Y%m%d")
     if _kr_etf_info_cache is not None and _kr_etf_info_date == today:
         return _kr_etf_info_cache
+    if not _PYKRX_AVAILABLE:
+        return _kr_etf_info_cache or []
     try:
-        url = "http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd"
-        # 전일 데이터 기준 (오늘 장중엔 당일 미집계)
-        for delta in range(0, 5):
-            trd = (datetime.now() - timedelta(days=delta)).strftime("%Y%m%d")
-            r = requests.post(
-                url,
-                data={
-                    "bld": "dbms/MDC/STAT/standard/MDCSTAT04601",
-                    "locale": "ko_KR",
-                    "trdDd": trd,
-                    "share": "1",
-                    "money": "1",
-                    "csvxls_isNo": "false",
-                },
-                headers={"User-Agent": "Mozilla/5.0"},
-                timeout=10,
-            )
-            items = r.json().get("output") or []
-            if not items:
-                continue
-            result = []
-            for item in items:
-                code = str(item.get("ISU_SRT_CD") or "").strip()
-                name = str(item.get("ISU_ABBRV") or "").strip()
-                idx  = str(item.get("IDX_NM_KOR") or "").strip()
-                mgmt = str(item.get("MGMT_CO") or "").strip()
-                if code and name:
-                    result.append({"code": code, "name": name,
-                                   "underlying": idx, "mgmt": mgmt})
-            if result:
-                _kr_etf_info_cache = result
-                _kr_etf_info_date = today
-                log.info(f"KR ETF 이름 목록 로드: {len(result)}개 (기준일 {trd})")
-                return result
+        codes = list(get_kr_etf_set())
+        if not codes:
+            return _kr_etf_info_cache or []
+        result = []
+        for code in codes:
+            try:
+                name = pykrx_stock.get_market_ticker_name(code)
+                if name:
+                    result.append({"code": code, "name": name})
+            except Exception:
+                pass
+        if result:
+            _kr_etf_info_cache = result
+            _kr_etf_info_date = today
+            log.info(f"KR ETF 이름 목록: {len(result)}개")
+        return result or _kr_etf_info_cache or []
     except Exception as e:
-        log.warning(f"KR ETF 이름 목록 조회 실패: {e}")
-    return _kr_etf_info_cache or []
+        log.warning(f"KR ETF 이름 목록 실패: {e}")
+        return _kr_etf_info_cache or []
 
 class StockDataCollector:
     def __init__(
@@ -684,7 +669,7 @@ class StockDataCollector:
             annual_op  = ind.get("operating_income", {}).get("current")
             eq_curr    = ind.get("total_equity", {}).get("current")
             eq_prev    = ind.get("total_equity", {}).get("previous")
-            if not annual_ni:
+            if annual_ni is None:
                 return None
             base_year = annual_fin.get("year", datetime.now().year - 1)
             curr_year = datetime.now().year
@@ -952,9 +937,12 @@ class StockDataCollector:
                 etf_info = us_etf
 
         # ★ KR 종목: 네이버 금융을 1순위로 — yfinance 한국 데이터 부정확 문제 해결
+        # _ns_cache: get_summary 결과 캐시 (이 함수 호출 1회만 API 요청)
+        _ns_cache: Optional[Dict] = None
         if stock_code and isinstance(mm, dict) and _NAVER_AVAILABLE and hasattr(_naver, "get_summary"):
             try:
-                ns = _naver.get_summary(stock_code)
+                _ns_cache = _naver.get_summary(stock_code)
+                ns = _ns_cache
                 if ns:
                     if ns.get("per") is not None:
                         mm["per"]        = ns["per"]
@@ -1044,7 +1032,8 @@ class StockDataCollector:
             )
             if need_basic or need_margins:
                 try:
-                    ns = _naver.get_summary(stock_code)
+                    # ★ _ns_cache 재사용 — API 중복 호출 방지
+                    ns = _ns_cache if _ns_cache is not None else _naver.get_summary(stock_code)
                     if ns:
                         if mm.get("per") is None and ns.get("per") is not None:
                             mm["per"]        = ns["per"]
@@ -1361,6 +1350,46 @@ US_ETF_UNIVERSE: List[Dict] = [
     {"code": "SVXY", "name": "VIX 인버스 (SVXY)",              "market": "NYSEARCA", "type": "INV"},
 ]
 
+# ─────────────────────────────────────────────────────────────
+# 국내 ETF 유니버스 (KODEX / TIGER / SOL / ARIRANG / KBSTAR 등)
+# pykrx 동적 검색 실패 시 폴백으로도 사용
+# ─────────────────────────────────────────────────────────────
+KR_ETF_UNIVERSE: List[Dict] = [
+    # KODEX (삼성자산운용)
+    {"code": "069500", "name": "KODEX 200",                       "market": "ETF", "type": "ETF"},
+    {"code": "229200", "name": "KODEX 코스닥150",                 "market": "ETF", "type": "ETF"},
+    {"code": "252670", "name": "KODEX 200선물인버스2X",           "market": "ETF", "type": "INV"},
+    {"code": "233740", "name": "KODEX 코스닥150레버리지",         "market": "ETF", "type": "LEV"},
+    {"code": "278540", "name": "KODEX MSCI Korea TR",             "market": "ETF", "type": "ETF"},
+    {"code": "091160", "name": "KODEX 반도체",                   "market": "ETF", "type": "ETF"},
+    {"code": "266370", "name": "KODEX 200IT",                     "market": "ETF", "type": "ETF"},
+    {"code": "364980", "name": "KODEX 2차전지산업",               "market": "ETF", "type": "ETF"},
+    {"code": "371460", "name": "KODEX AI반도체핵심장비",          "market": "ETF", "type": "ETF"},
+    {"code": "463890", "name": "KODEX AI전력핵심인프라",          "market": "ETF", "type": "ETF"},
+    # TIGER (미래에셋자산운용)
+    {"code": "102110", "name": "TIGER 200",                       "market": "ETF", "type": "ETF"},
+    {"code": "232080", "name": "TIGER 코스닥150",                 "market": "ETF", "type": "ETF"},
+    {"code": "143860", "name": "TIGER 코스닥150레버리지",         "market": "ETF", "type": "LEV"},
+    {"code": "218420", "name": "TIGER 반도체",                   "market": "ETF", "type": "ETF"},
+    {"code": "305540", "name": "TIGER 2차전지테마",               "market": "ETF", "type": "ETF"},
+    {"code": "381180", "name": "TIGER AI반도체핵심공정",          "market": "ETF", "type": "ETF"},
+    {"code": "473530", "name": "TIGER AI반도체TOP10",             "market": "ETF", "type": "ETF"},
+    # SOL (신한자산운용)
+    {"code": "396500", "name": "SOL 반도체AI TOP2 플러스",        "market": "ETF", "type": "ETF"},
+    {"code": "468380", "name": "SOL AI반도체칩메이커",            "market": "ETF", "type": "ETF"},
+    {"code": "442010", "name": "SOL 2차전지소부장Fn",             "market": "ETF", "type": "ETF"},
+    {"code": "411060", "name": "SOL 한국형글로벌반도체",          "market": "ETF", "type": "ETF"},
+    # ARIRANG (한화자산운용)
+    {"code": "152100", "name": "ARIRANG 200",                     "market": "ETF", "type": "ETF"},
+    {"code": "253150", "name": "ARIRANG 코스닥150",               "market": "ETF", "type": "ETF"},
+    # KBSTAR (KB자산운용)
+    {"code": "261220", "name": "KBSTAR 200",                      "market": "ETF", "type": "ETF"},
+    {"code": "381170", "name": "KBSTAR AI&로봇",                  "market": "ETF", "type": "ETF"},
+    # HANARO (NH아문디)
+    {"code": "292150", "name": "HANARO 200",                      "market": "ETF", "type": "ETF"},
+    {"code": "411900", "name": "HANARO 반도체TOP10",              "market": "ETF", "type": "ETF"},
+]
+
 
 def to_yf_ticker(code: str, market: str = "KR") -> str:
     """6자리 한국 코드면 .KS / 미국 코드면 그대로."""
@@ -1380,7 +1409,7 @@ def search_stocks(query: str, limit: int = 20) -> List[Dict]:
     out: List[Dict] = []
     seen: set = set()
 
-    all_universe = KR_STOCK_UNIVERSE + US_STOCK_UNIVERSE + US_ETF_UNIVERSE
+    all_universe = KR_STOCK_UNIVERSE + KR_ETF_UNIVERSE + US_STOCK_UNIVERSE + US_ETF_UNIVERSE
     for s in all_universe:
         name = s.get("name", "")
         code = s.get("code", "")
