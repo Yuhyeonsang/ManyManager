@@ -649,8 +649,21 @@ class ReportBuilder:
         const_items = const_news.get("items", []) if const_news else []
 
         price_an = self.sem.analyze_price(price)
+        # Gemini 필터 → 실패 시 raw fallback
         etf_picks = self.gemini.filter_news(etf_items, top_k=top_k_news) if etf_items else []
+        if not etf_picks or etf_picks[0].get("error"):
+            etf_picks = [
+                {"title": it.get("title", ""), "link": it.get("link"),
+                 "pub_date": it.get("pub_date"), "impact": "중립", "reason": ""}
+                for it in etf_items[:top_k_news] if it.get("title")
+            ]
         const_picks = self.gemini.filter_news(const_items, top_k=top_k_news) if const_items else []
+        if not const_picks or (const_picks and const_picks[0].get("error")):
+            const_picks = [
+                {"title": it.get("title", ""), "link": it.get("link"),
+                 "pub_date": it.get("pub_date"), "impact": "중립", "reason": ""}
+                for it in const_items[:top_k_news] if it.get("title")
+            ]
         sent_score, sent_counts = self.gemini.sentiment_score(etf_picks + const_picks)
         verdict = self.grader.grade(price_an, {}, sent_score, sent_counts, is_etf=True)
 

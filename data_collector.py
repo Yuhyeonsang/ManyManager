@@ -796,6 +796,36 @@ class StockDataCollector:
         except Exception as e:
             log.debug(f"KR ETF 수익률 실패 ({stock_code}): {e}")
 
+        # pykrx 수익률 없으면 yfinance fallback
+        if result.get("return_1m") is None and result.get("return_3m") is None:
+            try:
+                import yfinance as yf
+                tk = yf.Ticker(f"{stock_code}.KS")
+                hist = tk.history(period="1y")
+                if hist is not None and not hist.empty and "Close" in hist.columns:
+                    closes = hist["Close"].dropna()
+                    if len(closes) >= 1:
+                        last_p = float(closes.iloc[-1])
+                        def _ret_yf(n):
+                            if len(closes) < n + 1:
+                                return None
+                            old = float(closes.iloc[-(n + 1)])
+                            return round((last_p - old) / old * 100, 2) if old else None
+                        result["return_1m"] = _ret_yf(20)
+                        result["return_3m"] = _ret_yf(60)
+                        result["return_1y"] = _ret_yf(240)
+                        # NAV/AUM도 없으면 yfinance info로 보완
+                        if result.get("total_assets_billion") is None:
+                            try:
+                                info = tk.info or {}
+                                ta = info.get("totalAssets")
+                                if ta and ta > 0:
+                                    result["total_assets_billion"] = round(ta / 1e8, 1)
+                            except Exception:
+                                pass
+            except Exception as e:
+                log.debug(f"KR ETF yfinance 수익률 실패 ({stock_code}): {e}")
+
         # ETF 이름 (Naver 실시간)
         try:
             if _NAVER_AVAILABLE:
