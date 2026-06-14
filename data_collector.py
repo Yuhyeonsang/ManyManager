@@ -748,29 +748,33 @@ class StockDataCollector:
         우선순위: wisereport(naver_code 등록 시) → pykrx → yfinance"""
         result: Dict = {"is_etf": True, "market": "KR"}
 
-        # ★ wisereport 우선 시도 (naver_code 등록된 경우)
+        # ★ 1순위: 네이버 금융 ETF 메인 페이지 파싱 (naver_code 등록된 경우)
         naver_codes = self._load_etf_naver_codes()
         naver_code = naver_codes.get(stock_code)
         if naver_code:
-            # NAV + 수익률
-            wr_returns = self._get_kr_etf_returns_wisereport(naver_code)
-            if wr_returns:
-                result.update(wr_returns)
-            # AUM + 펀드보수 + 기초지수 + 유형
-            wr_meta = self._get_kr_etf_meta_wisereport(naver_code)
-            if wr_meta:
-                result.update(wr_meta)
-            # wisereport로 충분한 데이터가 있으면 pykrx 생략
-            if result.get("nav") and result.get("return_1m") is not None:
-                log.info(f"ETF {stock_code} wisereport 데이터 사용 완료")
-                # ETF 이름 보완
+            naver_data = self._get_kr_etf_naver_main(naver_code)
+            if naver_data:
+                result.update(naver_data)
+            # 네이버에서 못 가져온 항목은 wisereport 메타로 보완 (기초지수·유형 등)
+            if not result.get("benchmark_index") or not result.get("expense_ratio_pct"):
                 try:
-                    if _NAVER_AVAILABLE:
-                        rt = _naver.get_realtime(f"{stock_code}.KS")
-                        if rt and rt.get("name"):
-                            result["fund_name"] = rt["name"]
+                    wr_meta = self._get_kr_etf_meta_wisereport(naver_code)
+                    for k, v in wr_meta.items():
+                        if k not in result:
+                            result[k] = v
                 except Exception:
                     pass
+            # ETF 이름 보완
+            try:
+                if _NAVER_AVAILABLE:
+                    rt = _naver.get_realtime(f"{stock_code}.KS")
+                    if rt and rt.get("name"):
+                        result["fund_name"] = rt["name"]
+            except Exception:
+                pass
+            # 핵심 데이터(NAV 또는 기초지수)가 있으면 pykrx 생략
+            if result.get("nav") or result.get("benchmark_index"):
+                log.info(f"ETF {stock_code} 네이버 파싱 데이터 사용 완료")
                 return result
 
         if not _PYKRX_AVAILABLE:
@@ -1010,6 +1014,129 @@ class StockDataCollector:
                 log.info(f"wisereport ETF 메타 ({naver_code}): {result}")
         except Exception as e:
             log.debug(f"wisereport ETF 메타 파싱 실패 ({naver_code}): {e}")
+        return result
+
+    def _get_kr_etf_naver_main(self, naver_code: str) -> Dict:
+        """네이버 금융 ETF 메인 페이지 파싱.
+        https://finance.naver.com/item/main.naver?code={naver_code}
+        EUC-KR 인코딩. NAV·수익률·52주고저·AUM·기초지수·펀드보수·자산운용사 반환.
+        """
+        import re
+        result: Dict = {}
+        try:
+            url = f"https://finance.naver.com/item/main.naver?code={naver_code}"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept-Language": "ko-KR,ko;q=0.9",
+                "Referer": "https://finance.naver.com/",
+            }
+            r = requests.get(url, headers=headers, timeout=12)
+            if r.status_code != 200:
+                log.debug(f"네이버 ETF 페이지 {r.status_code} ({naver_code})")
+                return result
+
+            soup = BeautifulSoup(r.content, "html.parser", from_encoding="euc-kr")
+
+            def _clean(s: str) -> str:
+                return re.sub(r"\s+", " ", s).strip()
+
+            def _parse_pct(s: str):
+                """'+27.75%' 또는 '-3.2%' → float, N/A·빈값 → None"""
+                s = s.replace("%", "").replace("+", "").replace(",", "").strip()
+                if s in ("N/A", "-", "", "N"):
+                    return None
+                try:
+                    return float(s)
+                except ValueError:
+                    return None
+
+            def _parse_num(s: str):
+                nums = re.findall(r"[\d,]+", s)
+                if not nums:
+                    return None
+                try:
+                    return float(nums[0].replace(",", ""))
+                except ValueError:
+                    return None
+
+            # ── 테이블 행 순회 ────────────────────────────────────
+            for tr in soup.find_all("tr"):
+                tds = tr.find_all(["td", "th"])
+                if len(tds) < 2:
+                    continue
+                key = _clean(tds[0].get_text())
+                val = _clean(tds[1].get_text())
+
+                # 기초지수
+                if "기초지수" in key and len(val) > 2 and "benchmark_index" not in result:
+                    result["benchmark_index"] = val
+
+                # 수익률 — 텍스트가 '수익률' 포함 + 기간 키워드
+                elif "1개월" in key and "수익률" in key:
+                    v = _parse_pct(val)
+                    if v is not None:
+                        result["return_1m"] = v
+                elif "3개월" in key and "수익률" in key:
+                    v = _parse_pct(val)
+                    if v is not None:
+                        result["return_3m"] = v
+                elif "6개월" in key and "수익률" in key:
+                    v = _parse_pct(val)
+                    if v is not None:
+                        result["return_6m"] = v
+                elif "1년" in key and "수익률" in key:
+                    v = _parse_pct(val)
+                    if v is not None:
+                        result["return_1y"] = v
+
+                # NAV (행 키에 "NAV" 포함)
+                elif "NAV" in key and "nav" not in result:
+                    v = _parse_num(val)
+                    if v and v > 0:
+                        result["nav"] = v
+
+                # 52주 최고/최저 — '26,01518,830' 처럼 붙어있음
+                elif "52주" in key and ("고" in key or "저" in key or "최" in key):
+                    nums = re.findall(r"[\d,]+", val)
+                    if len(nums) >= 2:
+                        try:
+                            result["price_52w_high"] = float(nums[0].replace(",", ""))
+                            result["price_52w_low"] = float(nums[1].replace(",", ""))
+                        except ValueError:
+                            pass
+
+                # 자산운용사
+                elif "자산운용사" in key and "fund_family" not in result:
+                    result["fund_family"] = val
+
+                # 시가총액 (AUM) — '6조▲...339억원' 혼재 형식
+                elif "시가총액" in key and "total_assets_billion" not in result:
+                    jo_m = re.search(r"([\d,]+)조", val)
+                    eok_m = re.search(r"([\d,]+)억", val)
+                    try:
+                        jo = float(jo_m.group(1).replace(",", "")) if jo_m else 0.0
+                        eok = float(eok_m.group(1).replace(",", "")) if eok_m else 0.0
+                        total_eok = jo * 10000 + eok
+                        if total_eok > 0:
+                            result["total_assets_billion"] = round(total_eok, 0)  # 억원 단위
+                    except (ValueError, AttributeError):
+                        pass
+
+                # 펀드보수 / 총보수
+                elif ("펀드보수" in key or "총보수" in key) and "expense_ratio_pct" not in result:
+                    m = re.search(r"([\d.]+)\s*%", val)
+                    if m:
+                        try:
+                            result["expense_ratio_pct"] = float(m.group(1))
+                        except ValueError:
+                            pass
+
+            if result:
+                log.info(f"네이버 ETF 파싱 성공 ({naver_code}): {list(result.keys())}")
+            else:
+                log.debug(f"네이버 ETF 파싱 결과 없음 ({naver_code})")
+        except Exception as e:
+            log.debug(f"네이버 ETF 파싱 실패 ({naver_code}): {e}")
         return result
 
     def get_kr_etf_constituents(self, stock_code: str, top_n: int = 5) -> List[str]:
