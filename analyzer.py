@@ -338,12 +338,12 @@ class SemanticLayer:
  
 class InvestmentGrader:
     """[주가 추세 + 재무 건전성 + 뉴스 감성] → 투자 등급 1차 판정.
- 
-    각 축을 -2 ~ +2로 점수화 → 합계 → 등급.
+
+    가격 ±4  + 재무 ±5 (PER/PBR/ROE 포함)  + 뉴스 ±3 = -12 ~ +12
     환각 방지를 위해 모든 분기 조건은 파이썬에서만 평가.
     """
- 
-    # 총점 범위: 가격±4 + 재무±3 + 뉴스±5 = -12 ~ +12
+
+    # 총점 범위: 가격±4 + 재무±5 + 뉴스±3 = -12 ~ +12
     GRADE_TABLE = [
         (7,  "적극 매수"),
         (3,  "매수"),
@@ -351,7 +351,7 @@ class InvestmentGrader:
         (-3, "관망"),
         (-99,"비중 축소"),
     ]
- 
+
     @staticmethod
     def _score_price(price_an: Dict) -> Tuple[int, List[str]]:
         if price_an.get("error"):
@@ -384,23 +384,52 @@ class InvestmentGrader:
         return max(-4, min(4, s)), reasons
 
     @staticmethod
-    def _score_financials(fin_an: Dict) -> Tuple[int, List[str]]:
+    def _score_financials(fin_an: Dict, market_metrics: Optional[Dict] = None) -> Tuple[int, List[str]]:
+        """재무 점수 ±5.
+        PER/PBR/ROE(valuation) + 영업이익률 + 매출YoY + 부채비율
+        """
         if fin_an.get("error"):
             return 0, [f"재무 데이터 없음: {fin_an['error']}"]
         s, reasons = 0, []
-        g = fin_an.get("yoy_growth_pct") or {}
-        op_yoy = g.get("operating_income")
-        rev_yoy = g.get("revenue")
-        if op_yoy is not None:
-            if op_yoy >= 20:
-                s += 1; reasons.append(f"영업익 YoY +{op_yoy}%(+1)")
-            elif op_yoy <= -20:
-                s -= 1; reasons.append(f"영업익 YoY {op_yoy}%(-1)")
-        if rev_yoy is not None:
-            if rev_yoy >= 10:
-                s += 1; reasons.append(f"매출 YoY +{rev_yoy}%(+1)")
-            elif rev_yoy <= -10:
-                s -= 1; reasons.append(f"매출 YoY {rev_yoy}%(-1)")
+        mm = market_metrics or {}
+
+        # ── Valuation (PER / PBR / ROE) ──────────────────────────
+        per = mm.get("per")
+        if per is not None:
+            try:
+                p = float(per)
+                if 0 < p <= 12:
+                    s += 1; reasons.append(f"PER {p:.1f}배 저평가(+1)")
+                elif p < 0:
+                    s -= 1; reasons.append(f"PER {p:.1f}배 적자(-1)")
+                elif p > 40:
+                    s -= 1; reasons.append(f"PER {p:.1f}배 고평가(-1)")
+            except (TypeError, ValueError):
+                pass
+
+        pbr = mm.get("pbr")
+        if pbr is not None:
+            try:
+                b = float(pbr)
+                if 0 < b < 1.0:
+                    s += 1; reasons.append(f"PBR {b:.2f}배 청산가치 이하(+1)")
+                elif b > 6.0:
+                    s -= 1; reasons.append(f"PBR {b:.2f}배 과도 프리미엄(-1)")
+            except (TypeError, ValueError):
+                pass
+
+        roe = mm.get("roe_pct")
+        if roe is not None:
+            try:
+                r = float(roe)
+                if r >= 15:
+                    s += 1; reasons.append(f"ROE {r:.1f}% 우수(+1)")
+                elif r < 0:
+                    s -= 1; reasons.append(f"ROE {r:.1f}% 적자(-1)")
+            except (TypeError, ValueError):
+                pass
+
+        # ── Profitability (영업이익률) ──────────────────────────
         m = fin_an.get("margins") or {}
         op_m = m.get("operating_margin_pct")
         if op_m is not None:
@@ -408,17 +437,31 @@ class InvestmentGrader:
                 s += 1; reasons.append(f"영업이익률 {op_m}%(+1)")
             elif op_m <= 0:
                 s -= 1; reasons.append(f"영업이익률 {op_m}%(-1)")
+
+        # ── Growth (매출 YoY) ──────────────────────────
+        g = fin_an.get("yoy_growth_pct") or {}
+        rev_yoy = g.get("revenue")
+        if rev_yoy is not None:
+            if rev_yoy >= 15:
+                s += 1; reasons.append(f"매출 YoY +{rev_yoy:.1f}%(+1)")
+            elif rev_yoy <= -15:
+                s -= 1; reasons.append(f"매출 YoY {rev_yoy:.1f}%(-1)")
+
+        # ── Stability (부채비율) ──────────────────────────
         debt = fin_an.get("debt_to_equity_pct")
         if debt is not None:
             if debt >= 200:
-                s -= 1; reasons.append(f"부채비율 과다 {debt}%(-1)")
+                s -= 1; reasons.append(f"부채비율 {debt:.0f}% 과다(-1)")
             elif debt <= 80:
-                s += 1; reasons.append(f"부채비율 양호 {debt}%(+1)")
-        return max(-3, min(3, s)), reasons
+                s += 1; reasons.append(f"부채비율 {debt:.0f}% 양호(+1)")
+
+        if not reasons:
+            reasons.append("재무 데이터 부족 (0점)")
+        return max(-5, min(5, s)), reasons
 
     @staticmethod
     def _score_sentiment(sent_score: float, counts: Dict[str, int]) -> Tuple[int, List[str]]:
-        """뉴스 감성 점수 -5 ~ +5 (뉴스 기반 앱이므로 가중치 높임)."""
+        """뉴스 감성 점수 ±3 (재무 점수 강화로 가중치 조정)."""
         pos = counts.get("긍정", 0)
         neg = counts.get("부정", 0)
         neu = counts.get("중립", 0)
@@ -427,27 +470,21 @@ class InvestmentGrader:
         reasons = []
         if total == 0:
             return 0, ["뉴스 없음 (0점)"]
-        if sent_score >= 0.7:
-            s = 5; reasons.append(f"뉴스 감성 매우 강한 긍정({sent_score}, +5)")
-        elif sent_score >= 0.5:
-            s = 4; reasons.append(f"뉴스 감성 강한 긍정({sent_score}, +4)")
-        elif sent_score >= 0.3:
-            s = 3; reasons.append(f"뉴스 감성 긍정({sent_score}, +3)")
-        elif sent_score >= 0.1:
-            s = 2; reasons.append(f"뉴스 감성 우호({sent_score}, +2)")
+        if sent_score >= 0.5:
+            s = 3; reasons.append(f"뉴스 감성 강한 긍정({sent_score:+.2f}, +3)")
+        elif sent_score >= 0.2:
+            s = 2; reasons.append(f"뉴스 감성 긍정({sent_score:+.2f}, +2)")
         elif sent_score > -0.1:
-            s = 1; reasons.append(f"뉴스 감성 중립({sent_score}, +1)")
+            s = 1; reasons.append(f"뉴스 감성 중립/우호({sent_score:+.2f}, +1)")
         elif sent_score >= -0.3:
-            s = -1; reasons.append(f"뉴스 감성 약한 부정({sent_score}, -1)")
-        elif sent_score >= -0.5:
-            s = -3; reasons.append(f"뉴스 감성 부정({sent_score}, -3)")
-        elif sent_score >= -0.7:
-            s = -4; reasons.append(f"뉴스 감성 강한 부정({sent_score}, -4)")
+            s = 0; reasons.append(f"뉴스 감성 약한 부정({sent_score:+.2f}, 0)")
+        elif sent_score >= -0.6:
+            s = -2; reasons.append(f"뉴스 감성 부정({sent_score:+.2f}, -2)")
         else:
-            s = -5; reasons.append(f"뉴스 감성 매우 강한 부정({sent_score}, -5)")
+            s = -3; reasons.append(f"뉴스 감성 강한 부정({sent_score:+.2f}, -3)")
         reasons.append(f"뉴스 분포 → 긍정 {pos} / 부정 {neg} / 중립 {neu}")
         return s, reasons
- 
+
     def grade(
         self,
         price_an: Dict,
@@ -455,13 +492,13 @@ class InvestmentGrader:
         sent_score: float,
         sent_counts: Dict[str, int],
         is_etf: bool = False,
+        market_metrics: Optional[Dict] = None,
     ) -> Dict:
         ps, pr = self._score_price(price_an)
         if is_etf:
-            # ETF는 재무 점수 없음 — 가격 추세 + 뉴스만 반영
             fs, fr = 0, ["ETF — 재무지표 미적용 (가격·뉴스만 채점)"]
         else:
-            fs, fr = self._score_financials(fin_an)
+            fs, fr = self._score_financials(fin_an, market_metrics=market_metrics)
         ss, sr = self._score_sentiment(sent_score, sent_counts)
         total = ps + fs + ss
         grade = next(g for thr, g in self.GRADE_TABLE if total >= thr)
@@ -620,7 +657,11 @@ class ReportBuilder:
         picks = self.gemini.filter_news(items, top_k=top_k_news) if items else []
         sent_score, sent_counts = self.gemini.sentiment_score(picks)
         related = self.related.infer_related_stocks(items, max_candidates=max_related) if items else []
-        verdict = self.grader.grade(price_an, fin_an, sent_score, sent_counts)
+        market_metrics = bundle.get("market_metrics") or {}
+        verdict = self.grader.grade(
+            price_an, fin_an, sent_score, sent_counts,
+            market_metrics=market_metrics,
+        )
  
         L: List[str] = []
         L.append("=" * 60)
@@ -822,74 +863,6 @@ class HybridAnalyzer:
 # ─────────────────────────────────────────────
 # 모드 2: ManualClaudeAnalyzer
 #   Gemini 종합 판정 호출 안 함. 클로드용 프롬프트만 만들어줌.
-#   (ReportBuilder 가 이미 호출하는 GeminiNewsFilter/RelatedStockInferer 는 그대로 사용 — 무료 한도 안에서 1차 가공만)
-# ─────────────────────────────────────────────
-class ManualClaudeAnalyzer:
-    def __init__(self, builder: Optional[ReportBuilder] = None):
-        self.builder = builder or ReportBuilder()
-
-    def make_paste(
-        self,
-        ticker: str,
-        bundle: Dict,
-        company_name: Optional[str] = None,
-    ) -> Dict:
-        report_text = self.builder.build(
-            ticker=ticker, bundle=bundle, company_name=company_name,
-        )
-        prompt = (
-            "아래 종목 리포트를 분석해 한국어 JSON 객체만 출력해. 다른 텍스트/마크다운 금지.\n\n"
-            "JSON 스키마:\n"
-            "{\n"
-            '  "importance": 0~10 정수,\n'
-            '  "sentiment": "bullish"|"bearish"|"neutral",\n'
-            '  "action": "BUY"|"HOLD"|"WATCH"|"AVOID",\n'
-            '  "confidence": 0~10 정수,\n'
-            '  "key_drivers": ["3개, 각 30자 이내"],\n'
-            '  "risk_factors": ["2~3개, 각 30자 이내"],\n'
-            '  "short_term": "1주~1개월 전망 (60자 이내)",\n'
-            '  "mid_term": "3~6개월 전망 (60자 이내)",\n'
-            '  "comment": "종합 코멘트 (200자 이내)"\n'
-            "}\n\n"
-            f"[리포트]\n{report_text}"
-        )
-        verdict = self.gemini.call_json(prompt, temperature=0.3)
-        verdict["mode"] = "hybrid_gemini"
-        verdict["model"] = self.gemini.model
-        verdict["ticker"] = ticker
-        verdict["name"] = company_name
-        verdict["analyzed_at"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        verdict["report_text"] = report_text
-
-        try:
-            importance = float(verdict.get("importance", 0))
-        except (TypeError, ValueError):
-            importance = 0.0
-
-        if importance >= self.claude_threshold:
-            verdict["needs_claude_review"] = True
-            verdict["claude_prompt"] = ManualClaudeAnalyzer.build_prompt(
-                report_text=report_text,
-                ticker=ticker,
-                company_name=company_name,
-                extra_context=(
-                    "[Gemini 1차 자동 판정 — 너가 검증·심화할 베이스]\n"
-                    + json.dumps(
-                        {k: v for k, v in verdict.items()
-                         if k not in ("claude_prompt", "report_text")},
-                        ensure_ascii=False, indent=2, default=str,
-                    )
-                ),
-            )
-        else:
-            verdict["needs_claude_review"] = False
-        return verdict
-
-
-# ─────────────────────────────────────────────
-# 모드 2: ManualClaudeAnalyzer
-#   Gemini 종합 판정 호출 안 함. 클로드용 프롬프트만 만들어줌.
-#   (ReportBuilder 가 이미 호출하는 GeminiNewsFilter/RelatedStockInferer 는 그대로 사용 — 무료 한도 안에서 1차 가공만)
 # ─────────────────────────────────────────────
 class ManualClaudeAnalyzer:
     def __init__(self, builder: Optional[ReportBuilder] = None):
