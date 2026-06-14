@@ -203,16 +203,19 @@ CACHE_WARM_PARALLEL = int(os.getenv("CACHE_WARM_PARALLEL", "3"))             # �
 
 
 def _warm_hot_stocks_cache():
-    """전체 watchlist + 관심종목 분석 → hot_stocks 캐시 + 개별 report 캐시 동시 갱신."""
+    """전체 watchlist + 관심종목 분석 → hot_stocks 캐시 + 개별 report 캐시 동시 갱신.
+    ★ 관심종목은 report 캐시 사전 워밍 전용 — hot_stocks 목록에는 포함하지 않음."""
     try:
         from concurrent.futures import ThreadPoolExecutor as _TPE, as_completed as _ac
-        watchlist = build_watchlist()
-        # 관심종목 추가 (중복 제거)
-        hot_tickers = {w["ticker"] for w in watchlist}
+        hot_list = build_watchlist()              # 대시보드에 실제로 표시할 종목
+        hot_tickers = {w["ticker"] for w in hot_list}
+
+        # 관심종목: report 캐시 사전 워밍용 (대시보드 리스트 제외)
+        all_list = list(hot_list)
         for fav in _get_user_favorites_as_watchlist():
             if fav["ticker"] not in hot_tickers:
-                watchlist.append(fav)
-                hot_tickers.add(fav["ticker"])
+                all_list.append(fav)
+
         results: Dict[str, Dict] = {}
 
         def _job(w):
@@ -235,21 +238,22 @@ def _warm_hot_stocks_cache():
 
         # 워머는 더 적은 워커로 (서버 부담 최소화)
         with _TPE(max_workers=CACHE_WARM_PARALLEL) as ex:
-            futs = {ex.submit(_job, w): w for w in watchlist}
+            futs = {ex.submit(_job, w): w for w in all_list}   # 관심종목도 분석 (캐시용)
             for f in _ac(futs):
                 d = f.result()
                 if d:
                     results[d["ticker"]] = d
 
+        # hot_stocks 캐시: 원래 watchlist 종목만 저장 (관심종목 제외)
         out = []
-        for w in watchlist:
+        for w in hot_list:
             tk = to_yf_ticker(w["code"]) if w.get("code", "").isdigit() and len(w["code"]) == 6 else w["code"]
             d = results.get(tk) or results.get(w["code"])
             if d:
                 out.append(d)
         if out:
             cache_set(HOT_STOCKS_CACHE_KEY, out)
-            log.info(f"[warmer] 갱신 완료 — hot_stocks {len(out)}건 + 개별 report 캐시")
+            log.info(f"[warmer] 갱신 완료 — hot_stocks {len(out)}건 + 관심종목 report 캐시 {len(all_list) - len(hot_list)}건")
     except Exception as e:
         log.exception(f"[warmer] 실패: {e}")
 
