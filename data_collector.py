@@ -7,6 +7,13 @@ from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 try:
+    from bs4 import BeautifulSoup
+    _BS4_AVAILABLE = True
+except ImportError:
+    _BS4_AVAILABLE = False
+    logging.getLogger(__name__).warning("bs4(BeautifulSoup) 미설치 — 네이버 ETF 파싱 비활성")
+
+try:
     from dotenv import load_dotenv
     load_dotenv()
 except ImportError:
@@ -1023,6 +1030,9 @@ class StockDataCollector:
         """
         import re
         result: Dict = {}
+        if not _BS4_AVAILABLE:
+            log.debug("bs4 미설치 — 네이버 ETF 파싱 스킵")
+            return result
         try:
             url = f"https://finance.naver.com/item/main.naver?code={naver_code}"
             headers = {
