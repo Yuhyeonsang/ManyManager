@@ -445,13 +445,21 @@ function EtfSection({ etf, krxCode }) {
         <EtfRow label="20일 평균거래량" value={Math.round(etf.avg_volume_20d)?.toLocaleString()} suffix="주" />
       ) : null}
 
-      {/* 수익률 */}
+      {/* 수익률 — KR: 1m/3m/6m/1y, US: 1m/3m/YTD */}
       <View style={styles.etfReturnRow}>
-        {[
-          { label: '1개월', val: etf.return_1m },
-          { label: '3개월', val: etf.return_3m },
-          { label: isKR ? '1년' : 'YTD', val: isKR ? etf.return_1y : etf.return_ytd },
-        ].map(({ label, val }) => (
+        {(isKR
+          ? [
+              { label: '1개월', val: etf.return_1m },
+              { label: '3개월', val: etf.return_3m },
+              { label: '6개월', val: etf.return_6m },
+              { label: '1년',   val: etf.return_1y },
+            ]
+          : [
+              { label: '1개월', val: etf.return_1m },
+              { label: '3개월', val: etf.return_3m },
+              { label: 'YTD',   val: etf.return_ytd },
+            ]
+        ).map(({ label, val }) => (
           <View key={label} style={styles.etfReturnCell}>
             <Text style={styles.etfReturnLabel}>{label}</Text>
             <Text style={[

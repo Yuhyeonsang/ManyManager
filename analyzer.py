@@ -699,12 +699,14 @@ class ReportBuilder:
         L.append("\n[2] 수익률 성과")
         r1m = etf.get("return_1m")
         r3m = etf.get("return_3m")
+        r6m = etf.get("return_6m")
         r1y = etf.get("return_1y") if is_kr else etf.get("return_ytd")
         r3y = etf.get("return_3y_ann")
         r5y = etf.get("return_5y_ann")
-        def _pct(v): return f"{v:+.2f}%" if v is not None else "N/A"
+        def _pct(v): return f"{v:+.2f}%" if v is not None else "N/A (데이터 없음)"
         L.append(f"  - 1개월: {_pct(r1m)}")
         L.append(f"  - 3개월: {_pct(r3m)}")
+        L.append(f"  - 6개월: {_pct(r6m)}")
         L.append(f"  - {'1년' if is_kr else 'YTD'}: {_pct(r1y)}")
         if r3y is not None:
             L.append(f"  - 3년 연평균: {_pct(r3y)}")
@@ -717,12 +719,38 @@ class ReportBuilder:
             L.append(f"  - 오류: {price_an['error']}")
         else:
             L.append(f"  - 현재가: {price_an['current_price']:,} ({price_an.get('change_pct', 0):+.2f}%)")
-            if price_an.get("position_52w_pct") is not None:
+            # 52주 고저 (ETF 자체 데이터 우선, 없으면 price_an)
+            hi52 = etf.get("price_52w_high")
+            lo52 = etf.get("price_52w_low")
+            if hi52 and lo52:
+                cur = price_an.get("current_price", 0)
+                from_high = round((cur - hi52) / hi52 * 100, 1) if hi52 else None
+                from_low  = round((cur - lo52)  / lo52  * 100, 1) if lo52 else None
+                L.append(f"  - 52주 최고: {hi52:,}원  최저: {lo52:,}원")
+                if from_high is not None:
+                    L.append(f"  - 고점 대비: {from_high:+.1f}%  /  저점 대비: {from_low:+.1f}%")
+            elif price_an.get("position_52w_pct") is not None:
                 L.append(f"  - 52주 위치: {price_an['position_52w_pct']}%")
+            if etf.get("avg_volume_20d"):
+                L.append(f"  - 20일 평균거래량: {int(etf['avg_volume_20d']):,}주")
             if price_an.get("momentum_10d_pct") is not None:
                 L.append(f"  - 10일 모멘텀: {price_an['momentum_10d_pct']:+.2f}%")
             for s in price_an.get("signals", []):
                 L.append(f"  - 시그널: {s}")
+
+        # [3-1] 물타기 / 불타기 점수
+        ws = etf.get("water_score")
+        fs = etf.get("fire_score")
+        if ws is not None or fs is not None:
+            L.append("\n[3-1] 매수 타이밍 점수 (0~100)")
+            if ws is not None:
+                L.append(f"  - 💧 물타기(저점 매수) 점수: {ws}/100")
+                for r in (etf.get("water_reasons") or []):
+                    L.append(f"     · {r}")
+            if fs is not None:
+                L.append(f"  - 🔥 불타기(모멘텀 추가) 점수: {fs}/100")
+                for r in (etf.get("fire_reasons") or []):
+                    L.append(f"     · {r}")
 
         # [4] ETF 자체 뉴스
         L.append("\n[4] ETF 관련 뉴스 (Gemini 선별)")
