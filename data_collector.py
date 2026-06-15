@@ -969,7 +969,7 @@ class StockDataCollector:
                 log.debug(f"naver coinfo 구성종목 없음 ({naver_code})")
                 return []
             pairs.sort(key=lambda x: -x[1])
-            result = [n for n, _ in pairs[:top_n]]
+            result = [f"{n}({w:.2f}%)" if w > 0 else n for n, w in pairs[:top_n]]
             log.info(f"naver coinfo ETF 구성종목 ({naver_code}): {result}")
             return result
         except Exception as e:
@@ -977,13 +977,14 @@ class StockDataCollector:
             return []
 
     def _get_kr_etf_constituents_wisereport(self, naver_code: str, top_n: int = 5) -> List[str]:
-        """wisereport HTML 파싱으로 ETF 구성종목 동적 조회 (비중 상위 top_n)."""
+        """wisereport HTML 파싱으로 ETF 구성종목 동적 조회 (비중 상위 top_n).
+        반환: ['SK하이닉스(24.97%)', '삼성전기(24.10%)', ...] 형태 (비중 포함)
+        """
         import re
         try:
             content = self._get_wisereport_html(naver_code)
             names_raw = re.findall(r'"STK_NM_KOR"\s*:\s*"([^"]+)"', content)
             weights_raw = re.findall(r'"ETF_WEIGHT"\s*:\s*([\d.]+)', content)
-            # 깨진 이름 필터
             names = [n for n in names_raw if self._is_valid_kr_name(n)]
             if not names:
                 log.debug(f"wisereport 구성종목 없음 ({naver_code}) — HTML 길이: {len(content)}")
@@ -991,7 +992,8 @@ class StockDataCollector:
             if weights_raw and len(weights_raw) == len(names_raw):
                 pairs = [(n, float(w)) for n, w in zip(names_raw, weights_raw) if self._is_valid_kr_name(n)]
                 pairs.sort(key=lambda x: -x[1])
-                result = [n for n, _ in pairs[:top_n]]
+                # 비중 포함 형태: "SK하이닉스(24.97%)"
+                result = [f"{n}({w:.2f}%)" for n, w in pairs[:top_n]]
             else:
                 result = names[:top_n]
             log.info(f"wisereport ETF 구성종목 ({naver_code}): {result}")
