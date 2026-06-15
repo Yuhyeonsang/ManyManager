@@ -924,6 +924,58 @@ class StockDataCollector:
         r = requests.get(url, headers=headers, timeout=15)
         return self._wisereport_decode(r.content)
 
+    def _get_kr_etf_constituents_naver_coinfo(self, naver_code: str, top_n: int = 5) -> List[str]:
+        """네이버 coinfo 페이지에서 ETF 구성종목 직접 파싱 (비중 상위 top_n).
+        URL: https://finance.naver.com/item/coinfo.naver?code={naver_code}
+        """
+        try:
+            from bs4 import BeautifulSoup
+            url = f"https://finance.naver.com/item/coinfo.naver?code={naver_code}"
+            headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+            r = requests.get(url, headers=headers, timeout=10)
+            soup = BeautifulSoup(r.content, "html.parser", from_encoding="euc-kr")
+            # 구성종목 테이블: class="tbl_type3" 또는 구성종목명 헤더 포함 테이블
+            pairs = []
+            for table in soup.find_all("table"):
+                headers_row = table.find("tr")
+                if not headers_row:
+                    continue
+                ths = [th.get_text(strip=True) for th in headers_row.find_all(["th", "td"])]
+                if "구성종목명" not in str(ths):
+                    continue
+                # 컬럼 인덱스 찾기
+                try:
+                    name_idx = next(i for i, h in enumerate(ths) if "구성종목명" in h)
+                    weight_idx = next((i for i, h in enumerate(ths) if "구성비중" in h), None)
+                except StopIteration:
+                    continue
+                for row in table.find_all("tr")[1:]:
+                    cells = row.find_all("td")
+                    if len(cells) <= name_idx:
+                        continue
+                    name = cells[name_idx].get_text(strip=True)
+                    if not name or not self._is_valid_kr_name(name):
+                        continue
+                    weight = 0.0
+                    if weight_idx is not None and len(cells) > weight_idx:
+                        try:
+                            weight = float(cells[weight_idx].get_text(strip=True).replace(",", "").replace("%", ""))
+                        except ValueError:
+                            pass
+                    pairs.append((name, weight))
+                if pairs:
+                    break
+            if not pairs:
+                log.debug(f"naver coinfo 구성종목 없음 ({naver_code})")
+                return []
+            pairs.sort(key=lambda x: -x[1])
+            result = [n for n, _ in pairs[:top_n]]
+            log.info(f"naver coinfo ETF 구성종목 ({naver_code}): {result}")
+            return result
+        except Exception as e:
+            log.debug(f"naver coinfo 구성종목 파싱 실패 ({naver_code}): {e}")
+            return []
+
     def _get_kr_etf_constituents_wisereport(self, naver_code: str, top_n: int = 5) -> List[str]:
         """wisereport HTML 파싱으로 ETF 구성종목 동적 조회 (비중 상위 top_n)."""
         import re
@@ -1329,13 +1381,16 @@ class StockDataCollector:
         return result
 
     def get_kr_etf_constituents(self, stock_code: str, top_n: int = 5) -> List[str]:
-        """KR ETF 상위 구성종목 이름 목록 (비중순, pykrx 기반).
-        뉴스 수집 시 ETF 자체 + 구성종목 뉴스를 합치기 위해 사용.
-        우선순위: wisereport(naver_code 등록 시) → pykrx → top_holdings 하드코드"""
-        # ★ wisereport 시도 (사용자가 네이버 코드 등록한 경우)
+        """KR ETF 상위 구성종목 이름 목록 (비중순).
+        우선순위: naver coinfo(naver_code 등록 시) → wisereport → pykrx → top_holdings 하드코드"""
         naver_codes = self._load_etf_naver_codes()
         naver_code = naver_codes.get(stock_code)
         if naver_code:
+            # ★ 1순위: 네이버 coinfo 페이지 직접 파싱
+            result = self._get_kr_etf_constituents_naver_coinfo(naver_code, top_n=top_n)
+            if result:
+                return result
+            # ★ 2순위: wisereport (fallback)
             result = self._get_kr_etf_constituents_wisereport(naver_code, top_n=top_n)
             if result:
                 return result

@@ -299,7 +299,7 @@ function EtfRow({ label, value, suffix = '', color }) {
 }
 
 /** ETF 네이버 코드 등록/수정 인라인 편집기 */
-function EtfNaverCodeEditor({ krxCode }) {
+function EtfNaverCodeEditor({ krxCode, onSaved }) {
   const [currentCode, setCurrentCode] = useState(null); // null=로딩중
   const [editCode, setEditCode] = useState('');
   const [editing, setEditing] = useState(false);
@@ -322,7 +322,8 @@ function EtfNaverCodeEditor({ krxCode }) {
       await putEtfNaverCode(krxCode, editCode.trim());
       setCurrentCode(editCode.trim());
       setEditing(false);
-      Alert.alert('저장 완료', '다음 분석부터 구성종목을 자동으로 가져옵니다.');
+      Alert.alert('저장 완료', 'MA20/MA60 등 기술적 지표를 새로 가져옵니다.\n(새로고침 중...)');
+      if (onSaved) onSaved();
     } catch (e) {
       Alert.alert('저장 실패', e?.message || '오류');
     } finally {
@@ -563,7 +564,7 @@ function EtfSection({ etf, krxCode }) {
         </View>
       ) : null}
 
-      {isKR && krxCode ? <EtfNaverCodeEditor krxCode={krxCode} /> : null}
+      {isKR && krxCode ? <EtfNaverCodeEditor krxCode={krxCode} onSaved={() => load({ forceRefresh: true })} /> : null}
     </Section>
   );
 }
