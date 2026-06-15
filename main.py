@@ -383,6 +383,8 @@ class EtfInfo(BaseModel):
     market_cap_billion: Optional[float] = None     # 시가총액 (억원)
     shares_outstanding: Optional[int] = None       # 상장주식수
     foreign_holding: Optional[int] = None          # 외국인보유 (천주)
+    # 구성종목 (naver coinfo / wisereport / pykrx 파싱 결과)
+    constituents: Optional[List[str]] = None
 
 
 class Financials(BaseModel):
