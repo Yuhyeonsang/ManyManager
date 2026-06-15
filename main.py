@@ -1205,6 +1205,67 @@ def stock_report(ticker: str, refresh: bool = False):
         return report
 
 
+def _build_etf_beginner_prompt(report_text: str, name: str, ticker: str) -> str:
+    """ETF 전용 초보자용 Claude 질문 프롬프트."""
+    return f"""당신은 친절한 ETF 투자 선생님입니다.
+ETF를 처음 접하는 초보 투자자가 쉽게 이해할 수 있도록 아래 ETF 리포트를 분석해주세요.
+어려운 금융 용어는 반드시 쉬운 말로 풀어서 설명해주세요.
+
+[분석 ETF] {name} ({ticker})
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+아래 리포트를 보고 다음 4가지를 순서대로 설명해주세요:
+
+【1】 📰 뉴스 해설
+뉴스가 있다면 각각 아래 형식으로 설명해주세요:
+  ① 이 뉴스가 무슨 일인지 쉬운 말로 2~3줄 설명
+  ② 이 뉴스가 이 ETF(또는 ETF가 담고 있는 종목들)에 좋은 소식인지 나쁜 소식인지, 그 이유
+
+【2】 📦 이 ETF가 뭘 담고 있나요?
+  ▸ 기초지수 (추종지수)
+    - 이 ETF가 어떤 자산·테마를 따라가는지 쉽게 설명 (예: "AI 반도체 관련 상위 2개 종목에 집중 투자")
+    - 어떤 분야에 투자하고 싶은 사람에게 맞는 ETF인지
+
+  ▸ 구성 종목
+    - 리포트에 구성종목이 있다면 각 종목이 어떤 회사인지 간단히 소개
+    - 특정 종목 쏠림이 심한지 (집중 위험 vs 분산 효과)
+
+  ▸ 운용보수(TER)
+    - 이게 뭔지: "ETF를 보유하는 데 드는 연간 비용"
+    - 지금 수치가 싼 편인지 비싼 편인지 (0.5% 이하=저렴, 1% 이상=비싼 편)
+
+【3】 📊 투자 성과 & 타이밍 분석
+  ▸ NAV (순자산가치)
+    - 이게 뭔지: "ETF의 실제 가치. 현재 주가와 가깝다면 정상"
+    - 현재 NAV와 주가 차이가 크다면 의미 설명
+
+  ▸ 수익률 (1개월 / 3개월 / 1년)
+    - 각 기간 수익률이 좋은지 나쁜지, 시장 상황과 연결해서 설명
+    - N/A면 "아직 운용 기간이 짧아 데이터 없음"으로 설명
+
+  ▸ 52주 최고/최저가
+    - 지금 가격이 52주 고점 대비 어느 위치인지 (예: "고점 대비 14% 하락한 수준")
+    - 저점 대비 얼마나 올랐는지
+
+  ▸ 물타기 점수 / 불타기 점수 (있는 경우)
+    - 물타기: 저점에서 추가 매수하기 좋은 타이밍인지
+    - 불타기: 상승 모멘텀 탈 때 추가 매수하기 좋은 타이밍인지
+    - 점수 의미를 쉽게 설명하고, 지금 어떤 전략이 더 유리한지
+
+【4】 💡 초보자를 위한 최종 의견
+  - 이 ETF, 지금 어떻게 판단하나요? (매수 유망 / 관망 / 위험 중 하나 + 이유)
+  - 이 ETF에서 가장 기대되는 점 딱 1가지
+  - 꼭 조심해야 할 점 딱 1가지 (예: 특정 종목 쏠림, 환율 위험, 섹터 리스크 등)
+  - 한 줄 요약 (20자 이내)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+[📋 리포트 원문]
+{report_text}
+"""
+
+
 def _build_beginner_prompt(report_text: str, name: str, ticker: str) -> str:
     """리포트 원문을 초보 투자자용 Claude 질문 프롬프트로 감쌈."""
     return f"""당신은 친절한 주식 투자 선생님입니다.
@@ -1301,7 +1362,14 @@ def stock_clipboard(ticker: str, refresh: bool = False):
                 top_k_news=3,
                 max_related=8,
             )
-            text = _build_beginner_prompt(report_text, entry["name"], entry["ticker"])
+            # ETF 여부 감지: bundle에 etf_info 있거나 KR_ETF_UNIVERSE 코드이면 ETF
+            _is_etf = bool(bundle.get("etf_info")) or any(
+                e.get("code") == entry.get("code") for e in KR_ETF_UNIVERSE
+            )
+            if _is_etf:
+                text = _build_etf_beginner_prompt(report_text, entry["name"], entry["ticker"])
+            else:
+                text = _build_beginner_prompt(report_text, entry["name"], entry["ticker"])
             cache_set(cache_key, {"text": text})
             return ClipboardText(text=text)
         except Exception as e:
