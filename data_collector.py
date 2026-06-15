@@ -1228,7 +1228,7 @@ class StockDataCollector:
             log.debug(f"네이버 ETF 파싱 실패 ({naver_code}): {e}")
         return result
 
-    def _get_kr_etf_price_history_naver(self, naver_code: str, pages: int = 14) -> Dict:
+    def _get_kr_etf_price_history_naver(self, naver_code: str, pages: int = 7) -> Dict:
         """네이버 일별시세 페이지 파싱 → MA5/20/60/120·모멘텀·평균거래량 계산.
         https://finance.naver.com/item/sise_day.naver?code={naver_code}&page={n}
         EUC-KR 인코딩. 최대 pages*10 ≈ 140 거래일 수집.
@@ -1244,38 +1244,44 @@ class StockDataCollector:
         }
         rows = []  # [{"date": "2026.06.15", "close": 24800, "volume": 27440398}, ...]
 
-        try:
-            for page in range(1, pages + 1):
+        def _num(s):
+            s = re.sub(r"[^0-9]", "", s)
+            return int(s) if s else None
+
+        def _fetch_page(page: int):
+            """단일 페이지 파싱 → row 리스트 반환"""
+            try:
                 url = f"https://finance.naver.com/item/sise_day.naver?code={naver_code}&page={page}"
-                r = requests.get(url, headers=headers, timeout=10)
+                r = requests.get(url, headers=headers, timeout=8)
                 if r.status_code != 200:
-                    break
+                    return []
                 soup = BeautifulSoup(r.content, "html.parser", from_encoding="euc-kr")
                 table = soup.find("table", class_="type2")
                 if not table:
-                    break
-
+                    return []
+                page_rows = []
                 for tr in table.find_all("tr"):
                     tds = tr.find_all("td")
                     if len(tds) < 7:
                         continue
                     texts = [td.get_text(strip=True) for td in tds]
                     date_str = texts[0]
-                    # 날짜 형식: "2026.06.15"
                     if not re.match(r"\d{4}\.\d{2}\.\d{2}", date_str):
                         continue
-                    def _num(s):
-                        s = re.sub(r"[^0-9]", "", s)
-                        return int(s) if s else None
-
                     close = _num(texts[1])
                     volume = _num(texts[6])
                     if close:
-                        rows.append({"date": date_str, "close": close, "volume": volume or 0})
+                        page_rows.append({"date": date_str, "close": close, "volume": volume or 0})
+                return page_rows
+            except Exception:
+                return []
 
-                if len(rows) >= pages * 10:
-                    break
-
+        try:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=min(pages, 4)) as ex:
+                futures = {ex.submit(_fetch_page, p): p for p in range(1, pages + 1)}
+                for fut in as_completed(futures):
+                    rows.extend(fut.result())
         except Exception as e:
             log.debug(f"네이버 일별시세 파싱 실패 ({naver_code}): {e}")
 
