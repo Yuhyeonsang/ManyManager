@@ -780,7 +780,11 @@ class StockDataCollector:
             except Exception:
                 pass
             # ★ 일별시세 파싱 → MA20/MA60/모멘텀/평균거래량 계산
+            # wisereport 코드(e.g. 0167A0) 먼저 시도, 실패하면 KRX 코드(e.g. 476010) fallback
             naver_price = self._get_kr_etf_price_history_naver(naver_code)
+            if not naver_price and naver_code != stock_code:
+                log.warning(f"ETF {stock_code}: sise_day naver_code={naver_code} 실패, KRX코드로 재시도")
+                naver_price = self._get_kr_etf_price_history_naver(stock_code)
             if naver_price:
                 result["naver_price"] = naver_price
                 # 52주 고저: 일별시세에서 계산된 값이 더 정확하면 덮어씀
@@ -788,6 +792,8 @@ class StockDataCollector:
                     result["price_52w_high"] = naver_price["high_52w"]
                 if naver_price.get("low_52w") and not result.get("price_52w_low"):
                     result["price_52w_low"] = naver_price["low_52w"]
+            else:
+                log.warning(f"ETF {stock_code}: sise_day 파싱 실패 (naver_code={naver_code}, stock_code={stock_code}) → MA20/MA60 없음")
 
             # 핵심 데이터(NAV 또는 기초지수)가 있으면 pykrx 생략
             if result.get("nav") or result.get("benchmark_index"):
@@ -1337,7 +1343,7 @@ class StockDataCollector:
                 for fut in as_completed(futures):
                     rows.extend(fut.result())
         except Exception as e:
-            log.debug(f"네이버 일별시세 파싱 실패 ({naver_code}): {e}")
+            log.warning(f"네이버 일별시세 파싱 실패 ({naver_code}): {e}")
 
         if not rows:
             return {}
@@ -1388,14 +1394,17 @@ class StockDataCollector:
         naver_codes = self._load_etf_naver_codes()
         naver_code = naver_codes.get(stock_code)
         if naver_code:
-            # ★ 1순위: 네이버 coinfo 페이지 직접 파싱
-            result = self._get_kr_etf_constituents_naver_coinfo(naver_code, top_n=top_n)
+            # ★ 1순위: 네이버 coinfo 페이지 직접 파싱 (KRX 코드 먼저, 실패 시 wisereport 코드)
+            result = self._get_kr_etf_constituents_naver_coinfo(stock_code, top_n=top_n)
+            if not result and naver_code != stock_code:
+                result = self._get_kr_etf_constituents_naver_coinfo(naver_code, top_n=top_n)
             if result:
                 return result
             # ★ 2순위: wisereport (fallback)
             result = self._get_kr_etf_constituents_wisereport(naver_code, top_n=top_n)
             if result:
                 return result
+            log.warning(f"ETF {stock_code}: 구성종목 파싱 실패 (naver_code={naver_code}, wisereport도 실패)")
 
         if not _PYKRX_AVAILABLE:
             return []

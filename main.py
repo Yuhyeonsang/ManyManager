@@ -579,6 +579,7 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
     if etf_raw:
         trade_scores = _calc_etf_trade_scores(price_an, price, etf_raw)
         etf_raw.update(trade_scores)
+        bundle["etf_info"] = etf_raw  # ★ 복사본을 bundle에 반영 (ma20/water_score 등 report 엔드포인트에 전달)
 
     # Gemini 호출은 실패해도 계속 진행
     try:
