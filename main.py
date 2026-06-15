@@ -432,6 +432,7 @@ def _calc_etf_trade_scores(price_an: Dict, price: Dict, etf_raw: Dict) -> Dict:
     """
     물타기 점수(water): 저점 매수 적기도 (0=비추, 100=최적)
     불타기 점수(fire):  모멘텀 추가 매수 적기도 (0=비추, 100=최적)
+    yfinance 실패 시 Naver 데이터(52주 고저, 수익률)로 대체 계산.
     """
     pos = price_an.get("position_52w_pct")   # 52주 위치 %
     mom = price_an.get("momentum_10d_pct")   # 10일 모멘텀 %
@@ -441,6 +442,22 @@ def _calc_etf_trade_scores(price_an: Dict, price: Dict, etf_raw: Dict) -> Dict:
     cp = price_an.get("current_price")
     r1m = etf_raw.get("return_1m")
     r3m = etf_raw.get("return_3m")
+
+    # ── Naver 데이터로 pos/cp 보완 (yfinance 실패 시) ──────────────
+    hi52 = etf_raw.get("price_52w_high")
+    lo52 = etf_raw.get("price_52w_low")
+    nav = etf_raw.get("nav")
+    # cp가 없으면 NAV로 대체
+    if cp is None and nav:
+        cp = nav
+    # pos가 없으면 52주 고저+현재가로 계산
+    if pos is None and hi52 and lo52 and cp:
+        rng = hi52 - lo52
+        if rng > 0:
+            pos = round((cp - lo52) / rng * 100, 1)
+    # mom이 없으면 1개월 수익률을 방향 proxy로 사용 (4주≈10거래일×2)
+    if mom is None and r1m is not None:
+        mom = r1m / 2  # 1개월 절반치를 10일 모멘텀 근사값으로
 
     # ── 물타기 점수 ──────────────────────────────
     water = 0
@@ -497,8 +514,8 @@ def _calc_etf_trade_scores(price_an: Dict, price: Dict, etf_raw: Dict) -> Dict:
         "fire_score": fire,
         "water_reasons": water_r if water_r else ["뚜렷한 저점 신호 없음"],
         "fire_reasons": fire_r if fire_r else ["뚜렷한 상승 신호 없음"],
-        "price_52w_high": price.get("high_52w"),
-        "price_52w_low": price.get("low_52w"),
+        "price_52w_high": price.get("high_52w") or hi52,
+        "price_52w_low": price.get("low_52w") or lo52,
         "avg_volume_20d": price.get("avg_volume_20d"),
     }
 
@@ -527,8 +544,8 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
         etf_raw = dict(etf_raw)
         etf_raw["fund_name"] = name
 
-    # ★ ETF 물타기/불타기 점수 계산
-    if etf_raw and not price_an.get("error"):
+    # ★ ETF 물타기/불타기 점수 계산 (price_an 에러여도 Naver 데이터로 시도)
+    if etf_raw:
         trade_scores = _calc_etf_trade_scores(price_an, price, etf_raw)
         etf_raw.update(trade_scores)
 
