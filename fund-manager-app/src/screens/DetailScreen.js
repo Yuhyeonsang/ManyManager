@@ -412,7 +412,13 @@ function EtfSection({ etf, krxCode }) {
         <EtfRow label="NAV" value={etf.nav?.toLocaleString()} suffix="원" />
       ) : null}
       {isKR && etf.nav_diff_pct != null ? (
-        <EtfRow label="괴리율" value={etf.nav_diff_pct} suffix="%" color="auto" />
+        <EtfRow label="괴리율(NAV대비)" value={etf.nav_diff_pct} suffix="%" color="auto" />
+      ) : null}
+      {etf.daily_volume != null ? (
+        <EtfRow label="거래량(당일)" value={etf.daily_volume?.toLocaleString()} suffix="주" />
+      ) : null}
+      {etf.avg_volume_20d != null ? (
+        <EtfRow label="20일 평균거래량" value={Math.round(etf.avg_volume_20d)?.toLocaleString()} suffix="주" />
       ) : null}
 
       {etf.total_assets_billion != null ? (
@@ -441,10 +447,6 @@ function EtfSection({ etf, krxCode }) {
           </Text>
         </View>
       ) : null}
-      {etf.avg_volume_20d != null ? (
-        <EtfRow label="20일 평균거래량" value={Math.round(etf.avg_volume_20d)?.toLocaleString()} suffix="주" />
-      ) : null}
-
       {/* 수익률 — KR: 1m/3m/6m/1y, US: 1m/3m/YTD */}
       <View style={styles.etfReturnRow}>
         {(isKR

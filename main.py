@@ -368,6 +368,7 @@ class EtfInfo(BaseModel):
     price_52w_high: Optional[float] = None
     price_52w_low: Optional[float] = None
     avg_volume_20d: Optional[float] = None
+    daily_volume: Optional[int] = None       # 당일 거래량 (KR, 네이버)
 
 
 class Financials(BaseModel):

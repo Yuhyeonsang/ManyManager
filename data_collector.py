@@ -1070,42 +1070,29 @@ class StockDataCollector:
                     return None
 
             # ── 테이블 행 순회 ────────────────────────────────────
-            for tr in soup.find_all("tr"):
-                tds = tr.find_all(["td", "th"])
-                if len(tds) < 2:
-                    continue
-                key = _clean(tds[0].get_text())
-                val = _clean(tds[1].get_text())
-
+            def _proc_kv(key: str, val: str):
+                """key-value 쌍에서 ETF 지표 추출 (result에 직접 저장)."""
                 # 기초지수
                 if "기초지수" in key and len(val) > 2 and "benchmark_index" not in result:
                     result["benchmark_index"] = val
-
-                # 수익률 — 텍스트가 '수익률' 포함 + 기간 키워드
+                # 수익률
                 elif "1개월" in key and "수익률" in key:
                     v = _parse_pct(val)
-                    if v is not None:
-                        result["return_1m"] = v
+                    if v is not None: result["return_1m"] = v
                 elif "3개월" in key and "수익률" in key:
                     v = _parse_pct(val)
-                    if v is not None:
-                        result["return_3m"] = v
+                    if v is not None: result["return_3m"] = v
                 elif "6개월" in key and "수익률" in key:
                     v = _parse_pct(val)
-                    if v is not None:
-                        result["return_6m"] = v
+                    if v is not None: result["return_6m"] = v
                 elif "1년" in key and "수익률" in key:
                     v = _parse_pct(val)
-                    if v is not None:
-                        result["return_1y"] = v
-
-                # NAV (행 키에 "NAV" 포함)
+                    if v is not None: result["return_1y"] = v
+                # NAV
                 elif "NAV" in key and "nav" not in result:
                     v = _parse_num(val)
-                    if v and v > 0:
-                        result["nav"] = v
-
-                # 52주 최고/최저 — '26,01518,830' 처럼 붙어있음
+                    if v and v > 0: result["nav"] = v
+                # 52주 최고/최저
                 elif "52주" in key and ("고" in key or "저" in key or "최" in key):
                     nums = re.findall(r"[\d,]+", val)
                     if len(nums) >= 2:
@@ -1114,12 +1101,10 @@ class StockDataCollector:
                             result["price_52w_low"] = float(nums[1].replace(",", ""))
                         except ValueError:
                             pass
-
                 # 자산운용사
                 elif "자산운용사" in key and "fund_family" not in result:
                     result["fund_family"] = val
-
-                # 시가총액 (AUM) — '6조▲...339억원' 혼재 형식
+                # 시가총액 (AUM)
                 elif "시가총액" in key and "total_assets_billion" not in result:
                     jo_m = re.search(r"([\d,]+)조", val)
                     eok_m = re.search(r"([\d,]+)억", val)
@@ -1127,19 +1112,55 @@ class StockDataCollector:
                         jo = float(jo_m.group(1).replace(",", "")) if jo_m else 0.0
                         eok = float(eok_m.group(1).replace(",", "")) if eok_m else 0.0
                         total_eok = jo * 10000 + eok
-                        if total_eok > 0:
-                            result["total_assets_billion"] = round(total_eok, 0)  # 억원 단위
+                        if total_eok > 0: result["total_assets_billion"] = round(total_eok, 0)
                     except (ValueError, AttributeError):
                         pass
-
                 # 펀드보수 / 총보수
                 elif ("펀드보수" in key or "총보수" in key) and "expense_ratio_pct" not in result:
                     m = re.search(r"([\d.]+)\s*%", val)
                     if m:
+                        try: result["expense_ratio_pct"] = float(m.group(1))
+                        except ValueError: pass
+                # 거래량 (일 거래량)
+                elif "거래량" in key and "daily_volume" not in result:
+                    nums = re.findall(r"[\d,]+", val)
+                    if nums:
+                        try: result["daily_volume"] = int(nums[0].replace(",", ""))
+                        except ValueError: pass
+                # 전일가 / 현재가 (괴리율 계산용)
+                elif ("전일" in key or "현재" in key) and "prev_close" not in result:
+                    nums = re.findall(r"[\d,]+", key + val)
+                    if nums:
                         try:
-                            result["expense_ratio_pct"] = float(m.group(1))
-                        except ValueError:
-                            pass
+                            v = float(nums[0].replace(",", ""))
+                            if v > 1000: result["prev_close"] = v
+                        except ValueError: pass
+
+            for tr in soup.find_all("tr"):
+                tds = tr.find_all(["td", "th"])
+                if len(tds) < 2:
+                    continue
+                # 2열(key-val) 기본 처리
+                key0 = _clean(tds[0].get_text())
+                val1 = _clean(tds[1].get_text())
+                _proc_kv(key0, val1)
+                # 3열 이상 행: 추가 key-val 쌍 탐색 (예: 전일|고가|거래량 행)
+                for i in range(2, len(tds) - 1, 2):
+                    _proc_kv(_clean(tds[i].get_text()), _clean(tds[i+1].get_text()))
+                # 단일 셀에 '거래량'이 포함된 경우 (예: '거래량35,282,843')
+                for td in tds:
+                    raw = _clean(td.get_text())
+                    if "거래량" in raw and "daily_volume" not in result:
+                        nums = re.findall(r"[\d,]{4,}", raw)
+                        if nums:
+                            try: result["daily_volume"] = int(max(nums, key=len).replace(",", ""))
+                            except ValueError: pass
+
+            # 괴리율 계산 (NAV vs 전일가)
+            if result.get("nav") and result.get("prev_close"):
+                nav = result["nav"]
+                price = result["prev_close"]
+                result["nav_diff_pct"] = round((price - nav) / nav * 100, 2)
 
             if result:
                 log.info(f"네이버 ETF 파싱 성공 ({naver_code}): {list(result.keys())}")
