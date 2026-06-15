@@ -369,6 +369,15 @@ class EtfInfo(BaseModel):
     price_52w_low: Optional[float] = None
     avg_volume_20d: Optional[float] = None
     daily_volume: Optional[int] = None       # 당일 거래량 (KR, 네이버)
+    # 시세 상세 (네이버 sise 페이지)
+    change_pct: Optional[float] = None       # 당일 등락률 %
+    day_open: Optional[int] = None           # 시가
+    day_high: Optional[int] = None           # 당일 고가
+    day_low: Optional[int] = None            # 당일 저가
+    trading_value_billion: Optional[float] = None  # 거래대금 (억원)
+    market_cap_billion: Optional[float] = None     # 시가총액 (억원)
+    shares_outstanding: Optional[int] = None       # 상장주식수
+    foreign_holding: Optional[int] = None          # 외국인보유 (천주)
 
 
 class Financials(BaseModel):
@@ -538,6 +547,16 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
 
     price_an = sem.analyze_price(price)
     fin_an = sem.analyze_financials(fin)
+
+    # ★ ETF: yfinance 실패 시 네이버 일별시세 데이터로 price_an 대체
+    etf_raw_pre = bundle.get("etf_info")
+    if etf_raw_pre and price_an.get("error") and etf_raw_pre.get("naver_price"):
+        naver_price = etf_raw_pre["naver_price"]
+        price_an_naver = sem.analyze_price(naver_price)
+        if not price_an_naver.get("error"):
+            price_an = price_an_naver
+            price = naver_price  # _calc_etf_trade_scores용 price도 교체
+            log.info(f"ETF {ticker}: 네이버 일별시세 기반 price_an 사용")
     etf_raw = bundle.get("etf_info")  # ETF면 Dict, 아니면 None
     # ★ fund_name 보정: naver/pykrx 이름보다 검색 name이 더 정확 (잘못된 코드 매핑 대응)
     if etf_raw and name:

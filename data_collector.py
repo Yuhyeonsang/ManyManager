@@ -779,6 +779,16 @@ class StockDataCollector:
                         result["fund_name"] = rt["name"]
             except Exception:
                 pass
+            # ★ 일별시세 파싱 → MA20/MA60/모멘텀/평균거래량 계산
+            naver_price = self._get_kr_etf_price_history_naver(naver_code)
+            if naver_price:
+                result["naver_price"] = naver_price
+                # 52주 고저: 일별시세에서 계산된 값이 더 정확하면 덮어씀
+                if naver_price.get("high_52w") and not result.get("price_52w_high"):
+                    result["price_52w_high"] = naver_price["high_52w"]
+                if naver_price.get("low_52w") and not result.get("price_52w_low"):
+                    result["price_52w_low"] = naver_price["low_52w"]
+
             # 핵심 데이터(NAV 또는 기초지수)가 있으면 pykrx 생략
             if result.get("nav") or result.get("benchmark_index"):
                 log.info(f"ETF {stock_code} 네이버 파싱 데이터 사용 완료")
@@ -1122,18 +1132,48 @@ class StockDataCollector:
                         try: result["expense_ratio_pct"] = float(m.group(1))
                         except ValueError: pass
                 # 거래량 (일 거래량)
-                elif "거래량" in key and "daily_volume" not in result:
+                elif "거래량" in key and "거래대금" not in key and "daily_volume" not in result:
                     nums = re.findall(r"[\d,]+", val)
                     if nums:
                         try: result["daily_volume"] = int(nums[0].replace(",", ""))
                         except ValueError: pass
                 # 전일가 / 현재가 (괴리율 계산용)
-                elif ("전일" in key or "현재" in key) and "prev_close" not in result:
+                elif ("전일" in key or "현재가" in key) and "prev_close" not in result:
                     nums = re.findall(r"[\d,]+", key + val)
                     if nums:
                         try:
                             v = float(nums[0].replace(",", ""))
                             if v > 1000: result["prev_close"] = v
+                        except ValueError: pass
+                # 등락률 (당일 변동률 %)
+                elif "등락률" in key and "change_pct" not in result:
+                    result["change_pct"] = _parse_pct(val)
+                # 시가 (오늘 시가, 시가총액과 구별 위해 key가 정확히 "시가"여야 함)
+                elif key.strip() == "시가" and "day_open" not in result:
+                    v = _parse_num(val)
+                    if v and v > 0: result["day_open"] = int(v)
+                # 고가
+                elif key.strip() == "고가" and "day_high" not in result:
+                    v = _parse_num(val)
+                    if v and v > 0: result["day_high"] = int(v)
+                # 저가
+                elif key.strip() == "저가" and "day_low" not in result:
+                    v = _parse_num(val)
+                    if v and v > 0: result["day_low"] = int(v)
+                # 거래대금 (백만원 단위)
+                elif "거래대금" in key and "trading_value_billion" not in result:
+                    v = _parse_num(val)
+                    if v and v > 0:
+                        result["trading_value_billion"] = round(v / 10, 1)  # 백만→억원
+                # 상장주식수
+                elif "상장주식수" in key and "shares_outstanding" not in result:
+                    v = _parse_num(val)
+                    if v and v > 0: result["shares_outstanding"] = int(v)
+                # 외국인현재 (천주)
+                elif "외국인" in key and "foreign_holding" not in result:
+                    nums = re.findall(r"[\d,]+", val)
+                    if nums:
+                        try: result["foreign_holding"] = int(nums[0].replace(",", ""))
                         except ValueError: pass
 
             for tr in soup.find_all("tr"):
@@ -1162,12 +1202,124 @@ class StockDataCollector:
                 price = result["prev_close"]
                 result["nav_diff_pct"] = round((price - nav) / nav * 100, 2)
 
+            # ── sise.naver 추가 파싱 (시세 탭: 등락률·시가·고가·저가·시가총액 등) ──
+            try:
+                sise_url = f"https://finance.naver.com/item/sise.naver?code={naver_code}"
+                rs = requests.get(sise_url, headers=headers, timeout=10)
+                if rs.status_code == 200:
+                    ss = BeautifulSoup(rs.content, "html.parser", from_encoding="euc-kr")
+                    for tr in ss.find_all("tr"):
+                        tds = tr.find_all(["td", "th"])
+                        if len(tds) < 2:
+                            continue
+                        key0 = _clean(tds[0].get_text())
+                        val1 = _clean(tds[1].get_text())
+                        _proc_kv(key0, val1)
+                        for i in range(2, len(tds) - 1, 2):
+                            _proc_kv(_clean(tds[i].get_text()), _clean(tds[i+1].get_text()))
+            except Exception as e2:
+                log.debug(f"네이버 sise 파싱 실패 ({naver_code}): {e2}")
+
             if result:
                 log.info(f"네이버 ETF 파싱 성공 ({naver_code}): {list(result.keys())}")
             else:
                 log.debug(f"네이버 ETF 파싱 결과 없음 ({naver_code})")
         except Exception as e:
             log.debug(f"네이버 ETF 파싱 실패 ({naver_code}): {e}")
+        return result
+
+    def _get_kr_etf_price_history_naver(self, naver_code: str, pages: int = 14) -> Dict:
+        """네이버 일별시세 페이지 파싱 → MA5/20/60/120·모멘텀·평균거래량 계산.
+        https://finance.naver.com/item/sise_day.naver?code={naver_code}&page={n}
+        EUC-KR 인코딩. 최대 pages*10 ≈ 140 거래일 수집.
+        반환: price 딕셔너리 (analyze_price 호환)
+        """
+        import re
+        if not _BS4_AVAILABLE:
+            return {}
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept-Language": "ko-KR,ko;q=0.9",
+            "Referer": f"https://finance.naver.com/item/main.naver?code={naver_code}",
+        }
+        rows = []  # [{"date": "2026.06.15", "close": 24800, "volume": 27440398}, ...]
+
+        try:
+            for page in range(1, pages + 1):
+                url = f"https://finance.naver.com/item/sise_day.naver?code={naver_code}&page={page}"
+                r = requests.get(url, headers=headers, timeout=10)
+                if r.status_code != 200:
+                    break
+                soup = BeautifulSoup(r.content, "html.parser", from_encoding="euc-kr")
+                table = soup.find("table", class_="type2")
+                if not table:
+                    break
+
+                for tr in table.find_all("tr"):
+                    tds = tr.find_all("td")
+                    if len(tds) < 7:
+                        continue
+                    texts = [td.get_text(strip=True) for td in tds]
+                    date_str = texts[0]
+                    # 날짜 형식: "2026.06.15"
+                    if not re.match(r"\d{4}\.\d{2}\.\d{2}", date_str):
+                        continue
+                    def _num(s):
+                        s = re.sub(r"[^0-9]", "", s)
+                        return int(s) if s else None
+
+                    close = _num(texts[1])
+                    volume = _num(texts[6])
+                    if close:
+                        rows.append({"date": date_str, "close": close, "volume": volume or 0})
+
+                if len(rows) >= pages * 10:
+                    break
+
+        except Exception as e:
+            log.debug(f"네이버 일별시세 파싱 실패 ({naver_code}): {e}")
+
+        if not rows:
+            return {}
+
+        # 오래된 순으로 정렬 (최신이 먼저 들어오므로 reverse)
+        rows.sort(key=lambda x: x["date"])
+
+        closes = [r["close"] for r in rows]
+        volumes = [r["volume"] for r in rows]
+        n = len(closes)
+
+        def _ma(lst, w):
+            if len(lst) >= w:
+                return round(sum(lst[-w:]) / w)
+            return None
+
+        ma5 = _ma(closes, 5)
+        ma20 = _ma(closes, 20)
+        ma60 = _ma(closes, 60)
+        ma120 = _ma(closes, 120)
+        avg_vol_20 = int(sum(volumes[-20:]) / min(20, len(volumes))) if volumes else None
+
+        # 10일 모멘텀
+        recent_10 = [{"close": c} for c in closes[-10:]]
+
+        # 52주 고저: 최근 250 거래일 (보유 데이터 내에서)
+        hi52 = max(closes[-250:]) if closes else None
+        lo52 = min(closes[-250:]) if closes else None
+
+        current_price = closes[-1] if closes else None
+
+        result = {
+            "current_price": current_price,
+            "high_52w": hi52,
+            "low_52w": lo52,
+            "moving_averages": {"MA5": ma5, "MA20": ma20, "MA60": ma60, "MA120": ma120},
+            "recent_10d": recent_10,
+            "avg_volume_20d": avg_vol_20,
+            "_source": "naver_sise_day",
+            "_days": n,
+        }
+        log.info(f"네이버 일별시세 파싱 성공 ({naver_code}): {n}일치, MA20={ma20}, MA60={ma60}")
         return result
 
     def get_kr_etf_constituents(self, stock_code: str, top_n: int = 5) -> List[str]:

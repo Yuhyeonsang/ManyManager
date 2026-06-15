@@ -485,6 +485,62 @@ function EtfSection({ etf, krxCode }) {
         <EtfRow label="베타 (3년)" value={etf.beta} />
       ) : null}
 
+      {/* 당일 시세 상세 */}
+      {isKR && (etf.day_open != null || etf.change_pct != null) ? (
+        <View style={{ marginTop: 8 }}>
+          <Text style={[styles.sectionSubtitle, { marginBottom: 4 }]}>당일 시세</Text>
+          <View style={styles.etfGridRow}>
+            {etf.day_open != null ? (
+              <View style={styles.etfGridCell}>
+                <Text style={styles.etfGridLabel}>시가</Text>
+                <Text style={styles.etfGridValue}>{etf.day_open?.toLocaleString()}원</Text>
+              </View>
+            ) : null}
+            {etf.day_high != null ? (
+              <View style={styles.etfGridCell}>
+                <Text style={styles.etfGridLabel}>고가</Text>
+                <Text style={[styles.etfGridValue, { color: '#DC2626' }]}>{etf.day_high?.toLocaleString()}원</Text>
+              </View>
+            ) : null}
+            {etf.day_low != null ? (
+              <View style={styles.etfGridCell}>
+                <Text style={styles.etfGridLabel}>저가</Text>
+                <Text style={[styles.etfGridValue, { color: '#2563EB' }]}>{etf.day_low?.toLocaleString()}원</Text>
+              </View>
+            ) : null}
+            {etf.change_pct != null ? (
+              <View style={styles.etfGridCell}>
+                <Text style={styles.etfGridLabel}>등락률</Text>
+                <Text style={[styles.etfGridValue,
+                  etf.change_pct > 0 ? { color: '#DC2626' } : etf.change_pct < 0 ? { color: '#2563EB' } : {}
+                ]}>
+                  {etf.change_pct > 0 ? '+' : ''}{etf.change_pct}%
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        </View>
+      ) : null}
+
+      {/* 시장 정보 */}
+      {isKR && (etf.market_cap_billion != null || etf.shares_outstanding != null || etf.trading_value_billion != null || etf.foreign_holding != null) ? (
+        <View style={{ marginTop: 8 }}>
+          <Text style={[styles.sectionSubtitle, { marginBottom: 4 }]}>시장 정보</Text>
+          {etf.market_cap_billion != null ? (
+            <EtfRow label="시가총액" value={`${etf.market_cap_billion?.toLocaleString()}억원`} />
+          ) : null}
+          {etf.trading_value_billion != null ? (
+            <EtfRow label="거래대금(당일)" value={`${etf.trading_value_billion?.toLocaleString()}억원`} />
+          ) : null}
+          {etf.shares_outstanding != null ? (
+            <EtfRow label="상장주식수" value={`${etf.shares_outstanding?.toLocaleString()}주`} />
+          ) : null}
+          {etf.foreign_holding != null ? (
+            <EtfRow label="외국인보유" value={`${etf.foreign_holding?.toLocaleString()}천주`} />
+          ) : null}
+        </View>
+      ) : null}
+
       {/* 물타기 / 불타기 점수 */}
       {(etf.water_score != null || etf.fire_score != null) ? (
         <View style={styles.tradeScoreSection}>
@@ -780,6 +836,38 @@ const styles = StyleSheet.create({
   },
   etf52wLabel: { fontSize: 12, color: '#64748B', fontWeight: '500' },
   etf52wVal: { fontSize: 12, color: '#0F172A' },
+
+  // 당일 시세 그리드
+  sectionSubtitle: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: '#64748B',
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+    marginTop: 8,
+  },
+  etfGridRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    marginTop: 4,
+    marginHorizontal: -4,
+  },
+  etfGridCell: {
+    width: '25%',
+    paddingHorizontal: 4,
+    paddingVertical: 6,
+    alignItems: 'center',
+  },
+  etfGridLabel: {
+    fontSize: 11,
+    color: '#64748B',
+    marginBottom: 2,
+  },
+  etfGridValue: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: '#0F172A',
+  },
 
   // 물타기/불타기 점수
   tradeScoreSection: {
