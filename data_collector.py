@@ -1529,6 +1529,9 @@ class StockDataCollector:
                     log.debug(f"ETF 구성종목 뉴스 실패 ({cname}): {e}")
             if const_items:
                 etf_constituent_news = {"items": const_items}
+            # 구성종목 이름 리스트를 etf_info에도 저장 (리포트 텍스트에 포함)
+            if constituents and etf_info:
+                etf_info["constituents"] = constituents
         elif not stock_code:
             # US 종목 — ETF 여부 mm 에서 확인 (yfinance quoteType)
             us_etf = self.get_us_etf_metrics(ticker)

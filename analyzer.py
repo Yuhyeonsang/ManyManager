@@ -655,6 +655,13 @@ class ReportBuilder:
         const_items = const_news.get("items", []) if const_news else []
 
         price_an = self.sem.analyze_price(price)
+        # ★ yfinance 실패 시 naver_price로 대체
+        if price_an.get("error") and etf.get("naver_price"):
+            _np = etf["naver_price"]
+            _np_an = self.sem.analyze_price(_np)
+            if not _np_an.get("error"):
+                price_an = _np_an
+                price = _np
         # Gemini 필터 → 실패 시 raw fallback
         etf_picks = self.gemini.filter_news(etf_items, top_k=top_k_news) if etf_items else []
         if not etf_picks or etf_picks[0].get("error"):
@@ -700,6 +707,10 @@ class ReportBuilder:
             L.append(f"  - NAV: {etf['nav']:,}원")
         if is_kr and etf.get("nav_diff_pct") is not None:
             L.append(f"  - 괴리율: {etf['nav_diff_pct']:+.2f}%")
+        # 구성종목 (collect_all에서 파싱한 실제 데이터)
+        constituents = etf.get("constituents") or []
+        if constituents:
+            L.append(f"  - 주요 구성종목: {', '.join(constituents)}")
 
         # [2] 수익률 성과
         L.append("\n[2] 수익률 성과")

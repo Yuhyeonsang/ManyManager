@@ -1248,7 +1248,11 @@ def _build_etf_beginner_prompt(report_text: str, name: str, ticker: str) -> str:
     return f"""당신은 ETF 투자 전문가입니다.
 아래 ETF 리포트를 바탕으로 초보 투자자도 이해할 수 있게 분석해주세요.
 어려운 금융 용어는 쉬운 말로 풀고, 수치마다 "좋다/나쁘다/보통" 판단을 명확히 해주세요.
-추측이 아닌 리포트 데이터에 근거해서 분석하되, 데이터가 없으면 솔직히 "데이터 없음"이라고 하세요.
+
+⚠️ 절대 규칙:
+- 리포트에 없는 내용은 절대 추측하지 마세요. 특히 구성종목·비중·종목명은 리포트에 명시된 것만 언급하세요.
+- 기초지수 이름에서 유추해서 "아마 XX가 포함될 것"이라는 식의 추측도 금지입니다.
+- 데이터가 없으면 "리포트에 데이터 없음 — 운용사 공시 확인 필요"라고 표시하세요.
 
 [분석 ETF] {name} ({ticker})
 
@@ -1265,7 +1269,7 @@ def _build_etf_beginner_prompt(report_text: str, name: str, ticker: str) -> str:
 
 【2】 📦 이 ETF 핵심 구조 파악
   ▸ 기초지수: 이 ETF가 어떤 테마·자산을 추종하는지 쉽게 설명
-  ▸ 구성종목: 각 종목이 어떤 회사인지 + 비중이 한쪽에 쏠려 있는지 (집중 위험 여부)
+  ▸ 구성종목: 리포트에 구성종목 목록이 있는 경우에만 각 회사 설명 + 쏠림 위험 언급. 없으면 "구성종목 데이터 없음 — 운용사 공시 또는 ETF 홈페이지에서 확인"이라고만 쓰세요. 절대 추측하지 마세요.
   ▸ 운용보수: 연간 비용이 저렴한지 비싼지 (기준: 0.3% 이하=매우 저렴, 0.5~1%=보통, 1% 초과=비쌈)
   ▸ 총운용자산: 규모가 크면 유동성 좋음, 작으면 거래 불편할 수 있음
 
@@ -1273,8 +1277,8 @@ def _build_etf_beginner_prompt(report_text: str, name: str, ticker: str) -> str:
   ▸ 수익률 (1개월 / 3개월 / 1년): 각 수치가 시장 대비 좋은지 나쁜지 판단. N/A면 "신규 ETF라 데이터 없음"
   ▸ 52주 최고/최저: 현재가가 어디쯤 있는지 % 계산해서 설명 (예: "고점 대비 7% 하락, 저점 대비 32% 상승")
   ▸ NAV vs 현재가: 괴리가 있다면 왜 생기는지 설명
-  ▸ 물타기💧 점수 해석: 점수가 의미하는 것 + 지금 저점 매수 타이밍인지
-  ▸ 불타기🔥 점수 해석: 점수가 의미하는 것 + 지금 모멘텀 추가 매수 타이밍인지
+  ▸ 물타기💧 점수 해석: 리포트에 물타기 점수가 있으면 점수 의미 + 저점 매수 타이밍 해석. 점수가 없거나 "N/A"면 이 항목 자체를 생략하세요 (오류라고 쓰지 말 것).
+  ▸ 불타기🔥 점수 해석: 리포트에 불타기 점수가 있으면 점수 의미 + 모멘텀 추가 매수 해석. 점수가 없거나 "N/A"면 이 항목 자체를 생략하세요 (오류라고 쓰지 말 것).
 
 【4】 🔭 앞으로의 전망
   ▸ 단기 전망 (1~4주): 뉴스·수익률·차트 위치를 종합해서 단기 방향성 예측
@@ -1385,6 +1389,21 @@ def stock_clipboard(ticker: str, refresh: bool = False):
                 news_query=entry["name"],
                 stock_code=entry["code"],
             )
+            # ★ ETF: 물타기/불타기 점수 계산 + naver_price로 price 대체
+            _etf_raw = bundle.get("etf_info")
+            if _etf_raw:
+                _price = bundle.get("price") or {}
+                _price_an = sem.analyze_price(_price)
+                if _price_an.get("error") and _etf_raw.get("naver_price"):
+                    _np = _etf_raw["naver_price"]
+                    _price_an_n = sem.analyze_price(_np)
+                    if not _price_an_n.get("error"):
+                        _price_an = _price_an_n
+                        _price = _np
+                        bundle["price"] = _np  # _build_etf도 이 price 사용
+                _ts = _calc_etf_trade_scores(_price_an, _price, _etf_raw)
+                _etf_raw.update(_ts)
+
             report_text = report_builder.build(
                 ticker=entry["ticker"],
                 bundle=bundle,
