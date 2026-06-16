@@ -140,6 +140,15 @@ export async function getFavorites() {
   return rows;
 }
 
+export async function updateFavoriteName(ticker, name) {
+  if (!name || !ticker) return;
+  const db = await getDB();
+  await db.runAsync(
+    'UPDATE favorites SET name = ? WHERE ticker = ?;',
+    [name, ticker]
+  );
+}
+
 export async function isFavorite(ticker) {
   const db = await getDB();
   const row = await db.getFirstAsync(

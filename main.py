@@ -41,6 +41,7 @@ from data_collector import (
     get_hot_stocks_us,
     get_hot_stocks_mixed,
     to_yf_ticker,
+    get_kr_etf_info_list,
 )
 from analyzer import (
     GeminiNewsFilter,
@@ -672,6 +673,11 @@ def find_watch_entry(ticker_or_code: str) -> Optional[Dict]:
     for s in KR_ETF_UNIVERSE:
         if t == s["code"] or t == s["code"] + ".KS":
             return {"ticker": f"{s['code']}.KS", "code": s["code"], "name": s["name"], "region": "KR"}
+    # 2.5) KR ETF 동적 목록 (pykrx — KR_ETF_UNIVERSE에 없는 신규 ETF 커버)
+    for s in get_kr_etf_info_list():
+        code = s.get("code", "")
+        if t == code or t == code + ".KS":
+            return {"ticker": f"{code}.KS", "code": code, "name": s.get("name", code), "region": "KR"}
     # 3) 미국 마스터에서
     for s in US_STOCK_UNIVERSE:
         if t == s["code"]:

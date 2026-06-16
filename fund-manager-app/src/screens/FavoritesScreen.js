@@ -14,7 +14,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 
 import GradeBadge from '../components/GradeBadge';
 import { fetchStockReport } from '../services/api';
-import { getFavorites, removeFavorite, getCachedReport } from '../services/database';
+import { getFavorites, removeFavorite, getCachedReport, updateFavoriteName } from '../services/database';
 
 // ─────────────────────────────────────────────
 // 메인 화면
@@ -66,10 +66,19 @@ export default function FavoritesScreen({ navigation }) {
         }
       }
       if (!isMounted.current) return;
+
+      // ★ report에서 이름이 왔는데 DB에 코드만 저장돼 있으면 갱신
+      const reportName = report?.name;
+      const codeOnly = !f.name || f.name === f.ticker || /^\d{6}$/.test(f.name);
+      if (reportName && codeOnly && reportName !== f.ticker) {
+        updateFavoriteName(f.ticker, reportName).catch(() => {});
+        f = { ...f, name: reportName };
+      }
+
       setItems((prev) =>
         prev.map((item) =>
           item.ticker === f.ticker
-            ? { ...item, report, loading: false, error }
+            ? { ...item, report, loading: false, error, name: f.name }
             : item
         )
       );

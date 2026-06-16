@@ -2032,6 +2032,7 @@ KR_ETF_UNIVERSE: List[Dict] = [
     {"code": "371460", "name": "KODEX AI반도체핵심장비",              "market": "ETF", "type": "ETF"},
     {"code": "463890", "name": "KODEX AI전력핵심인프라",              "market": "ETF", "type": "ETF"},
     {"code": "486290", "name": "KODEX AI핵심설비",                    "market": "ETF", "type": "ETF"},
+    {"code": "487240", "name": "KODEX AI전력핵심설비",                "market": "ETF", "type": "ETF"},
     {"code": "489600", "name": "KODEX 미국AI반도체핵심기술",          "market": "ETF", "type": "ETF"},
     # TIGER (미래에셋자산운용)
     {"code": "102110", "name": "TIGER 200",                           "market": "ETF", "type": "ETF"},
