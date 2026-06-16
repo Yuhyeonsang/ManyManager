@@ -2105,42 +2105,50 @@ def search_stocks(query: str, limit: int = 20) -> List[Dict]:
         return (qu in code.upper() or qu in nu or
                 (len(q_tokens) > 1 and _token_match(q_tokens, name)))
 
-    all_universe = KR_STOCK_UNIVERSE + KR_ETF_UNIVERSE + US_STOCK_UNIVERSE + US_ETF_UNIVERSE
-    for s in all_universe:
-        name = s.get("name", "")
+    # 1) KR 주식 (하드코딩 — 정확)
+    for s in KR_STOCK_UNIVERSE:
         code = s.get("code", "")
-        if _matches(name, code):
-            if code not in seen:
-                seen.add(code)
-                out.append({
-                    "code": code,
-                    "name": name,
-                    "market": s.get("market"),
-                    "ticker": to_yf_ticker(code),
-                    "region": "KR" if code.isdigit() and len(code) == 6 else "US",
-                    "type": s.get("type", "STOCK"),
-                })
-            if len(out) >= limit:
-                return out
+        name = s.get("name", "")
+        if _matches(name, code) and code not in seen:
+            seen.add(code)
+            out.append({"code": code, "name": name, "market": s.get("market"),
+                        "ticker": to_yf_ticker(code), "region": "KR", "type": s.get("type", "STOCK")})
+        if len(out) >= limit:
+            return out
 
-    # ★ KR ETF 이름 검색 (KRX 전체 ETF 목록 — "KODEX 200", "SOL AI반도체" 등)
-    if len(out) < limit:
-        for etf in get_kr_etf_info_list():
-            code = etf.get("code", "")
-            name = etf.get("name", "")
-            if _matches(name, code):
-                if code not in seen:
-                    seen.add(code)
-                    out.append({
-                        "code": code,
-                        "name": name,
-                        "market": "ETF",
-                        "ticker": f"{code}.KS",
-                        "region": "KR",
-                        "type": "ETF",
-                    })
-                if len(out) >= limit:
-                    break
+    # 2) KR ETF — pykrx 동적 목록 우선 (KRX 실제 이름, 신규 ETF 자동 포함)
+    for etf in get_kr_etf_info_list():
+        code = etf.get("code", "")
+        name = etf.get("name", "")
+        if _matches(name, code) and code not in seen:
+            seen.add(code)
+            out.append({"code": code, "name": name, "market": "ETF",
+                        "ticker": f"{code}.KS", "region": "KR", "type": "ETF"})
+        if len(out) >= limit:
+            return out
+
+    # 3) KR ETF — 하드코딩 fallback (pykrx 로드 전 or 누락 코드용)
+    for s in KR_ETF_UNIVERSE:
+        code = s.get("code", "")
+        name = s.get("name", "")
+        if _matches(name, code) and code not in seen:
+            seen.add(code)
+            out.append({"code": code, "name": name, "market": s.get("market"),
+                        "ticker": to_yf_ticker(code), "region": "KR", "type": s.get("type", "ETF")})
+        if len(out) >= limit:
+            return out
+
+    # 4) 미국
+    for s in US_STOCK_UNIVERSE + US_ETF_UNIVERSE:
+        code = s.get("code", "")
+        name = s.get("name", "")
+        if _matches(name, code) and code not in seen:
+            seen.add(code)
+            out.append({"code": code, "name": name, "market": s.get("market"),
+                        "ticker": to_yf_ticker(code), "region": "KR" if code.isdigit() and len(code) == 6 else "US",
+                        "type": s.get("type", "STOCK")})
+        if len(out) >= limit:
+            return out
 
     # 유니버스에 없는 티커를 정확히 입력한 경우 — 그대로 허용
     if not out and qu:
