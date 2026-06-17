@@ -99,8 +99,9 @@ SNOWBALL_TQQQ = {
             "ref_ticker": "TQQQ",
             "condition": "5일선 220일선 골든크로스",
             "action": {"type": "buy", "weight_pct": 100, "weight_mode": "target"},
-            # Phase 0: 현금 100% 상태에서도 GC 발생 시 즉시 100% 진입 가능
-            # (Dip1 없이도 GC만으로 풀매수 허용 — Phase 0→3 직행 경로)
+            # Phase 0 특수 동작: 현금 100% 상태에서 GC 발동 시
+            #   → Dip1 탐색전 매수(30%) 먼저 선매수 후 즉시 GC 풀매수(100%) 실행
+            #   → Dip 없이 GC만 발동된 경우에 한해 이 경로로 진입 (Phase 0→3 직행)
             # Phase 1,2: Dip 진입 후 GC 발생 시 목표비중 100%로 채움
             "required_phase": [0, 1, 2],
             "next_phase": 3,
