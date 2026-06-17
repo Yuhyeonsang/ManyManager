@@ -158,7 +158,9 @@ SNOWBALL_TQQQ = {
             "ref_ticker": "TQQQ",
             "condition": "5일선 220일선 데드크로스",
             "action": {"type": "sell", "sell_pct": 100, "sell_mode": "current_qty"},
-            "required_phase": [1, 2, 3, 4, 5],
+            # Phase 6(tp3_lock 상태)에서도 DC 발동 → tp3_lock 해제 + Phase 0 리셋
+            # (Phase 6은 이미 전량 매도 상태이므로 매도는 no-op, 상태만 초기화)
+            "required_phase": [1, 2, 3, 4, 5, 6],
             "next_phase": 0,
             "one_time": False,
             # Phase 0 리셋: rsi35/rsi25/tp1/tp2 의 1회 카운트 모두 초기화
