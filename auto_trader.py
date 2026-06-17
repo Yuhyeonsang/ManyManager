@@ -218,7 +218,7 @@ def _analyze_with_groq(image_base64: str, mime_type: str, prompt: str) -> dict:
             ]
         }],
         "temperature": 0.1,
-        "max_tokens": 1024,
+        "max_tokens": 4096,
     }
     resp = requests.post(
         url,
@@ -245,7 +245,7 @@ def _analyze_with_gemini(image_base64: str, mime_type: str, prompt: str) -> dict
                 {"inline_data": {"mime_type": mime_type, "data": image_base64}}
             ]
         }],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024}
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096}
     }
     resp = requests.post(url, params={"key": gemini_key}, json=body, timeout=30)
     resp.raise_for_status()
@@ -469,7 +469,7 @@ TP 조건: 수익률 기준(condition)과 매도 비율(sell_pct)을 혼동하�
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         body = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024}
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 4096}
         }
         resp = requests.post(url, params={"key": gemini_key}, json=body, timeout=30)
         resp.raise_for_status()
