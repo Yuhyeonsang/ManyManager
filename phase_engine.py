@@ -16,6 +16,7 @@ def initial_phase_state() -> dict:
         "lock_reason": None,
         "initial_qty": {},
         "entry_price": {},
+        "lock_steps": {},   # release_steps 진행 상태: {lock_id: step_index}
     }
 
 
@@ -57,7 +58,25 @@ def evaluate_strategy(strategy, phase_state, prices, portfolio_value=1_000_000):
 
         if locked and phase_state.get("lock_reason") == lid:
             release = lc.get("release_condition", "")
-            if release:
+            release_steps = lc.get("release_steps", [])
+            if release_steps:
+                # 순서 조건 처리: step_index 순서대로 모두 충족해야 해제
+                ref_ticker = lc.get("ref_ticker", strategy.get("ref_ticker", ""))
+                ticker = lc.get("ticker", ref_ticker)
+                price = prices.get(ticker, prices.get(ref_ticker, 0))
+                ref_price = prices.get(ref_ticker, price)
+                buy_price = phase_state.get("entry_price", {}).get(ticker, 0)
+                cur_step = phase_state.get("lock_steps", {}).get(lid, 0)
+                if cur_step < len(release_steps):
+                    step_cond = release_steps[cur_step]["condition"]
+                    step_met = _eval_cond(step_cond, ticker, ref_ticker, price, ref_price, buy_price)
+                    if step_met:
+                        next_step = cur_step + 1
+                        if next_step >= len(release_steps):
+                            actions.append({"type": "unlock", "lock_id": lid})
+                        else:
+                            actions.append({"type": "advance_lock_step", "lock_id": lid, "step": next_step})
+            elif release:
                 ref_ticker = lc.get("ref_ticker", strategy.get("ref_ticker", ""))
                 ticker = lc.get("ticker", ref_ticker)
                 price = prices.get(ticker, prices.get(ref_ticker, 0))
@@ -127,6 +146,7 @@ def apply_action_to_state(phase_state, action):
         "triggered": dict(phase_state.get("triggered", {})),
         "initial_qty": dict(phase_state.get("initial_qty", {})),
         "entry_price": dict(phase_state.get("entry_price", {})),
+        "lock_steps": dict(phase_state.get("lock_steps", {})),
     }
 
     atype = action.get("type")
@@ -134,11 +154,19 @@ def apply_action_to_state(phase_state, action):
     if atype == "lock":
         state["locked"] = True
         state["lock_reason"] = action.get("lock_id")
+        # 잠금 시 해당 lock의 step 초기화
+        state["lock_steps"].pop(action.get("lock_id", ""), None)
         return state
 
     if atype == "unlock":
         state["locked"] = False
         state["lock_reason"] = None
+        state["lock_steps"].pop(action.get("lock_id", ""), None)
+        return state
+
+    if atype == "advance_lock_step":
+        lid = action.get("lock_id")
+        state["lock_steps"][lid] = action.get("step", 0)
         return state
 
     cid = action.get("condition_id")

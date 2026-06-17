@@ -99,12 +99,13 @@ SNOWBALL_TQQQ = {
             "ref_ticker": "TQQQ",
             "condition": "5일선 220일선 골든크로스",
             "action": {"type": "buy", "weight_pct": 100, "weight_mode": "target"},
+            # Phase 0: 현금 100% 상태에서도 GC 발생 시 즉시 100% 진입 가능
+            # (Dip1 없이도 GC만으로 풀매수 허용 — Phase 0→3 직행 경로)
+            # Phase 1,2: Dip 진입 후 GC 발생 시 목표비중 100%로 채움
             "required_phase": [0, 1, 2],
             "next_phase": 3,
             "one_time": False,
             "reset_on_trigger": False,
-            # Phase 0 예외: 현금 100% 상태에서 GC 발생 시 Dip1 가격 확인 없이
-            # 당시 GC 가격에 즉시 100% 진입
             "phase0_immediate_entry": True,
         },
         # ── 매도 ──────────────────────────────────
@@ -161,7 +162,9 @@ SNOWBALL_TQQQ = {
             "next_phase": 0,
             "one_time": False,
             # Phase 0 리셋: rsi35/rsi25/tp1/tp2 의 1회 카운트 모두 초기화
+            # 쿨다운 없음 — DC 후 조건 충족 즉시 재진입 가능 (cooldown_days=0)
             "reset_on_trigger": True,
+            "cooldown_days": 0,
             "reset_flags": ["rsi35", "rsi25", "tp1", "tp2"],
         },
     ],
@@ -185,11 +188,11 @@ SNOWBALL_TQQQ = {
             "ref_ticker": "QQQ",
             "action": "lock_buy",
             # 해제 조건: 순서 조건 — ① Dip1(-10%) 먼저 발생 → ② 그 다음 GC 발생
-            # 단순 -10% 이하만으로는 해제되지 않음
-            "release_condition": "Dip1(-10%) 발생 후 GC 발생 (순서 조건)",
+            # release_condition은 표시용, 실제 평가는 release_steps가 담당
+            "release_condition": "",
             "release_steps": [
-                {"step": 1, "condition": "126일 고점 대비 -10% 이하"},
-                {"step": 2, "condition": "5일선 220일선 골든크로스"},
+                {"step": 1, "condition": "126일 고점 대비 -10% 이하", "ticker": "QQQ", "ref_ticker": "QQQ"},
+                {"step": 2, "condition": "5일선 220일선 골든크로스", "ticker": "TQQQ", "ref_ticker": "TQQQ"},
             ],
             "required_phase": [6],
         },
