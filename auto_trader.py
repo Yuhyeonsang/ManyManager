@@ -314,8 +314,12 @@ def analyze_image_conditions(image_base64: str, mime_type: str = "image/jpeg") -
 6. 매수 조건의 weight_mode 결정:
    - "목표비중 X%", "비중 X%로 매수", "X% 비중 유지" → weight_mode: "target" (목표 비중까지 채움)
    - "X% 추가 매수", "비중 +X% 추가", "RSI 과매도 시 추가" → weight_mode: "add" (기존에 추가로 더 삼)
-   Dip1/Dip2 같은 '목표비중' 조건은 반드시 "target"으로 설정하세요.
+   - 골든크로스(GC) "100% 전액 투입"도 반드시 weight_mode: "target" (전액=목표비중 100%)
+   Dip1/Dip2/GC 같은 '목표비중' 조건은 반드시 "target"으로 설정하세요.
 7. 이미지에 있는 수치(%, 일수, 배수)를 절대 바꾸지 마세요.
+8. 이동평균선은 반드시 몇 일선인지 명시하세요.
+   예) "5일선이 220일선 상향 돌파" → condition: "5일선 220일선 골든크로스"
+   예) "5일선이 220일선 하향 돌파" → condition: "5일선 220일선 데드크로스"
 
 === TP(익절) 조건 파싱 규칙 (매우 중요) ===
 TP 조건에는 두 가지 숫자가 있습니다. 절대 혼동하지 마세요:
@@ -324,23 +328,36 @@ TP 조건에는 두 가지 숫자가 있습니다. 절대 혼동하지 마세요
 
 예시:
   "TP1: 수익률 +15% 달성 시, 최초수량의 50% 매도"
-  → condition: "TP1 +15% 도달 시", sell_pct: 50, sell_mode: "initial_qty"
+  → condition: "수익률 +15% 도달", sell_pct: 50, sell_mode: "initial_qty"
 
-  "TP2: 수익률 +100% 달성 시, 최초수량의 35% 매도"
-  → condition: "TP2 +100% 도달 시", sell_pct: 35, sell_mode: "initial_qty"
+  "TP2: 수익률 +100% 달성 시, 현재보유의 35% 매도" (TP2 최소수량 기준)
+  → condition: "수익률 +100% 도달", sell_pct: 35, sell_mode: "current_qty"
+  ※ sell_mode: "current_qty" = TP1 이후 남은 현재 보유량 기준
   ※ 수익률 100%와 매도비율 35%를 절대 혼동하지 마세요!
 
   "TP3: 수익률 +350% 달성 시, 남은 전량 매도"
-  → condition: "TP3 +350% 도달 시", sell_pct: 100, sell_mode: "current"
+  → condition: "수익률 +350% 도달", sell_pct: 100, sell_mode: "current_qty"
+
+  "DC 비상탈출: 5일선 220일선 데드크로스 시, 전량 매도"
+  → condition: "5일선 220일선 데드크로스", sell_pct: 100, sell_mode: "current_qty"
 
 === 골든크로스(GC) 풀매수 규칙 ===
-"골든크로스 발생 시 잔여 현금 100% 전액 투입"은 buy_conditions에 추가:
-  → condition: "골든크로스 발생", weight_pct: 100, weight_mode: "add", label: "GC 풀매수"
+"TQQQ 5일선이 220일선 상향 돌파 시 잔여 현금 100% 전액 투입"은 buy_conditions에 추가:
+  → condition: "5일선 220일선 골든크로스", weight_pct: 100, weight_mode: "target", label: "GC 풀매수"
+  ※ weight_mode: "target" (100% 목표비중까지 채움)
 
 === RSI 과매도 비중 추가 규칙 ===
 "RSI 35 이하 시 +10% 비중 추가", "RSI 25 이하 시 +15% 비중 추가"는 각각 별도 항목:
-  → condition: "RSI < 35", weight_pct: 10, weight_mode: "add"
-  → condition: "RSI < 25", weight_pct: 15, weight_mode: "add"
+  → condition: "RSI 35 이하", weight_pct: 10, weight_mode: "add"
+  → condition: "RSI 25 이하", weight_pct: 15, weight_mode: "add"
+
+=== 락(Lock) 조건 파싱 규칙 ===
+락 조건에는 발동 조건과 해제 조건이 모두 있습니다. 반드시 둘 다 기입하세요.
+  예) "QQQ 고점 대비 -40% 이하 시 모든 매수 잠금, -39% 이상 회복 시 즉시 해제"
+  → condition: "126일 고점 대비 -40% 이하", release_condition: "126일 고점 대비 -39% 이상", action: "lock_buy"
+
+  예) "TP3 전량매도 후 재진입 잠금, Dip1(-10%) 발생 후 GC 발생 시 해제"
+  → condition: "phase == 6", release_condition: "Dip1(-10%) 발생 후 GC 발생 (순서 조건)", action: "lock_buy"
 
 === JSON 스키마 ===
 {
@@ -365,13 +382,14 @@ TP 조건에는 두 가지 숫자가 있습니다. 절대 혼동하지 마세요
       "name": "종목명",
       "condition": "조건 전체 설명 (이미지 그대로)",
       "sell_pct": 매도비율숫자(0~100),
-      "sell_mode": "current 또는 initial_qty",
+      "sell_mode": "current_qty 또는 initial_qty",
       "label": "TP1 등 라벨 또는 null"
     }
   ],
   "lock_conditions": [
     {
       "condition": "락 발동 조건 설명",
+      "release_condition": "락 해제 조건 설명 (반드시 기입)",
       "action": "lock_buy 또는 liquidate"
     }
   ],

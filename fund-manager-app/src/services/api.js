@@ -177,20 +177,14 @@ export async function searchStocks(query, limit = 20) {
 // ─────────────────────────────────────────────
 
 export async function analyzeTradeImage(imageUri, mimeType = 'image/jpeg') {
-  const baseUrl = await getEffectiveBaseURL();
-  if (!baseUrl) throw new Error('서버 URL을 먼저 설정하세요.');
+  const c = await getClient();
   const form = new FormData();
   form.append('file', { uri: imageUri, type: mimeType, name: 'condition.jpg' });
-  const resp = await fetch(`${baseUrl}/api/auto-trade/analyze-image`, {
-    method: 'POST',
-    headers: { 'ngrok-skip-browser-warning': 'true' },
-    body: form,
+  const { data } = await c.post('/api/auto-trade/analyze-image', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+    timeout: 120000,
   });
-  if (!resp.ok) {
-    const err = await resp.text();
-    throw new Error(`분석 실패 (${resp.status}): ${err}`);
-  }
-  return resp.json();
+  return data;
 }
 
 export async function analyzeTradeText(text) {
