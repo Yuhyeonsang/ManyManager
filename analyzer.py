@@ -11,7 +11,7 @@ try:
 except ImportError:
     pass
 
-DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash")
 DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
 
 
@@ -29,7 +29,11 @@ class GeminiClient:
         self.groq_model = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)
         self.gemini_key = api_key or os.getenv("GEMINI_API_KEY")
         self.gemini_model = model or DEFAULT_GEMINI_MODEL
-        self.provider = "groq" if self.groq_key else "gemini"
+        _forced = os.getenv("LLM_PROVIDER", "").strip().lower()
+        if _forced in ("groq", "gemini"):
+            self.provider = _forced
+        else:
+            self.provider = "groq" if self.groq_key else "gemini"
         # 하위 호환 — 기존 코드가 self.api_key, self.model 참조해도 동작
         self.api_key = self.groq_key if self.provider == "groq" else self.gemini_key
         self.model = self.groq_model if self.provider == "groq" else self.gemini_model
