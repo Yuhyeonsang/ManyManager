@@ -584,7 +584,7 @@ def analyze_one(ticker: str, code: str, name: str) -> Dict:
 
     # Gemini 호출은 실패해도 계속 진행
     try:
-        picks = gemini_filter.filter_news(items, top_k=3) if items else []
+        picks = gemini_filter.filter_news(items, top_k=3, company_name=name, ticker=code) if items else []
         sent_score, sent_counts = gemini_filter.sentiment_score(picks)
     except Exception as e:
         log.warning(f"Gemini news filter failed for {ticker}: {e}")
@@ -1094,7 +1094,7 @@ def _build_report_from_analysis(entry: dict, r: dict) -> "StockReport":
         news_lines = [f"• [{ni.impact or '-'}] {ni.title}" for ni in news_items_out]
         news_summary = "\n".join(news_lines) if news_lines else "최신 뉴스 부족"
     else:
-        news_summary = "최신 뉴스 부족 또는 Gemini 키 미설정"
+        news_summary = "최신 뉴스 부족 또는 AI 키 미설정"
 
     margins = (fin_an.get("margins") or {}) if not fin_an.get("error") else {}
     growth = (fin_an.get("yoy_growth_pct") or {}) if not fin_an.get("error") else {}

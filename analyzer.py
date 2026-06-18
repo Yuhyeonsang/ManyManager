@@ -129,7 +129,9 @@ class GeminiClient:
 class GeminiNewsFilter(GeminiClient):
     """핵심 뉴스 N개 선별 + 감성 점수화."""
  
-    def filter_news(self, news_items: List[Dict], top_k: int = 3) -> List[Dict]:
+    def filter_news(self, news_items: List[Dict], top_k: int = 3,
+                    company_name: Optional[str] = None,
+                    ticker: Optional[str] = None) -> List[Dict]:
         if not news_items:
             return []
         compact = [
@@ -140,18 +142,33 @@ class GeminiNewsFilter(GeminiClient):
             }
             for idx, it in enumerate(news_items)
         ]
+        if company_name or ticker:
+            tgt = f"{company_name or ''} ({ticker})" if ticker else (company_name or "")
+            focus = (
+                f"[분석 대상 종목] {tgt}\n"
+                f"※ 모든 선별·판단은 '{company_name or ticker} 주주 관점'에서 한다.\n"
+                f"- 관련성: 이 종목의 실적·사업·주가에 직접 영향 주는 뉴스만 고른다. "
+                f"이 종목과 무관하거나 단순 언급뿐인 기사는 제외한다.\n"
+                f"- ★경쟁사 주의: 경쟁사(동종업계 타사)의 호재·1위 달성·우위 확보 뉴스는 "
+                f"이 종목엔 '부정' 또는 '중립'이다(절대 '긍정' 아님). "
+                f"반대로 경쟁사의 악재는 이 종목에 '긍정'일 수 있다.\n"
+                f"- 업종·거시 뉴스는 이 종목에 미치는 영향이 분명할 때만 포함한다.\n\n"
+            )
+        else:
+            focus = ""
         prompt = (
-            f"너는 한국 주식 투자 전문 애널리스트다. "
-            f"아래 뉴스 중 투자자 관점에서 주가에 실질적 영향을 줄 핵심 뉴스 최대 {top_k}개를 골라라.\n\n"
+            f"너는 한국 주식 투자 전문 애널리스트다.\n"
+            f"{focus}"
+            f"아래 뉴스 중 이 종목 주가에 실질적 영향을 줄 핵심 뉴스 최대 {top_k}개를 골라라.\n\n"
             f"[선정 기준] 실적/가이던스 발표, 대규모 수주·계약, 규제·소송 결과, 신제품·기술 돌파구, M&A, 거시 충격 (금리·환율·정책).\n"
             f"단순 시황 요약·루머·중복·인사·행사 보도는 제외.\n\n"
-            f"[impact 판단 기준 — 제목 단어가 아닌 투자자에게 미치는 실질 영향 기준]\n"
-            f"  긍정: 실적 호조/상향, 대형 수주·계약 체결, 신시장 진출, 규제 완화, 경쟁사 대비 우위 확보\n"
-            f"  부정: 실적 하회/하향, 주요 수주 취소·지연, 소송 패소, 시장 수요 하락, 핵심 기술 유출\n"
+            f"[impact 판단 기준 — 제목 단어가 아닌 이 종목 주주에게 미치는 실질 영향 기준]\n"
+            f"  긍정: 이 종목의 실적 호조/상향, 대형 수주·계약 체결, 신시장 진출, 규제 완화, 경쟁사 대비 우위 확보\n"
+            f"  부정: 이 종목의 실적 하회/하향, 수주 취소·지연, 소송 패소, 수요 하락, 핵심 기술 유출, 경쟁사의 우위 확보\n"
             f"  중립: 단순 사실 보도, 가능성·검토 단계, 영향 불분명, 긍정+부정 혼재\n"
             f"  ※ 제목에 '우려','경고','적신호' 등 부정적 단어가 있어도 "
-            f"실질 내용이 대규모 투자·수주라면 긍정으로 판단할 것.\n\n"
-            f'반드시 JSON만 출력: {{"picks":[{{"i":번호,"reason":"투자자 관점 한 줄 사유","impact":"긍정|부정|중립"}}]}}\n\n'
+            f"실질 내용이 이 종목의 대규모 투자·수주라면 긍정으로 판단할 것.\n\n"
+            f'반드시 JSON만 출력: {{"picks":[{{"i":번호,"reason":"이 종목 관점 한 줄 사유","impact":"긍정|부정|중립"}}]}}\n\n'
             f"뉴스 목록:\n{json.dumps(compact, ensure_ascii=False)}"
         )
         data = self.call_json(prompt)
@@ -663,7 +680,7 @@ class ReportBuilder:
                 price_an = _np_an
                 price = _np
         # Gemini 필터 → 실패 시 raw fallback
-        etf_picks = self.gemini.filter_news(etf_items, top_k=top_k_news) if etf_items else []
+        etf_picks = self.gemini.filter_news(etf_items, top_k=top_k_news, company_name=company_name, ticker=ticker) if etf_items else []
         if not etf_picks or etf_picks[0].get("error"):
             etf_picks = [
                 {"title": it.get("title", ""), "link": it.get("link"),
@@ -770,7 +787,7 @@ class ReportBuilder:
                     L.append(f"     · {r}")
 
         # [4] ETF 자체 뉴스
-        L.append("\n[4] ETF 관련 뉴스 (Gemini 선별)")
+        L.append("\n[4] ETF 관련 뉴스 (AI 선별)")
         if not etf_picks or etf_picks[0].get("error"):
             L.append("  - 수집된 뉴스 없음")
         else:
@@ -780,7 +797,7 @@ class ReportBuilder:
                     L.append(f"     사유: {p['reason']}")
 
         # [5] 구성종목 뉴스
-        L.append("\n[5] 구성종목 핵심 뉴스 (Gemini 선별)")
+        L.append("\n[5] 구성종목 핵심 뉴스 (AI 선별)")
         if not const_picks or const_picks[0].get("error"):
             L.append("  - 구성종목 뉴스 없음")
         else:
@@ -834,7 +851,7 @@ class ReportBuilder:
  
         price_an = self.sem.analyze_price(price)
         fin_an = self.sem.analyze_financials(fin)
-        picks = self.gemini.filter_news(items, top_k=top_k_news) if items else []
+        picks = self.gemini.filter_news(items, top_k=top_k_news, company_name=company_name, ticker=ticker) if items else []
         sent_score, sent_counts = self.gemini.sentiment_score(picks)
         related = self.related.infer_related_stocks(items, max_candidates=max_related) if items else []
         market_metrics = bundle.get("market_metrics") or {}
@@ -896,7 +913,7 @@ class ReportBuilder:
                     L.append(f"     · {line}")
  
         # [3] 뉴스
-        L.append("\n[3] 핵심 뉴스 (Gemini 선별)")
+        L.append("\n[3] 핵심 뉴스 (AI 선별)")
         if not picks:
             L.append("  - 수집된 뉴스 없음")
         elif picks[0].get("error"):
@@ -913,7 +930,7 @@ class ReportBuilder:
             )
  
         # [4] 관련주 추론
-        L.append("\n[4] 추론된 관련주 후보 (Gemini 밸류체인 분석)")
+        L.append("\n[4] 추론된 관련주 후보 (AI 밸류체인 분석)")
         if not related:
             L.append("  - 추론 없음 (뉴스 부족)")
         elif related[0].get("error"):

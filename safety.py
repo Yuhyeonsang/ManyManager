@@ -252,7 +252,7 @@ def install_gemini_rate_limit(*clients) -> None:
         def make_wrapper(orig):
             def _wrapped(*args, **kwargs):
                 if not gemini_limiter.acquire(timeout=15.0):
-                    return {"error": "gemini rate limit exceeded - 잠시 후 다시"}
+                    return {"error": "AI rate limit exceeded - 잠시 후 다시"}
                 return orig(*args, **kwargs)
             return _wrapped
 

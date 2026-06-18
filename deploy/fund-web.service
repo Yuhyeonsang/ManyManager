@@ -1,0 +1,21 @@
+[Unit]
+Description=Fund Manager - FastAPI web server (main.py, :8000)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=jongmin
+WorkingDirectory=/home/jongmin/ManyManager
+# main.py 하단의 uvicorn.run("main:app", host="0.0.0.0", port=8000) 로 기동
+# .env 는 analyzer.py 의 load_dotenv() 가 WorkingDirectory 기준으로 자동 로드
+ExecStart=/usr/bin/python3 /home/jongmin/ManyManager/main.py
+# 죽으면 자동 재시작
+Restart=always
+RestartSec=5
+# 로그 (기존 습관대로 server.log 에 append)
+StandardOutput=append:/home/jongmin/ManyManager/server.log
+StandardError=append:/home/jongmin/ManyManager/server.log
+
+[Install]
+WantedBy=multi-user.target
