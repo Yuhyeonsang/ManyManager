@@ -1567,7 +1567,7 @@ class StockDataCollector:
         kr_etf = stock_code and is_kr_etf(stock_code)
 
         price = self.get_price_data(ticker)
-        news = self.get_news_data(news_query) if news_query else None
+        news = self.get_news_data(news_query, display=25) if news_query else None
         # ETF는 DART 재무제표 불필요
         fin = (self.get_financial_statements(stock_code, year) if stock_code and not kr_etf else None)
         mm = self.get_market_metrics(ticker)
