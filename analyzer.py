@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import logging
 import requests
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -10,6 +11,8 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3-flash-preview")
 DEFAULT_GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.1-8b-instant")
@@ -29,11 +32,23 @@ class GeminiClient:
         self.groq_model = os.getenv("GROQ_MODEL", DEFAULT_GROQ_MODEL)
         self.gemini_key = api_key or os.getenv("GEMINI_API_KEY")
         self.gemini_model = model or DEFAULT_GEMINI_MODEL
+        # provider 우선순위 결정 (1차 -> 2차 폴백)
+        #   LLM_PROVIDER=gemini  -> [gemini, groq]  (Gemini 1차, 실패 시 Groq 폴백)
+        #   LLM_PROVIDER=groq    -> [groq, gemini]
+        #   미지정(auto)         -> 키 있는 쪽 1차, 나머지 폴백
         _forced = os.getenv("LLM_PROVIDER", "").strip().lower()
-        if _forced in ("groq", "gemini"):
-            self.provider = _forced
+        if _forced == "gemini":
+            order = ["gemini", "groq"]
+        elif _forced == "groq":
+            order = ["groq", "gemini"]
         else:
-            self.provider = "groq" if self.groq_key else "gemini"
+            order = ["groq", "gemini"] if self.groq_key else ["gemini", "groq"]
+        avail = [
+            p for p in order
+            if (p == "gemini" and self.gemini_key) or (p == "groq" and self.groq_key)
+        ]
+        self.providers = avail or order[:1]
+        self.provider = self.providers[0]
         # 하위 호환 — 기존 코드가 self.api_key, self.model 참조해도 동작
         self.api_key = self.groq_key if self.provider == "groq" else self.gemini_key
         self.model = self.groq_model if self.provider == "groq" else self.gemini_model
@@ -48,9 +63,23 @@ class GeminiClient:
         )
 
     def call_json(self, prompt: str, temperature: float = 0.2) -> Dict:
-        if self.provider == "groq":
-            return self._call_groq(prompt, temperature)
-        return self._call_gemini(prompt, temperature)
+        # 1차 provider 실패(error) 시 2차 provider로 자동 폴백
+        last: Dict = {"error": "no LLM provider available"}
+        for prov in self.providers:
+            if prov == "groq":
+                if not self.groq_key:
+                    continue
+                last = self._call_groq(prompt, temperature)
+            else:
+                if not self.gemini_key:
+                    continue
+                last = self._call_gemini(prompt, temperature)
+            if not last.get("error"):
+                if prov != self.providers[0]:
+                    logger.warning("LLM 폴백 성공: %s (1차 %s 실패)", prov, self.providers[0])
+                return last
+            logger.warning("LLM %s 실패 -> 다음 provider 시도: %s", prov, last.get("error"))
+        return last
 
     def _call_groq(self, prompt: str, temperature: float = 0.2) -> Dict:
         if not self.groq_key:
