@@ -682,6 +682,16 @@ def find_watch_entry(ticker_or_code: str) -> Optional[Dict]:
     for s in US_STOCK_UNIVERSE:
         if t == s["code"]:
             return {"ticker": s["code"], "code": s["code"], "name": s["name"], "region": "US"}
+    # 3.5) 동적 유니버스(전체 상장 코스피/코스닥/나스닥/NYSE)에서 코드·심볼 조회 → 이름 확보
+    try:
+        import universe as _uni
+        u = _uni.lookup_by_code(t)
+        if u:
+            if u.get("region") == "KR":
+                return {"ticker": to_yf_ticker(u["code"]), "code": u["code"], "name": u["name"], "region": "KR"}
+            return {"ticker": u["code"], "code": u["code"], "name": u["name"], "region": "US"}
+    except Exception:
+        pass
     # 4) 모르는 6자리 → 국장으로 추정 (name은 빈값 → pykrx/naver에서 채워짐)
     if t.isdigit() and len(t) == 6:
         return {"ticker": f"{t}.KS", "code": t, "name": t, "region": "KR"}

@@ -19,6 +19,40 @@ from data_collector import (
 )
 from analyzer import RelatedStockInferer
 
+try:
+    import universe as _universe
+except Exception:
+    _universe = None
+
+
+def _norm_universe_entry(u):
+    """universe.py 항목 → 빌더가 쓰는 entry 포맷."""
+    if not u:
+        return None
+    if u.get("region") == "KR":
+        return {"code": u["code"], "name": u["name"], "market": u.get("market"),
+                "region": "KR", "ticker": to_yf_ticker(u["code"])}
+    return {"code": u["code"], "name": u["name"], "market": u.get("market"),
+            "region": "US", "ticker": u["code"]}
+
+
+def _universe_entry_by_code(t):
+    if not _universe:
+        return None
+    try:
+        return _norm_universe_entry(_universe.lookup_by_code(t))
+    except Exception:
+        return None
+
+
+def _universe_entry_by_name(n):
+    if not _universe:
+        return None
+    try:
+        return _norm_universe_entry(_universe.lookup_by_name(n))
+    except Exception:
+        return None
+
 
 # 기본 카테고리 → 검색 키워드 매핑 (news_categories 모드용)
 DEFAULT_CATEGORIES: Dict[str, List[str]] = {
@@ -102,6 +136,10 @@ def _name_to_entry(name: str) -> Optional[Dict]:
         sn = s["name"].lower()
         if sn == n or n in sn:
             return {**s, "region": "US", "ticker": s["code"]}
+    # 동적 유니버스(전체 상장) — 이름 정확 매칭
+    u = _universe_entry_by_name(n)
+    if u:
+        return u
     return None
 
 
@@ -115,6 +153,10 @@ def _ticker_to_entry(ticker: str) -> Optional[Dict]:
     for s in US_STOCK_UNIVERSE:
         if t.upper() == s["code"]:
             return {**s, "region": "US", "ticker": s["code"]}
+    # 동적 유니버스(전체 상장) — 코드/심볼 매칭
+    u = _universe_entry_by_code(t)
+    if u:
+        return u
     return None
 
 
