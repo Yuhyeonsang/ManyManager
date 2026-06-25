@@ -38,11 +38,87 @@ _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit
 # 소스별 수집
 # ─────────────────────────────────────────────
 def _fetch_kr():
-    """pykrx로 코스피·코스닥 전체 종목 코드+이름."""
+    """KR(코스피/코스닥) 전체 종목. 1순위: 로그인 불필요한 KRX 상장목록 CSV,
+    실패 시 pykrx 폴백(신버전 pykrx는 KRX_ID/PW 요구해 실패할 수 있음)."""
+    out = _fetch_kr_krx_csv()
+    if out:
+        return out
+    logger.warning("[universe] KRX CSV 실패 — pykrx 폴백 시도")
+    return _fetch_kr_pykrx()
+
+
+def _norm_kr_market(market_id, market_txt):
+    s = (market_id or "").strip().upper()
+    if s == "STK":
+        return "KOSPI"
+    if s == "KSQ":
+        return "KOSDAQ"
+    if s == "KNX":
+        return "KONEX"
+    t = (market_txt or "").strip()
+    tu = t.upper()
+    if "KOSPI" in tu or "\ucf54\uc2a4\ud53c" in t:
+        return "KOSPI"
+    if "KOSDAQ" in tu or "\ucf54\uc2a4\ub2e5" in t:
+        return "KOSDAQ"
+    return None
+
+
+def _fetch_kr_krx_csv():
+    """FinanceData가 GitHub에 매일 올리는 KRX 상장목록 CSV에서 코스피/코스닥 전 종목.
+    최근 거래일 파일을 역순 탐색(주말·휴장 건너뜀)."""
+    import io
+    try:
+        import pandas as pd
+    except Exception as e:
+        logger.warning("[universe] pandas 없음: %s", e)
+        return []
+    base = ("https://raw.githubusercontent.com/FinanceData/fdr_krx_data_cache/"
+            "refs/heads/master/data/listing/krx/{date}.csv")
+    df = None
+    for i in range(0, 15):
+        d = (datetime.date.today() - datetime.timedelta(days=i)).isoformat()
+        try:
+            r = requests.get(base.format(date=d), headers=_HEADERS, timeout=20)
+            if r.status_code == 200 and len(r.content) > 1000:
+                df = pd.read_csv(io.BytesIO(r.content), dtype=str)
+                logger.info("[universe] KRX 목록 CSV: %s (%d행)", d, len(df))
+                break
+        except Exception as e:
+            logger.warning("[universe] KRX CSV %s 실패: %s", d, e)
+    if df is None:
+        return []
+    cols = {c.strip().lower(): c for c in df.columns}
+    code_col = cols.get("code")
+    name_col = cols.get("name")
+    mid_col = cols.get("marketid")
+    mkt_col = cols.get("market")
+    if not code_col or not name_col:
+        logger.warning("[universe] KRX CSV 컬럼 미상: %s", list(df.columns))
+        return []
+    out = []
+    for _, row in df.iterrows():
+        code = str(row[code_col]).strip()
+        name = str(row[name_col]).strip()
+        if not code or code.lower() == "nan" or not name or name.lower() == "nan":
+            continue
+        code = code.zfill(6)
+        market = _norm_kr_market(
+            str(row[mid_col]) if mid_col else "",
+            str(row[mkt_col]) if mkt_col else "",
+        )
+        if market in ("KOSPI", "KOSDAQ"):
+            out.append({"code": code, "name": name, "market": market, "region": "KR"})
+    logger.info("[universe] KR 수집(CSV): %d종목", len(out))
+    return out
+
+
+def _fetch_kr_pykrx():
+    """pykrx 폴백."""
     try:
         from pykrx import stock  # type: ignore
     except Exception as e:
-        logger.warning("[universe] pykrx 미설치 — KR 생략: %s", e)
+        logger.warning("[universe] pykrx 미설치: %s", e)
         return []
     out = []
     for market in ("KOSPI", "KOSDAQ"):
@@ -55,11 +131,11 @@ def _fetch_kr():
             try:
                 name = stock.get_market_ticker_name(code)
             except Exception:
-                name = None  # pykrx 일부 종목 이름조회 None 크래시 → 건너뜀
+                name = None
             if name:
                 out.append({"code": str(code), "name": str(name).strip(),
                             "market": market, "region": "KR"})
-    logger.info("[universe] KR 수집: %d종목", len(out))
+    logger.info("[universe] KR 수집(pykrx): %d종목", len(out))
     return out
 
 
