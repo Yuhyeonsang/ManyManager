@@ -45,6 +45,35 @@ def _is_kr_ticker(ticker: str) -> bool:
     return t.endswith(".KS") or t.endswith(".KQ")
 
 
+def _kr_realtime_price(ticker: str) -> Optional[Dict]:
+    """일별시세 실패 시 네이버 실시간 시세(polling 엔드포인트)로 현재가만이라도 채움. KR 전용."""
+    if not (_is_kr_ticker(ticker) and _NAVER_AVAILABLE):
+        return None
+    try:
+        rt = _naver.get_realtime(ticker)
+    except Exception:
+        return None
+    if not rt:
+        return None
+    cp = rt.get("current_price")
+    if not cp:
+        return None
+    return {
+        "ticker": ticker,
+        "as_of": rt.get("as_of"),
+        "current_price": round(float(cp), 2),
+        "prev_close": None,
+        "change": rt.get("change"),
+        "change_pct": rt.get("change_pct"),
+        "moving_averages": {},
+        "high_52w": None,
+        "low_52w": None,
+        "avg_volume_20d": rt.get("volume"),
+        "recent_10d": [],
+        "source": "naver_realtime",
+    }
+
+
 def _yf_history_safe(ticker: str, period: str = "6mo") -> pd.DataFrame:
     """가격 일봉 데이터.
     KR 종목(.KS/.KQ): Naver 직행 → 실패 시 yfinance/yahoo_direct 폴백.
@@ -54,15 +83,18 @@ def _yf_history_safe(ticker: str, period: str = "6mo") -> pd.DataFrame:
     """
     is_kr = _is_kr_ticker(ticker)
 
-    # KR 종목: Naver 우선
+    # KR 종목: Naver 우선 (동시요청 throttle 대비 재시도)
     if is_kr and _NAVER_AVAILABLE:
-        try:
-            period_days = _period_to_days(period)
-            df = _naver.get_history(ticker, period_days=period_days)
-            if df is not None and not df.empty:
-                return df
-        except Exception as e:
-            log.debug(f"naver_finance history 실패 ({ticker}): {e}")
+        period_days = _period_to_days(period)
+        import time as _t
+        for _attempt in range(3):
+            try:
+                df = _naver.get_history(ticker, period_days=period_days)
+                if df is not None and not df.empty:
+                    return df
+            except Exception as e:
+                log.debug(f"naver_finance history 실패 ({ticker}, 시도 {_attempt+1}): {e}")
+            _t.sleep(0.6)
 
     # US 종목, 또는 KR 인데 Naver 가 실패한 경우
     try:
@@ -309,12 +341,14 @@ class StockDataCollector:
         try:
             hist = _yf_history_safe(ticker, period=period)
             if hist.empty:
-                return {"ticker": ticker, "error": "no price data"}
+                _fb = _kr_realtime_price(ticker)
+                return _fb if _fb else {"ticker": ticker, "error": "no price data"}
 
             # NaN 행 제거 — 일부 소스(Naver siseJson)는 trailing 빈 row 가 있음
             close = hist["Close"].dropna()
             if len(close) == 0:
-                return {"ticker": ticker, "error": "no valid close price"}
+                _fb = _kr_realtime_price(ticker)
+                return _fb if _fb else {"ticker": ticker, "error": "no valid close price"}
             current_price = float(close.iloc[-1])
             prev_close = float(close.iloc[-2]) if len(close) > 1 else current_price
             change = current_price - prev_close
