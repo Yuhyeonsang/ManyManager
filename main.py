@@ -782,6 +782,15 @@ def cache_get(key: str, ttl_sec: Optional[int] = None) -> Optional[Dict]:
         return None
 
 
+def cache_del(key: str) -> None:
+    try:
+        with db_conn() as conn:
+            conn.execute("DELETE FROM report_cache WHERE ticker = ?", (key,))
+            conn.commit()
+    except Exception as e:
+        log.warning(f"cache_del({key}) failed: {e}")
+
+
 def cache_set(key: str, payload: Dict) -> None:
     try:
         with db_conn() as conn:
@@ -1302,6 +1311,10 @@ def stock_report(ticker: str, refresh: bool = False):
 
         report = _build_report_from_analysis(entry, r)
         cache_set(cache_key, report.model_dump())
+        if refresh:
+            # 새로고침 시 텍스트(클립보드) 캐시도 비워 다음 복사 때 최신으로 재생성
+            cache_del(f"clipboard:{entry['ticker']}")
+            cache_del(f"clipboard:{entry['code']}")
         return report
 
 

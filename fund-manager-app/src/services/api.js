@@ -146,9 +146,9 @@ export async function fetchStockReport(ticker, { refresh = false } = {}) {
  */
 export async function fetchClipboardText(ticker) {
   const c = await getClient();
-  // ETF는 Naver 파싱 + 뉴스 수집으로 오래 걸릴 수 있어서 2분 타임아웃
-  // refresh=true: 항상 최신 데이터 (오래된 캐시 무시)
-  const { data } = await c.get(`/api/stocks/${ticker}/clipboard`, { timeout: 120000, params: { refresh: true } });
+  // 캐시 우선 — 처음 1회만 생성(느림), 그다음은 즉시. 신선도보다 속도 우선.
+  // 최신 데이터가 필요하면 상세화면 🔄로 새로고침하면 됨.
+  const { data } = await c.get(`/api/stocks/${ticker}/clipboard`, { timeout: 120000 });
   return data.text;
 }
 
