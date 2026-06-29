@@ -276,7 +276,7 @@ class RelatedStockInferer(GeminiClient):
             f"- 이미 너무 자주 언급되는 빅테크 위주 추천은 자제, 중·소형주도 포함.\n"
             f"- 종목코드를 모르면 빈 문자열로.\n"
             f'반드시 JSON: {{"candidates":[{{'
-            f'"name":"종목명","ticker":"6자리코드","reason":"왜 관련있나",'
+            f'"name":"종목명","ticker":"한국주식이면 6자리 종목코드, 미국주식이면 미국 티커심볼(예: NVDA, TSLA, AAPL)","reason":"왜 관련있나",'
             f'"value_chain":"upstream|midstream|downstream|policy|peer",'
             f'"expected_impact":"긍정|부정|중립",'
             f'"confidence":"상|중|하"}}]}}\n\n'

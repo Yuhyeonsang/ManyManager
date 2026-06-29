@@ -80,6 +80,8 @@ log = logging.getLogger("fund-api")
 try:
     from watchlist_builder import (
         build_watchlist as _build_wl,
+        build_news_inferred as _build_news_inferred,
+        US_MARKET_QUERIES as _US_QUERIES,
         get_setting as _wl_get,
         set_setting as _wl_set,
         DEFAULT_CATEGORIES as _DEFAULT_CATS,
@@ -130,6 +132,20 @@ def build_watchlist() -> List[Dict]:
                 _add(s, "news")
         except Exception as e:
             log.warning(f"watchlist_builder failed: {e}")
+
+    # 1순위(미국) — 해외 뉴스 추론 (US 키워드 → Gemini가 티커 출력 → 유니버스 매칭)
+    if _WATCHLIST_BUILDER_AVAILABLE and INCLUDE_US and len(us) < HOT_US_LIMIT:
+        try:
+            us_news = _build_news_inferred(
+                _US_QUERIES,
+                limit=HOT_US_LIMIT * 2,
+                db_path=DB_PATH,
+                market_hint="미국 NASDAQ/NYSE",
+            ) or []
+            for s in us_news:
+                _add(s, "news")
+        except Exception as e:
+            log.warning(f"US news inference failed: {e}")
 
     # 2순위 — KR 거래대금 상위
     if len(kr) < HOT_KR_LIMIT:

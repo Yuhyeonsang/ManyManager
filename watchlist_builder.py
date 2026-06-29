@@ -79,6 +79,18 @@ HOT_MARKET_QUERIES: List[str] = [
     "테마주",
 ]
 
+# 해외(미국) 시장 핫뉴스 키워드 — 네이버 해외증시 한국어 기사 검색용 (종목은 동적 추론)
+US_MARKET_QUERIES: List[str] = [
+    "미국 증시",
+    "나스닥 급등",
+    "S&P500",
+    "미국 빅테크",
+    "AI 반도체 미국",
+    "어닝 서프라이즈 미국",
+    "월가 주목",
+    "해외주식 급등",
+]
+
 
 # ─────────────────────────────────────────────
 # 설정 저장소 (SQLite app_settings 테이블)
@@ -199,6 +211,7 @@ def build_news_inferred(
     news_per_query: int = 5,
     db_path: Optional[str] = None,
     cooldown_cycles: int = 2,
+    market_hint: str = "KOSPI/KOSDAQ",
 ) -> List[Dict]:
     if not queries:
         return []
@@ -216,7 +229,7 @@ def build_news_inferred(
     if not all_items:
         return []
 
-    candidates = inferer.infer_related_stocks(all_items, max_candidates=limit * 3)
+    candidates = inferer.infer_related_stocks(all_items, max_candidates=limit * 3, market_hint=market_hint)
     if not candidates or (candidates and candidates[0].get("error")):
         return []
 
