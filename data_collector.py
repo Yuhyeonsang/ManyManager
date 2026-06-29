@@ -390,6 +390,33 @@ class StockDataCollector:
         except Exception as e:
             return {"ticker": ticker, "error": str(e)}
 
+    def get_us_news(self, ticker: str, display: int = 25) -> Dict:
+        """US 종목 영어 뉴스 (yfinance Ticker.news). 신/구 포맷 모두 처리."""
+        try:
+            raw = yf.Ticker(ticker).news or []
+        except Exception as e:
+            return {"query": ticker, "error": f"yf news: {e}", "items": []}
+        items = []
+        for it in raw:
+            c = it.get("content") if isinstance(it.get("content"), dict) else it
+            title = (c.get("title") or it.get("title") or "").strip()
+            if not title:
+                continue
+            summary = (c.get("summary") or c.get("description") or "").strip()
+            link = ""
+            for cand in (c.get("canonicalUrl"), c.get("clickThroughUrl")):
+                if isinstance(cand, dict) and cand.get("url"):
+                    link = cand["url"]
+                    break
+            if not link:
+                link = it.get("link", "")
+            pub = c.get("pubDate") or it.get("providerPublishTime") or ""
+            items.append({"title": title, "description": summary,
+                          "link": link, "pub_date": str(pub)})
+            if len(items) >= display:
+                break
+        return {"query": ticker, "count": len(items), "items": items}
+
     def get_news_data(
         self,
         query: str,
@@ -1665,7 +1692,15 @@ class StockDataCollector:
         kr_etf = stock_code and is_kr_etf(stock_code)
 
         price = self.get_price_data(ticker)
-        news = self.get_news_data(news_query, display=25) if news_query else None
+        # 뉴스: KR=네이버, US=yfinance(영어) → 비면 네이버 폴백
+        if not news_query:
+            news = None
+        elif _is_kr_ticker(ticker):
+            news = self.get_news_data(news_query, display=25)
+        else:
+            news = self.get_us_news(ticker, display=25)
+            if not (news and news.get("items")):
+                news = self.get_news_data(news_query, display=25)
         # ETF는 DART 재무제표 불필요
         # 재무제표: KR=DART, US=yfinance 연간, ETF=불필요
         if kr_etf:

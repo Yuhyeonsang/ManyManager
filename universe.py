@@ -16,6 +16,7 @@
   entry = by_code.get("005930")      # {"code","name","market","region"}
 """
 import os
+import re
 import json
 import logging
 import datetime
@@ -139,6 +140,17 @@ def _fetch_kr_pykrx():
     return out
 
 
+def _clean_us_name(name):
+    """nasdaqtrader 정식 증권명 → 회사명만 (Common Stock/When-Issued/Inc. 등 제거)."""
+    n = name or ""
+    n = re.sub(r'\s*[-\u2013]\s*Common\b.*$', '', n, flags=re.I)
+    n = re.sub(r'\s+(Common Stock|Common Shares|Ordinary Shares|American Depositary Shares?|Depositary Shares?|ADS|Class\s+[A-Z]\b).*$', '', n, flags=re.I)
+    n = re.sub(r'\s*[-\u2013]?\s*When[\s-]?Issued.*$', '', n, flags=re.I)
+    n = re.sub(r'[,]?\s+(Inc\.?|Incorporated|Corporation|Corp\.?|Company|Co\.?|Ltd\.?|Limited|plc|N\.V\.|S\.A\.|AG|LLC|L\.P\.|Holdings?|Group)\.?\s*$', '', n, flags=re.I)
+    n = n.strip().strip(',').strip()
+    return n or name
+
+
 def _parse_pipe(text, want_exchange_col=False):
     """nasdaqtrader pipe 파일 파싱. 헤더 1줄 + 'File Creation Time' 푸터 제외."""
     rows = []
@@ -168,7 +180,7 @@ def _fetch_us():
         r = requests.get(_NASDAQ_LISTED, headers=_HEADERS, timeout=20)
         r.raise_for_status()
         for sym, name, _ in _parse_pipe(r.text, want_exchange_col=False):
-            out.append({"code": sym, "name": name, "market": "NASDAQ", "region": "US"})
+            out.append({"code": sym, "name": _clean_us_name(name), "market": "NASDAQ", "region": "US"})
     except Exception as e:
         logger.warning("[universe] nasdaqlisted 실패: %s", e)
     # NYSE 계열 (otherlisted: Exchange 컬럼으로 구분)
@@ -178,7 +190,7 @@ def _fetch_us():
         for sym, name, exch in _parse_pipe(r.text, want_exchange_col=True):
             mk = _EXCH_MAP.get(exch)
             if mk:
-                out.append({"code": sym, "name": name, "market": mk, "region": "US"})
+                out.append({"code": sym, "name": _clean_us_name(name), "market": mk, "region": "US"})
     except Exception as e:
         logger.warning("[universe] otherlisted 실패: %s", e)
     logger.info("[universe] US 수집: %d종목", len(out))
