@@ -90,68 +90,81 @@ except ImportError:
 
 
 def build_watchlist() -> List[Dict]:
-    """SQLite 의 watchlist_mode 설정에 따라 종목 리스트 생성.
-    - volume          : 거래대금 상위 (기본)
-    - news_categories : 카테고리별 핫 뉴스 → Gemini 추론
-    - news_keywords   : 사용자 키워드 → Gemini 추론
-    - hybrid          : 뉴스 + 거래량 혼합
-    """
-    if _WATCHLIST_BUILDER_AVAILABLE:
-        try:
-            items = _build_wl(
-                db_path=DB_PATH,
-                kr_limit=HOT_KR_LIMIT,
-                us_limit=HOT_US_LIMIT,
-                include_us=INCLUDE_US,
-            )
-            out = []
-            for s in items:
-                code = s.get("code") or s.get("ticker", "")
-                ticker = s.get("ticker") or to_yf_ticker(code)
-                out.append({
-                    "code": code,
-                    "name": s.get("name") or code,
-                    "ticker": ticker,
-                    "region": s.get("region") or ("KR" if code.isdigit() and len(code) == 6 else "US"),
-                    "market": s.get("market"),
-                    "news_inference": s.get("news_inference"),
-                })
-            return out
-        except Exception as e:
-            log.warning(f"watchlist_builder failed, fallback to volume: {e}")
-
-    # 폴백 — 기존 거래량 기반
-    items: List[Dict] = []
-    try:
-        kr = get_hot_stocks_kr(limit=HOT_KR_LIMIT)
-    except Exception as e:
-        log.warning(f"get_hot_stocks_kr failed: {e}")
-        kr = []
-    if not kr:
-        kr = [
-            {"code": w["code"], "name": w["name"], "ticker": w["ticker"], "region": "KR", "market": "KOSPI"}
-            for w in DEFAULT_WATCHLIST
-        ]
-    items.extend(kr[:HOT_KR_LIMIT])
-    if INCLUDE_US:
-        try:
-            us = get_hot_stocks_us(limit=HOT_US_LIMIT)
-        except Exception as e:
-            log.warning(f"get_hot_stocks_us failed: {e}")
-            us = []
-        items.extend(us[:HOT_US_LIMIT])
-    out = []
-    for s in items:
+    """뉴스 추론 1순위 → 부족분은 거래대금 상위 → 대형주 순으로 채워
+    KR HOT_KR_LIMIT + US HOT_US_LIMIT 개를 항상 채운다."""
+    def _norm(s):
         code = s.get("code") or s.get("ticker", "")
         ticker = s.get("ticker") or to_yf_ticker(code)
-        out.append({
+        region = s.get("region") or ("KR" if str(code).isdigit() and len(str(code)) == 6 else "US")
+        return {
             "code": code,
             "name": s.get("name") or code,
             "ticker": ticker,
-            "region": s.get("region") or ("KR" if code.isdigit() and len(code) == 6 else "US"),
+            "region": region,
             "market": s.get("market"),
-        })
-    return out
+            "news_inference": s.get("news_inference"),
+        }
+
+    kr: List[Dict] = []
+    us: List[Dict] = []
+    seen = set()
+
+    def _add(s, source):
+        e = _norm(s)
+        if not e["code"] or e["code"] in seen:
+            return
+        e["source"] = source
+        seen.add(e["code"])
+        (kr if e["region"] == "KR" else us).append(e)
+
+    # 1순위 — 뉴스 기반 추론 (KR/US 섞여 나옴)
+    if _WATCHLIST_BUILDER_AVAILABLE:
+        try:
+            news_items = _build_wl(
+                db_path=DB_PATH,
+                kr_limit=HOT_KR_LIMIT * 2,
+                us_limit=HOT_US_LIMIT * 2,
+                include_us=INCLUDE_US,
+            ) or []
+            for s in news_items:
+                _add(s, "news")
+        except Exception as e:
+            log.warning(f"watchlist_builder failed: {e}")
+
+    # 2순위 — KR 거래대금 상위
+    if len(kr) < HOT_KR_LIMIT:
+        try:
+            for s in get_hot_stocks_kr(limit=HOT_KR_LIMIT * 3):
+                _add(s, "volume")
+                if len(kr) >= HOT_KR_LIMIT:
+                    break
+        except Exception as e:
+            log.warning(f"get_hot_stocks_kr failed: {e}")
+    # 3순위 — KR 대형주 마스터 (항상 가능)
+    if len(kr) < HOT_KR_LIMIT:
+        for w in KR_STOCK_UNIVERSE:
+            _add({**w, "region": "KR"}, "major")
+            if len(kr) >= HOT_KR_LIMIT:
+                break
+
+    if INCLUDE_US:
+        # 2순위 — US 거래대금 상위
+        if len(us) < HOT_US_LIMIT:
+            try:
+                for s in get_hot_stocks_us(limit=HOT_US_LIMIT * 3):
+                    _add(s, "volume")
+                    if len(us) >= HOT_US_LIMIT:
+                        break
+            except Exception as e:
+                log.warning(f"get_hot_stocks_us failed: {e}")
+        # 3순위 — US 대형주 마스터 (항상 가능)
+        if len(us) < HOT_US_LIMIT:
+            for w in US_STOCK_UNIVERSE:
+                _add({**w, "region": "US"}, "major")
+                if len(us) >= HOT_US_LIMIT:
+                    break
+
+    return kr[:HOT_KR_LIMIT] + us[:HOT_US_LIMIT]
 
 # ─────────────────────────────────────────────
 # FastAPI 앱
@@ -232,6 +245,7 @@ def _warm_hot_stocks_cache():
                     "ticker": r["ticker"], "name": r["name"], "price": r["price"],
                     "change_pct": r["change_pct"], "grade": r["grade"],
                     "score": r["score"], "summary": r["summary"],
+                    "source": w.get("source"),
                 }
             except Exception as e:
                 log.error(f"warmer failed for {w['ticker']}: {e}")
@@ -337,6 +351,7 @@ class HotStock(BaseModel):
     grade: str
     score: int
     summary: str
+    source: Optional[str] = None   # news | volume | major
 
 
 class EtfInfo(BaseModel):
@@ -939,6 +954,7 @@ def hot_stocks(refresh: bool = False):
                     "ticker": r["ticker"], "name": r["name"], "price": r["price"],
                     "change_pct": r["change_pct"], "grade": r["grade"],
                     "score": r["score"], "summary": r["summary"],
+                    "source": w.get("source"),
                 }
             except Exception as e:
                 log.error(f"hot-stocks failed for {w['ticker']}: {e}")
@@ -946,6 +962,7 @@ def hot_stocks(refresh: bool = False):
                     "ticker": w["code"], "name": w["name"], "price": 0.0,
                     "change_pct": 0.0, "grade": "WATCH", "score": 50,
                     "summary": f"분석 실패: {str(e)[:60]}",
+                    "source": w.get("source"),
                 }
 
         with ThreadPoolExecutor(max_workers=HOT_STOCKS_PARALLEL) as ex:

@@ -11,6 +11,13 @@ function formatStockPrice(price, ticker) {
   return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 }
 
+function sourceLabel(s) {
+  if (s === 'news') return '\uD83D\uDCF0 \uB274\uC2A4';        // 📰 뉴스
+  if (s === 'volume') return '\uD83D\uDCB0 \uAC70\uB798\uB300\uAE08'; // 💰 거래대금
+  if (s === 'major') return '\u2B50 \uB300\uD615\uC8FC';      // ⭐ 대형주
+  return null;
+}
+
 export default function StockCard({ stock, onPress, isFavorited, onFavoriteToggle }) {
   const changeColor = (stock.change_pct ?? 0) >= 0 ? '#DC2626' : '#2563EB';
   const sign = (stock.change_pct ?? 0) >= 0 ? '+' : '';
@@ -24,6 +31,9 @@ export default function StockCard({ stock, onPress, isFavorited, onFavoriteToggl
         <View style={{ flex: 1 }}>
           <Text style={styles.name}>{stock.name}</Text>
           <Text style={styles.ticker}>{stock.ticker}</Text>
+          {sourceLabel(stock.source) ? (
+            <Text style={styles.sourceTag}>{sourceLabel(stock.source)}</Text>
+          ) : null}
         </View>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
           <GradeBadge grade={stock.grade} />
@@ -97,6 +107,7 @@ const styles = StyleSheet.create({
   starBtn: { padding: 2 },
   starIcon: { fontSize: 20 },
   priceLabel: { fontSize: 11, color: '#94A3B8' },
+  sourceTag: { marginTop: 3, fontSize: 10, color: '#64748B', fontWeight: '600' },
   price: { fontSize: 16, fontWeight: '600', color: '#0F172A', marginTop: 2 },
   change: { fontSize: 16, fontWeight: '700', marginTop: 2 },
   summary: { marginTop: 10, color: '#475569', fontSize: 13, lineHeight: 18 },
