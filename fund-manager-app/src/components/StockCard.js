@@ -2,6 +2,15 @@ import React from 'react';
 import { Pressable, View, Text, StyleSheet } from 'react-native';
 import GradeBadge from './GradeBadge';
 
+// 티커로 통화 판별: KR(숫자/.KS/.KQ) → 원, 그 외 → 달러
+function formatStockPrice(price, ticker) {
+  const t = String(ticker || '');
+  const isKR = /\d/.test(t) || /\.(KS|KQ)$/i.test(t);
+  const n = Number(price ?? 0);
+  if (isKR) return `${n.toLocaleString('ko-KR')}원`;
+  return `$${n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
 export default function StockCard({ stock, onPress, isFavorited, onFavoriteToggle }) {
   const changeColor = (stock.change_pct ?? 0) >= 0 ? '#DC2626' : '#2563EB';
   const sign = (stock.change_pct ?? 0) >= 0 ? '+' : '';
@@ -34,7 +43,7 @@ export default function StockCard({ stock, onPress, isFavorited, onFavoriteToggl
         <View>
           <Text style={styles.priceLabel}>현재가</Text>
           <Text style={styles.price}>
-            {Number(stock.price ?? 0).toLocaleString('ko-KR')}원
+            {formatStockPrice(stock.price, stock.ticker)}
           </Text>
         </View>
         <View style={{ alignItems: 'flex-end' }}>

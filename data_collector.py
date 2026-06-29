@@ -1589,6 +1589,70 @@ class StockDataCollector:
             log.debug(f"US annual financials 실패 ({ticker}): {e}")
         return result
 
+    def get_us_financials(self, ticker: str) -> Dict:
+        """US 종목 재무제표 (yfinance 연간) → DART와 동일한 indicators/ratios 구조로 반환.
+        analyze_financials 가 그대로 소비 가능."""
+        try:
+            tk = yf.Ticker(ticker)
+            inc = tk.financials      # 손익계산서 (열=연도 내림차순)
+            bs = tk.balance_sheet    # 재무상태표
+
+            def _col(df, keys, i=0):
+                if df is None or getattr(df, "empty", True) or df.shape[1] <= i:
+                    return None
+                for k in keys:
+                    if k in df.index:
+                        try:
+                            v = float(df.loc[k].iloc[i])
+                            if v == v:  # NaN 체크
+                                return v
+                        except Exception:
+                            pass
+                return None
+
+            rev_c = _col(inc, ["Total Revenue", "Revenue", "Operating Revenue"], 0)
+            rev_p = _col(inc, ["Total Revenue", "Revenue", "Operating Revenue"], 1)
+            op_c  = _col(inc, ["Operating Income", "EBIT", "Operating Income Or Loss"], 0)
+            op_p  = _col(inc, ["Operating Income", "EBIT", "Operating Income Or Loss"], 1)
+            ni_c  = _col(inc, ["Net Income", "Net Income Common Stockholders", "Net Income From Continuing Operation Net Minority Interest"], 0)
+            ni_p  = _col(inc, ["Net Income", "Net Income Common Stockholders"], 1)
+            eq_c  = _col(bs, ["Stockholders Equity", "Total Stockholder Equity", "Common Stock Equity"], 0)
+            li_c  = _col(bs, ["Total Liabilities Net Minority Interest", "Total Liab", "Total Liabilities"], 0)
+
+            if not any([rev_c, op_c, ni_c]):
+                return {"ticker": ticker, "error": "no US financials (yfinance)"}
+
+            year = None
+            try:
+                year = int(str(inc.columns[0])[:4])
+            except Exception:
+                pass
+
+            ratios = {}
+            if rev_c and op_c is not None:
+                ratios["operating_margin_pct"] = round(op_c / rev_c * 100, 2)
+            if rev_c and ni_c is not None:
+                ratios["net_margin_pct"] = round(ni_c / rev_c * 100, 2)
+            if eq_c and li_c is not None and eq_c != 0:
+                ratios["debt_to_equity_pct"] = round(li_c / eq_c * 100, 2)
+
+            return {
+                "ticker": ticker,
+                "year": year,
+                "source": "yfinance",
+                "indicators": {
+                    "revenue": {"current": rev_c, "previous": rev_p},
+                    "operating_income": {"current": op_c, "previous": op_p},
+                    "net_income": {"current": ni_c, "previous": ni_p},
+                    "total_equity": {"current": eq_c},
+                    "total_liabilities": {"current": li_c},
+                },
+                "ratios": ratios,
+            }
+        except Exception as e:
+            log.debug(f"US financials 실패 ({ticker}): {e}")
+            return {"ticker": ticker, "error": f"us financials: {e}"}
+
     def collect_all(
         self,
         ticker: str,
@@ -1603,7 +1667,13 @@ class StockDataCollector:
         price = self.get_price_data(ticker)
         news = self.get_news_data(news_query, display=25) if news_query else None
         # ETF는 DART 재무제표 불필요
-        fin = (self.get_financial_statements(stock_code, year) if stock_code and not kr_etf else None)
+        # 재무제표: KR=DART, US=yfinance 연간, ETF=불필요
+        if kr_etf:
+            fin = None
+        elif _is_kr_ticker(ticker):
+            fin = self.get_financial_statements(stock_code, year) if stock_code else None
+        else:
+            fin = self.get_us_financials(ticker)
         mm = self.get_market_metrics(ticker)
 
         etf_constituent_news = None  # ETF 구성종목 뉴스 (별도 키)
