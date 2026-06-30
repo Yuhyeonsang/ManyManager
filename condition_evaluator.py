@@ -382,7 +382,11 @@ def evaluate(
     # OHLCV 로드 (가격 조건 외에는 필요)
     data = _fetch_ohlcv(eval_ticker)
 
-    if current_price is None and data:
+    # 참조종목(ref_ticker) 조건이면 전달된 매매종목 현재가는 부적합 → 참조종목 최신 종가로 교체
+    # (예: 'QQQ 고점 대비' 조건에 TQQQ 현재가가 들어가 -89%로 오판하던 버그 방지)
+    if ref_ticker and ref_ticker != ticker and data:
+        current_price = data["close"][0]
+    elif current_price is None and data:
         current_price = data["close"][0]  # 가장 최신 종가
 
     # ── 가격 조건 ──────────────────────────────

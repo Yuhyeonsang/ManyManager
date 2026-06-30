@@ -113,6 +113,16 @@ def _kis_headers(tr_id: str, mode: str = None) -> dict:
 # ─────────────────────────────────────────────
 # 현재가 조회
 # ─────────────────────────────────────────────
+def get_account_balance() -> dict:
+    """KIS 계좌 잔고 조회 (미구현 스텁). 빈 dict 반환 → 예산(AUTO_TRADE_BUDGET) 또는 매수 보류."""
+    return {}
+
+
+def get_holdings() -> list:
+    """KIS 보유종목 조회 (미구현 스텁)."""
+    return []
+
+
 def _is_us_ticker(ticker: str) -> bool:
     """국내=6자리 숫자코드, 그 외(TQQQ 등 알파벳)=미국. 라우팅용."""
     code = str(ticker).split(".")[0].strip().upper()
@@ -171,7 +181,10 @@ def place_overseas_order(symbol: str, order_type: str, qty: int, price: float = 
     }
     resp = requests.post(url, headers=headers, json=body, timeout=10)
     resp.raise_for_status()
-    return resp.json()
+    result = resp.json()
+    if str(result.get("rt_cd", "0")) != "0":
+        raise RuntimeError(f"해외주문 거부: [{result.get('msg_cd','')}] {result.get('msg1','') or result}")
+    return result
 
 
 def get_current_price(ticker: str) -> Optional[float]:
@@ -238,6 +251,8 @@ def place_order(ticker: str, order_type: str, qty: int, price: int = 0) -> dict:
     resp = requests.post(url, headers=headers, json=body, timeout=10)
     resp.raise_for_status()
     result = resp.json()
+    if str(result.get("rt_cd", "0")) != "0":
+        raise RuntimeError(f"주문 거부: [{result.get('msg_cd','')}] {result.get('msg1','') or result}")
     return result
 
 # ─────────────────────────────────────────────
@@ -750,12 +765,17 @@ def _check_and_trade_phase(strategy: dict):
         log.warning("가격 조회 실패 — 이번 사이클 스킵")
         return
 
-    # ── 포트폴리오 가치 (계좌 잔고 or 기본값) ──
+    # ── 포트폴리오 가치 (실제 잔고 → 사용자 예산 → 매수 보류) ──
     try:
         bal = get_account_balance()
-        portfolio_value = float(bal.get("total_eval_amount", 0)) or _state.get("portfolio_value", 1_000_000)
+        portfolio_value = float(bal.get("total_eval_amount", 0) or 0)
     except Exception:
-        portfolio_value = _state.get("portfolio_value", 1_000_000)
+        portfolio_value = 0.0
+    if portfolio_value <= 0:
+        # 잔고 자동조회 미구현/실패 시: .env AUTO_TRADE_BUDGET(매매통화 기준) 사용. 없으면 0 → 매수 보류
+        portfolio_value = float(os.getenv("AUTO_TRADE_BUDGET", "0") or 0)
+    if portfolio_value <= 0:
+        log.warning("잔고/예산 미설정 → 이번 사이클 매수 보류 (AUTO_TRADE_BUDGET 설정 또는 잔고연동 필요)")
 
     # ── Phase 엔진 평가 ──────────────────────
     actions = evaluate_strategy(strategy, phase_state, prices, portfolio_value)
@@ -813,7 +833,10 @@ def _check_and_trade_phase(strategy: dict):
             else:
                 buy_amount = portfolio_value * weight_pct / 100
 
-            qty = max(1, int(buy_amount / price))
+            qty = int(buy_amount / price)
+            if qty < 1:
+                log.info(f"매수금액 부족(예산 {portfolio_value:.2f}, {ticker}) → 매수 스킵")
+                continue
             try:
                 result = place_order(ticker, "buy", qty, 0)
                 # Phase 상태 업데이트
