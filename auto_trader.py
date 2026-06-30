@@ -114,8 +114,34 @@ def _kis_headers(tr_id: str, mode: str = None) -> dict:
 # 현재가 조회
 # ─────────────────────────────────────────────
 def get_account_balance() -> dict:
-    """KIS 계좌 잔고 조회 (미구현 스텁). 빈 dict 반환 → 예산(AUTO_TRADE_BUDGET) 또는 매수 보류."""
-    return {}
+    """KIS 계좌 총평가액(USD) → {"total_eval_amount": USD}. USD매수가능 + 미국보유평가액 합.
+    ※ 응답 필드명 모의(paper)로 검증 권장. 실패 시 {} → 예산(AUTO_TRADE_BUDGET) 폴백."""
+    mode = _state.get("trade_mode", KIS_TRADE_MODE)
+    base = _get_base_url(mode)
+    real = (mode != "paper")
+    cano, prdt = _parse_account(KIS_ACCOUNT_NO)
+    usd_cash = 0.0
+    try:
+        tr = "TTTS3007R" if real else "VTTS3007R"
+        url = f"{base}/uapi/overseas-stock/v1/trading/inquire-psamount"
+        cur = get_overseas_price("TQQQ") or 1
+        params = {"CANO": cano, "ACNT_PRDT_CD": prdt,
+                  "OVRS_EXCG_CD": os.getenv("KIS_US_EXCHANGE", "NASD"),
+                  "OVRS_ORD_UNPR": f"{cur:.2f}", "ITEM_CD": "TQQQ"}
+        r = requests.get(url, headers=_kis_headers(tr), params=params, timeout=10)
+        r.raise_for_status()
+        o = r.json().get("output", {}) or {}
+        usd_cash = float(o.get("ord_psbl_frcr_amt", 0) or o.get("frcr_ord_psbl_amt1", 0) or 0)
+    except Exception as e:
+        log.warning(f"해외 매수가능금액 조회 실패: {e}")
+    hold_val = 0.0
+    try:
+        for h in get_holdings():
+            hold_val += float(h.get("eval_amount", 0) or 0)
+    except Exception:
+        pass
+    total = usd_cash + hold_val
+    return {"total_eval_amount": total} if total > 0 else {}
 
 
 def get_holdings() -> list:
