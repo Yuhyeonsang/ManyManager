@@ -113,8 +113,71 @@ def _kis_headers(tr_id: str, mode: str = None) -> dict:
 # ─────────────────────────────────────────────
 # 현재가 조회
 # ─────────────────────────────────────────────
+def _is_us_ticker(ticker: str) -> bool:
+    """국내=6자리 숫자코드, 그 외(TQQQ 등 알파벳)=미국. 라우팅용."""
+    code = str(ticker).split(".")[0].strip().upper()
+    return not code.isdigit()
+
+
+# 미국 거래소: 현재가(EXCD)와 주문(OVRS_EXCG_CD) 코드가 다름
+_US_PRICE_EXCD = {"NASD": "NAS", "NAS": "NAS", "NYSE": "NYS", "NYS": "NYS", "AMEX": "AMS", "AMS": "AMS"}
+
+def _us_exchange(symbol: str) -> str:
+    """주문용 거래소코드. 기본 NASDAQ (TQQQ/QQQ 등). 필요시 .env KIS_US_EXCHANGE로 변경."""
+    return os.getenv("KIS_US_EXCHANGE", "NASD")
+
+
+def get_overseas_price(symbol: str) -> Optional[float]:
+    """KIS 해외주식 현재가(HHDFS00000300). 실패 시 None."""
+    try:
+        sym = symbol.split(".")[0].strip().upper()
+        _mode = _state.get("trade_mode", KIS_TRADE_MODE)
+        excd = _US_PRICE_EXCD.get(_us_exchange(sym), "NAS")
+        url = f"{_get_base_url(_mode)}/uapi/overseas-price/v1/quotations/price"
+        headers = _kis_headers("HHDFS00000300")
+        params = {"AUTH": "", "EXCD": excd, "SYMB": sym}
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+        out = resp.json().get("output", {}) or {}
+        raw = str(out.get("last") or out.get("ovrs_prpr") or "0").replace(",", "").strip()
+        return float(raw) if raw and float(raw) > 0 else None
+    except Exception as e:
+        log.warning(f"해외 현재가 조회 실패 ({symbol}): {e}")
+        return None
+
+
+def place_overseas_order(symbol: str, order_type: str, qty: int, price: float = 0) -> dict:
+    """KIS 해외주식(미국) 주문. 미국은 지정가만 지원 → price<=0이면 현재가로 지정가 제출."""
+    sym = symbol.split(".")[0].strip().upper()
+    cano, acnt_prdt_cd = _parse_account(KIS_ACCOUNT_NO)
+    _mode = _state.get("trade_mode", KIS_TRADE_MODE)
+    real = (_mode != "paper")
+    if order_type == "buy":
+        tr_id = "TTTT1002U" if real else "VTTT1002U"   # 미국 매수
+    else:
+        tr_id = "TTTT1006U" if real else "VTTT1001U"   # 미국 매도
+    unpr = float(price) if price and float(price) > 0 else (get_overseas_price(sym) or 0)
+    url = f"{_get_base_url(_mode)}/uapi/overseas-stock/v1/trading/order"
+    headers = _kis_headers(tr_id)
+    body = {
+        "CANO": cano,
+        "ACNT_PRDT_CD": acnt_prdt_cd,
+        "OVRS_EXCG_CD": _us_exchange(sym),     # NASD/NYSE/AMEX
+        "PDNO": sym,
+        "ORD_QTY": str(int(qty)),
+        "OVRS_ORD_UNPR": f"{unpr:.2f}",
+        "ORD_SVR_DVSN_CD": "0",
+        "ORD_DVSN": "00",                      # 지정가
+    }
+    resp = requests.post(url, headers=headers, json=body, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+
 def get_current_price(ticker: str) -> Optional[float]:
-    """KIS API로 현재가 조회. 실패 시 None."""
+    """현재가 조회. 미국=해외(overseas), 국내=domestic. 실패 시 None."""
+    if _is_us_ticker(ticker):
+        return get_overseas_price(ticker)
     try:
         # 종목 코드 정리 (005930.KS → 005930)
         code = ticker.split(".")[0] if "." in ticker else ticker
@@ -141,8 +204,10 @@ def get_current_price(ticker: str) -> Optional[float]:
 def place_order(ticker: str, order_type: str, qty: int, price: int = 0) -> dict:
     """
     order_type: "buy" | "sell"
-    price: 0이면 시장가
+    price: 0이면 국내 시장가 (미국은 지정가, 0이면 현재가로 제출)
     """
+    if _is_us_ticker(ticker):
+        return place_overseas_order(ticker, order_type, qty, price)
     code = ticker.split(".")[0] if "." in ticker else ticker
     cano, acnt_prdt_cd = _parse_account(KIS_ACCOUNT_NO)
 
