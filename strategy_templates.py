@@ -57,6 +57,9 @@ SNOWBALL_TQQQ = {
             "ref_ticker": "QQQ",
             # 고점 = 126일 장중 최고가 기준
             "condition": "126일 고점 대비 -22% 이하 & 200일선 대비 -7% 이하",
+            # "&" 복합조건: sub_conditions로 분리해야 둘 다 AND 평가됨 (없으면 200일선 무시됨)
+            "sub_conditions": ["126일 고점 대비 -22% 이하", "200일선 대비 -7% 이하"],
+            "condition_logic": "AND",
             "action": {"type": "buy", "weight_pct": 70, "weight_mode": "target"},
             "required_phase": [1],
             "next_phase": 2,
@@ -71,7 +74,7 @@ SNOWBALL_TQQQ = {
             "ref_ticker": "TQQQ",
             "condition": "RSI 35 이하",
             "action": {"type": "buy", "weight_pct": 10, "weight_mode": "add"},
-            "required_phase": [1, 2, 3],
+            "required_phase": [1, 2],
             "next_phase": None,
             # "중복 적용 불가" = RSI 35 레벨은 1회만. RSI 25는 별도로 1회 가능
             "one_time": True,
@@ -85,7 +88,7 @@ SNOWBALL_TQQQ = {
             "ref_ticker": "TQQQ",
             "condition": "RSI 25 이하",
             "action": {"type": "buy", "weight_pct": 15, "weight_mode": "add"},
-            "required_phase": [1, 2, 3],
+            "required_phase": [1, 2],
             "next_phase": None,
             # "중복 적용 불가" = RSI 25 레벨은 1회만. RSI 35와 독립 적용
             "one_time": True,
@@ -99,12 +102,14 @@ SNOWBALL_TQQQ = {
             "ref_ticker": "TQQQ",
             "condition": "5일선 220일선 골든크로스",
             "action": {"type": "buy", "weight_pct": 100, "weight_mode": "target"},
-            # Phase 0 특수 동작: 현금 100% 상태에서 GC 발동 시
-            #   → Dip1 탐색전 매수(30%) 먼저 선매수 후 즉시 GC 풀매수(100%) 실행
-            #   → Dip 없이 GC만 발동된 경우에 한해 이 경로로 진입 (Phase 0→3 직행)
+            # Phase 0: 현금 100%여도 Dip1 거치지 않고 즉시 100% 풀매수 (target 100%)
             # Phase 1,2: Dip 진입 후 GC 발생 시 목표비중 100%로 채움
-            "required_phase": [0, 1, 2],
+            # Phase 4,5: TP 익절 중 새 골든크로스 발생 시 100% 재매수(물타기) — 시나리오2/3
+            #   ※ GC는 교차 당일(edge)에만 발동 → TP 직후 즉시 재매수 아님
+            "required_phase": [0, 1, 2, 4, 5],
             "next_phase": 3,
+            # GC 발동 시 TP1/2/3 재무장 → 물타기 후 다시 분할 익절 가능 (재익절 자동)
+            "reset_triggers": ["tp1", "tp2", "tp3"],
             "one_time": False,
             "reset_on_trigger": False,
             "phase0_immediate_entry": True,
@@ -131,9 +136,9 @@ SNOWBALL_TQQQ = {
             "ticker": "TQQQ",
             "ref_ticker": "TQQQ",
             "condition": "수익률 +100% 도달",
-            # TP2 최소 수량(= TP1 매도 후 남은 현재 수량)의 35% 매도
-            # "P2 최소 수량의 35%" = TP1 이후 남은 현재 보유량의 35% = current_qty
-            "action": {"type": "sell", "sell_pct": 35, "sell_mode": "current_qty"},
+            # 다이어그램: "최초 수량의 35% 매도" = initial_qty(총 누적 보유량) 기준
+            # TP1(50%)+TP2(35%)+TP3(나머지15%) = 최초 수량 100% 분할 청산
+            "action": {"type": "sell", "sell_pct": 35, "sell_mode": "initial_qty"},
             "required_phase": [4],
             "next_phase": 5,
             "one_time": True,

@@ -119,8 +119,47 @@ def get_account_balance() -> dict:
 
 
 def get_holdings() -> list:
-    """KIS 보유종목 조회 (미구현 스텁)."""
-    return []
+    """KIS 보유종목 조회 (국내+미국). 반환 [{ticker,qty,eval_amount}].
+    ※ 응답 필드명은 모의(paper)로 1회 검증 권장 — 미검증 시 매도수량 오류 가능."""
+    out = []
+    mode = _state.get("trade_mode", KIS_TRADE_MODE)
+    base = _get_base_url(mode)
+    real = (mode != "paper")
+    cano, prdt = _parse_account(KIS_ACCOUNT_NO)
+    # ── 미국(해외) 잔고 ──
+    try:
+        tr = "TTTS3012R" if real else "VTTS3012R"
+        url = f"{base}/uapi/overseas-stock/v1/trading/inquire-balance"
+        params = {"CANO": cano, "ACNT_PRDT_CD": prdt,
+                  "OVRS_EXCG_CD": os.getenv("KIS_US_EXCHANGE", "NASD"),
+                  "TR_CRCY_CD": "USD", "CTX_AREA_FK200": "", "CTX_AREA_NK200": ""}
+        r = requests.get(url, headers=_kis_headers(tr), params=params, timeout=10)
+        r.raise_for_status()
+        for h in (r.json().get("output1") or []):
+            qty = int(float(h.get("ovrs_cblc_qty", 0) or 0))
+            if qty > 0:
+                out.append({"ticker": h.get("ovrs_pdno", ""), "qty": qty,
+                            "eval_amount": float(h.get("ovrs_stck_evlu_amt", 0) or 0)})
+    except Exception as e:
+        log.warning(f"해외 잔고조회 실패: {e}")
+    # ── 국내 잔고 ──
+    try:
+        tr = "TTTC8434R" if real else "VTTC8434R"
+        url = f"{base}/uapi/domestic-stock/v1/trading/inquire-balance"
+        params = {"CANO": cano, "ACNT_PRDT_CD": prdt, "AFHR_FLPR_YN": "N",
+                  "OFL_YN": "", "INQR_DVSN": "02", "UNPR_DVSN": "01",
+                  "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
+                  "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""}
+        r = requests.get(url, headers=_kis_headers(tr), params=params, timeout=10)
+        r.raise_for_status()
+        for h in (r.json().get("output1") or []):
+            qty = int(float(h.get("hldg_qty", 0) or 0))
+            if qty > 0:
+                out.append({"ticker": h.get("pdno", ""), "qty": qty,
+                            "eval_amount": float(h.get("evlu_amt", 0) or 0)})
+    except Exception as e:
+        log.warning(f"국내 잔고조회 실패: {e}")
+    return out
 
 
 def _is_us_ticker(ticker: str) -> bool:

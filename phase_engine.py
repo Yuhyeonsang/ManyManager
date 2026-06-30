@@ -130,6 +130,7 @@ def evaluate_strategy(strategy, phase_state, prices, portfolio_value=1_000_000):
             "next_phase": cond_def.get("next_phase"),
             "one_time": one_time,
             "reset_on_trigger": cond_def.get("reset_on_trigger", False),
+            "reset_triggers": cond_def.get("reset_triggers"),
             "price": price,
         }
         actions.append(action)
@@ -177,6 +178,10 @@ def apply_action_to_state(phase_state, action):
     next_phase = action.get("next_phase")
     if next_phase is not None:
         state["phase"] = next_phase
+
+    # 특정 조건들의 1회성 트리거 해제 (예: GC 물타기 시 tp1/tp2/tp3 재무장)
+    for rid in (action.get("reset_triggers") or []):
+        state["triggered"].pop(rid, None)
 
     if action.get("reset_on_trigger"):
         state["triggered"] = {}
