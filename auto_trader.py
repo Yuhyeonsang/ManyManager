@@ -122,16 +122,17 @@ def get_account_balance() -> dict:
     cano, prdt = _parse_account(KIS_ACCOUNT_NO)
     usd_cash = 0.0
     try:
+        time.sleep(0.3)  # KIS 초당 거래건수 제한 회피
         tr = "TTTS3007R" if real else "VTTS3007R"
         url = f"{base}/uapi/overseas-stock/v1/trading/inquire-psamount"
-        cur = get_overseas_price("TQQQ") or 1
         params = {"CANO": cano, "ACNT_PRDT_CD": prdt,
                   "OVRS_EXCG_CD": os.getenv("KIS_US_EXCHANGE", "NASD"),
-                  "OVRS_ORD_UNPR": f"{cur:.2f}", "ITEM_CD": "TQQQ"}
+                  "OVRS_ORD_UNPR": "100", "ITEM_CD": "TQQQ"}
         r = requests.get(url, headers=_kis_headers(tr), params=params, timeout=10)
         r.raise_for_status()
         o = r.json().get("output", {}) or {}
-        usd_cash = float(o.get("ord_psbl_frcr_amt", 0) or o.get("frcr_ord_psbl_amt1", 0) or 0)
+        # 실응답: frcr_ord_psbl_amt1=외화주문가능(USD). ord_psbl_frcr_amt는 0 나옴
+        usd_cash = float(o.get("frcr_ord_psbl_amt1") or o.get("ovrs_ord_psbl_amt") or 0)
     except Exception as e:
         log.warning(f"해외 매수가능금액 조회 실패: {e}")
     hold_val = 0.0
@@ -154,6 +155,7 @@ def get_holdings() -> list:
     cano, prdt = _parse_account(KIS_ACCOUNT_NO)
     # ── 미국(해외) 잔고 ──
     try:
+        time.sleep(0.3)  # KIS 초당 거래건수 제한 회피
         tr = "TTTS3012R" if real else "VTTS3012R"
         url = f"{base}/uapi/overseas-stock/v1/trading/inquire-balance"
         params = {"CANO": cano, "ACNT_PRDT_CD": prdt,
@@ -168,23 +170,6 @@ def get_holdings() -> list:
                             "eval_amount": float(h.get("ovrs_stck_evlu_amt", 0) or 0)})
     except Exception as e:
         log.warning(f"해외 잔고조회 실패: {e}")
-    # ── 국내 잔고 ──
-    try:
-        tr = "TTTC8434R" if real else "VTTC8434R"
-        url = f"{base}/uapi/domestic-stock/v1/trading/inquire-balance"
-        params = {"CANO": cano, "ACNT_PRDT_CD": prdt, "AFHR_FLPR_YN": "N",
-                  "OFL_YN": "", "INQR_DVSN": "02", "UNPR_DVSN": "01",
-                  "FUND_STTL_ICLD_YN": "N", "FNCG_AMT_AUTO_RDPT_YN": "N",
-                  "PRCS_DVSN": "01", "CTX_AREA_FK100": "", "CTX_AREA_NK100": ""}
-        r = requests.get(url, headers=_kis_headers(tr), params=params, timeout=10)
-        r.raise_for_status()
-        for h in (r.json().get("output1") or []):
-            qty = int(float(h.get("hldg_qty", 0) or 0))
-            if qty > 0:
-                out.append({"ticker": h.get("pdno", ""), "qty": qty,
-                            "eval_amount": float(h.get("evlu_amt", 0) or 0)})
-    except Exception as e:
-        log.warning(f"국내 잔고조회 실패: {e}")
     return out
 
 
