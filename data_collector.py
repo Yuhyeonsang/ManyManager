@@ -1836,8 +1836,11 @@ class StockDataCollector:
 
         # ★ KR 종목: 네이버 금융을 1순위로 — yfinance 한국 데이터 부정확 문제 해결
         # _ns_cache: get_summary 결과 캐시 (이 함수 호출 1회만 API 요청)
+        # ★ _is_kr_ticker(ticker) 추가(2026-07-30) — stock_code는 US 티커도 항상
+        # truthy(예: "MU")라서 이 가드만으론 US 종목에서도 불필요하게 Naver를
+        # "MU"라는 잘못된 코드로 조회 시도했었음 (아래 US 전용 override 블록과 동일 버그).
         _ns_cache: Optional[Dict] = None
-        if stock_code and isinstance(mm, dict) and _NAVER_AVAILABLE and hasattr(_naver, "get_summary"):
+        if stock_code and _is_kr_ticker(ticker) and isinstance(mm, dict) and _NAVER_AVAILABLE and hasattr(_naver, "get_summary"):
             try:
                 _ns_cache = _naver.get_summary(stock_code)
                 ns = _ns_cache
@@ -1873,7 +1876,7 @@ class StockDataCollector:
                 log.debug(f"Naver summary 1순위 실패 ({stock_code}): {e}")
 
         # KR 종목이고 네이버에서도 PER/PBR/시총을 못 채웠으면 KRX 직통 폴백
-        if stock_code and isinstance(mm, dict):
+        if stock_code and _is_kr_ticker(ticker) and isinstance(mm, dict):
             need_krx = (
                 mm.get("market_cap") is None
                 or mm.get("per") is None
@@ -1898,7 +1901,7 @@ class StockDataCollector:
                     mm["shares_outstanding"] = krx.get("shares_outstanding")
 
         # KRX 직통도 못 채웠으면 pykrx 폴백 (코스닥 소형주 강함)
-        if stock_code and isinstance(mm, dict):
+        if stock_code and _is_kr_ticker(ticker) and isinstance(mm, dict):
             still_need = mm.get("per") is None or mm.get("pbr") is None
             if still_need:
                 pk = self.get_kr_fundamentals_pykrx(stock_code)
@@ -1921,7 +1924,7 @@ class StockDataCollector:
 
         # pykrx 까지도 못 채우면 Naver Finance 페이지 스크래핑 (최후 수단)
         # ★ PER/PBR뿐 아니라 영업이익률·ROE·매출성장률도 Naver에서 채움
-        if stock_code and isinstance(mm, dict) and _NAVER_AVAILABLE and hasattr(_naver, "get_summary"):
+        if stock_code and _is_kr_ticker(ticker) and isinstance(mm, dict) and _NAVER_AVAILABLE and hasattr(_naver, "get_summary"):
             need_basic = mm.get("per") is None or mm.get("pbr") is None
             need_margins = (
                 mm.get("operating_margin_pct") is None
@@ -1964,7 +1967,9 @@ class StockDataCollector:
                 except Exception as e:
                     log.debug(f"Naver summary fallback 실패 ({stock_code}): {e}")
 
-        if fin and "ratios" in fin and isinstance(mm, dict):
+        # ★ _is_kr_ticker(ticker) 추가 — fin(get_us_financials)도 "ratios" 키를 갖고
+        # 있어서 이 가드가 없으면 US 종목에서 값이 None일 때 "dart_calc"로 잘못 라벨링됨
+        if fin and "ratios" in fin and _is_kr_ticker(ticker) and isinstance(mm, dict):
             r = fin["ratios"]
             if mm.get("roe_pct") is None and r.get("roe_pct") is not None:
                 mm["roe_pct"]    = r["roe_pct"]
@@ -1983,7 +1988,7 @@ class StockDataCollector:
                 mm["pbr_basis"]  = "분기말"
 
         # ★ KR 종목 TTM: PER / ROE / 영업이익률을 TTM 기준으로 통일
-        if stock_code and fin and not fin.get("error") and isinstance(mm, dict):
+        if stock_code and _is_kr_ticker(ticker) and fin and not fin.get("error") and isinstance(mm, dict):
             mc = mm.get("market_cap")
             ttm = self._get_ttm_income_statement(stock_code, fin)
             if ttm:
@@ -2034,7 +2039,14 @@ class StockDataCollector:
         # TTM/최신분기 우선 — 연간(최대 11개월 전 마감) 그대로 쓰면 마진 급변 업종(예:
         # 메모리 반도체 슈퍼사이클)에서 실제 수익성을 몇 배씩 틀리게 보여줄 수 있음
         # (2026-07 Micron 실사례: 연간 26%대 vs 최근 분기 67%대 영업이익률).
-        if not stock_code and isinstance(mm, dict):
+        # ★★ 진짜 원인 발견(2026-07-30): find_watch_entry()가 US 티커도 code 필드에
+        # 항상 값을 채움(KR=6자리 숫자코드, US=티커심볼 자체, 예 "MU") — 즉 stock_code는
+        # US 종목에서도 항상 truthy라서 "not stock_code"가 절대 True가 안 되고 이 블록
+        # 전체가 매번 스킵되고 있었음. yfinance의 원본 info["operatingMargins"]/
+        # ["debtToEquity"]가 그대로(80.37%/6.33 등) 노출된 이유가 이것 — EBIT 폴백
+        # 제거나 TTM 계산 자체는 다 맞았는데 애초에 실행이 안 됐던 것. 아래 다른 곳(fin
+        # 변수 할당)처럼 ticker 형식(_is_kr_ticker)으로 판별하도록 수정.
+        if not _is_kr_ticker(ticker) and isinstance(mm, dict):
             us_fin = self._get_us_annual_financials(ticker)
             if us_fin and us_fin.get("revenue_growth_pct") is not None:
                 mm["revenue_growth_pct"]    = us_fin["revenue_growth_pct"]
