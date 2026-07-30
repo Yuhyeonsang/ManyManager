@@ -1,4 +1,5 @@
 import os
+import re
 import logging
 import requests
 import yfinance as yf
@@ -542,6 +543,8 @@ class StockDataCollector:
                 "수익(매출액)": "revenue",
                 "매출": "revenue",
                 "영업수익": "revenue",
+                "총영업수익": "revenue",   # ★ 금융지주/은행/보험 계열에서 흔함
+                "순영업수익": "revenue",
                 "수익": "revenue",
                 # 영업이익
                 "영업이익": "operating_income",
@@ -564,6 +567,23 @@ class StockDataCollector:
                 "자본 총계": "total_equity",
             }
 
+            # ★ 금융지주(예: 메리츠금융지주) 등 일부 회사는 DART account_nm에
+            # "Ⅰ.영업수익", "1. 매출액", "영업수익(주1)" 처럼 로마숫자/번호 접두사나
+            # 각주 괄호가 붙어서 나옴 — 정확히 문자열이 같아야만 매칭되는 기존 로직이
+            # 이런 표기 차이 때문에 데이터가 실제로 있는데도 못 찾는 경우가 있었음
+            # (2026-07 검증: 매출성장률/영업이익률 수집실패, 실제로는 DART에 데이터 존재).
+            # 접두 번호·괄호 각주·공백을 제거하고 매칭해서 이런 표기 차이를 흡수.
+            _prefix_re = re.compile(r'^[ⅠⅡⅢⅣⅤⅥⅦⅧⅨⅩ0-9]+[.\)]\s*')
+
+            def _norm_account(s: str) -> str:
+                n = (s or "").strip()
+                n = _prefix_re.sub("", n)          # 앞쪽 "Ⅰ." "1)" 등 절 번호 제거
+                n = re.sub(r"\([^)]*\)", "", n)     # 괄호(각주/부가설명) 제거
+                n = re.sub(r"\s+", "", n)           # 중간 공백 제거
+                return n
+
+            targets_norm = {_norm_account(k): v for k, v in targets.items()}
+
             def to_num(s: str) -> Optional[int]:
                 if not s:
                     return None
@@ -575,8 +595,9 @@ class StockDataCollector:
             result: Dict[str, Dict] = {}
             for item in data.get("list", []):
                 name = item.get("account_nm", "").strip()
-                if name in targets:
-                    key = targets[name]
+                name_norm = _norm_account(name)
+                if name_norm in targets_norm:
+                    key = targets_norm[name_norm]
                     if key in result:
                         continue
                     result[key] = {
@@ -585,6 +606,14 @@ class StockDataCollector:
                         "before_previous": to_num(item.get("bfefrmtrm_amount")),
                         "fs_name": item.get("sj_nm"),
                     }
+
+            if not result.get("revenue") or not result.get("operating_income"):
+                _missing = [k for k in ("revenue", "operating_income") if not result.get(k)]
+                _all_names = [item.get("account_nm", "").strip() for item in data.get("list", [])]
+                log.warning(
+                    f"DART 재무 매칭 실패 ({stock_code}, {year}): {_missing} 못 찾음. "
+                    f"실제 account_nm 목록: {_all_names[:40]}"
+                )
 
             rev = result.get("revenue", {}).get("current")
             op = result.get("operating_income", {}).get("current")
