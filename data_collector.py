@@ -365,8 +365,15 @@ class StockDataCollector:
                 else:
                     ma[f"MA{w}"] = None
 
-            high_52w = float(close.tail(252).max()) if len(close) > 0 else None
-            low_52w = float(close.tail(252).min()) if len(close) > 0 else None
+            # ★ 52주 고저는 "종가"가 아니라 "장중 고가/저가" 기준이어야 함 (일반적 정의).
+            # close.max()/.min()을 썼더니 장중에 찍고 종가는 눌린 날의 실제 고점을
+            # 놓쳐서 실제보다 낮게 나오는 문제 발견(2026-07 SK하이닉스 검증: 리포트
+            # 291.9만원 vs 실제 52주 최고 298.7만원, 2.3% 낮게 잡힘). High/Low 컬럼이
+            # 있으면 그걸 쓰고, 없는 소스(일부 폴백)면 종가로 대체.
+            high_series = hist["High"].dropna() if "High" in hist.columns else close
+            low_series = hist["Low"].dropna() if "Low" in hist.columns else close
+            high_52w = float(high_series.tail(252).max()) if len(high_series) > 0 else None
+            low_52w = float(low_series.tail(252).min()) if len(low_series) > 0 else None
             avg_volume = int(hist["Volume"].tail(20).mean()) if "Volume" in hist else None
 
             recent = [

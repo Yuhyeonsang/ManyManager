@@ -50,13 +50,15 @@ export function formatReportForClipboard(report) {
       ...(p.signals?.length ? p.signals.map(s => `시그널: ${s}`) : []),
     ].filter(Boolean) : ['데이터 없음']),
     '',
-    '── 주요 재무 지표 ──',
-    `PER: ${f.per ?? '-'}`,
-    `PBR: ${f.pbr ?? '-'}`,
-    `ROE: ${f.roe ?? '-'}%`,
-    `매출 성장률: ${f.revenue_growth ?? '-'}%`,
-    `영업이익률: ${f.operating_margin ?? '-'}%`,
-    `부채비율: ${f.debt_ratio ?? '-'}%`,
+    // 기준 시점(TTM/연간/분기말 등)을 같이 표기 — 다른 사이트와 대조할 때
+    // "누가 틀린 게 아니라 기준이 다른 것"인지 바로 판단할 수 있게.
+    '── 주요 재무 지표 (괄호=산정 기준) ──',
+    `PER: ${f.per ?? '-'}${f.per_basis ? ` (${f.per_basis})` : ''}`,
+    `PBR: ${f.pbr ?? '-'}${f.pbr_basis ? ` (${f.pbr_basis})` : ''}`,
+    `ROE: ${f.roe ?? '-'}%${f.roe_basis ? ` (${f.roe_basis})` : ''}`,
+    `매출 성장률: ${f.revenue_growth ?? '-'}%${f.revenue_growth_basis ? ` (${f.revenue_growth_basis})` : ''}`,
+    `영업이익률: ${f.operating_margin ?? '-'}%${f.operating_margin_basis ? ` (${f.operating_margin_basis})` : ''}`,
+    `부채비율: ${f.debt_ratio ?? '-'}%${f.debt_ratio_basis ? ` (${f.debt_ratio_basis})` : ''}`,
     '',
     '── 뉴스 ──',
     ...(report.news_items?.length
