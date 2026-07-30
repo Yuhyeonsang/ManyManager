@@ -1567,9 +1567,22 @@ class StockDataCollector:
                         return None
 
                     rev = _ival(inc, "Total Revenue", "Revenue")
-                    op_inc = _ival(inc, "Operating Income", "EBIT")
+                    # ★ "EBIT"를 폴백으로 쓰면 안 됨 — EBIT는 영업이익과 다른 개념(이자·법인세 차감전
+                    # 이익으로, 비영업 손익까지 포함돼 영업이익보다 클 수 있음). 실제로 영업이익률이
+                    # 매출총이익률보다 높게 나오는 논리적으로 불가능한 값이 나온 원인이 이 폴백이었음
+                    # (2026-07 Micron 검증 사례: 영업이익률 80.37% > 매출총이익률 72.60%).
+                    op_inc = _ival(inc, "Operating Income", "Operating Income Or Loss")
+                    gross_profit = _ival(inc, "Gross Profit")
                     if rev and rev != 0 and op_inc is not None:
-                        result["operating_margin_pct"] = round(op_inc / rev * 100, 2)
+                        om = round(op_inc / rev * 100, 2)
+                        # 안전장치: 영업이익률은 매출총이익률을 넘을 수 없음(정의상 영업이익=매출총이익-판관비)
+                        if gross_profit is not None and rev != 0:
+                            gm = gross_profit / rev * 100
+                            if om > gm + 0.5:
+                                log.warning(f"US 연간 영업이익률 이상치 폐기 ({ticker}): op_margin={om}% > gross_margin={gm:.2f}%")
+                                om = None
+                        if om is not None:
+                            result["operating_margin_pct"] = om
 
                     if inc.shape[1] >= 2:
                         rev_prev = None
@@ -1642,9 +1655,21 @@ class StockDataCollector:
                                     return float(s.iloc[:4].sum())
                         return None
                     ttm_rev = _sum4(["Total Revenue", "Revenue", "Operating Revenue"])
-                    ttm_op = _sum4(["Operating Income", "EBIT", "Operating Income Or Loss"])
+                    # ★ "EBIT" 폴백 제거 — EBIT는 이자·법인세 차감전 이익으로 비영업 손익까지
+                    # 포함돼 진짜 영업이익보다 클 수 있음 (영업이익률이 매출총이익률을 넘는
+                    # 논리적 모순의 원인이었음. 2026-07 Micron 검증: 80.37% > 매출총이익률 72.60%).
+                    ttm_op = _sum4(["Operating Income", "Operating Income Or Loss"])
+                    ttm_gross = _sum4(["Gross Profit"])
                     if ttm_rev and ttm_op is not None and ttm_rev != 0:
-                        result["operating_margin_pct"] = round(ttm_op / ttm_rev * 100, 2)
+                        om = round(ttm_op / ttm_rev * 100, 2)
+                        # 안전장치: 영업이익률이 매출총이익률을 넘으면(정의상 불가능) 폐기
+                        if ttm_gross is not None:
+                            gm = ttm_gross / ttm_rev * 100
+                            if om > gm + 0.5:
+                                log.warning(f"US TTM 영업이익률 이상치 폐기 ({ticker}): op_margin={om}% > gross_margin={gm:.2f}%")
+                                om = None
+                        if om is not None:
+                            result["operating_margin_pct"] = om
             except Exception as e:
                 log.debug(f"US TTM 손익 실패 ({ticker}): {e}")
 
@@ -1698,8 +1723,11 @@ class StockDataCollector:
 
             rev_c = _col(inc, ["Total Revenue", "Revenue", "Operating Revenue"], 0)
             rev_p = _col(inc, ["Total Revenue", "Revenue", "Operating Revenue"], 1)
-            op_c  = _col(inc, ["Operating Income", "EBIT", "Operating Income Or Loss"], 0)
-            op_p  = _col(inc, ["Operating Income", "EBIT", "Operating Income Or Loss"], 1)
+            # ★ "EBIT" 폴백 제거 — EBIT ≠ 영업이익(비영업 손익 포함돼 더 클 수 있음).
+            # 영업이익률이 매출총이익률을 넘는 논리적 모순의 원인이었음(2026-07 Micron 검증).
+            op_c  = _col(inc, ["Operating Income", "Operating Income Or Loss"], 0)
+            op_p  = _col(inc, ["Operating Income", "Operating Income Or Loss"], 1)
+            gross_c = _col(inc, ["Gross Profit"], 0)
             ni_c  = _col(inc, ["Net Income", "Net Income Common Stockholders", "Net Income From Continuing Operation Net Minority Interest"], 0)
             ni_p  = _col(inc, ["Net Income", "Net Income Common Stockholders"], 1)
             eq_c  = _col(bs, ["Stockholders Equity", "Total Stockholder Equity", "Common Stock Equity"], 0)
@@ -1716,7 +1744,15 @@ class StockDataCollector:
 
             ratios = {}
             if rev_c and op_c is not None:
-                ratios["operating_margin_pct"] = round(op_c / rev_c * 100, 2)
+                om = round(op_c / rev_c * 100, 2)
+                # 안전장치: 영업이익률은 매출총이익률을 넘을 수 없음(정의상)
+                if gross_c is not None:
+                    gm = gross_c / rev_c * 100
+                    if om > gm + 0.5:
+                        log.warning(f"US 영업이익률 이상치 폐기 ({ticker}): op_margin={om}% > gross_margin={gm:.2f}%")
+                        om = None
+                if om is not None:
+                    ratios["operating_margin_pct"] = om
             if rev_c and ni_c is not None:
                 ratios["net_margin_pct"] = round(ni_c / rev_c * 100, 2)
             if eq_c and li_c is not None and eq_c != 0:
