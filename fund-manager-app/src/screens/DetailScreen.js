@@ -13,7 +13,7 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import GradeBadge from '../components/GradeBadge';
-import { fetchStockReport, fetchClipboardText, syncFavoritesToServer, getEtfNaverCodes, putEtfNaverCode } from '../services/api';
+import { fetchStockReport, syncFavoritesToServer, getEtfNaverCodes, putEtfNaverCode } from '../services/api';
 import {
   cacheReport,
   getCachedReport,
@@ -120,12 +120,9 @@ export default function DetailScreen({ route, navigation }) {
     if (!report) return;
     setCopying(true);
     try {
-      let text;
-      try {
-        text = await fetchClipboardText(ticker);
-      } catch {
-        text = formatReportForClipboard(report);
-      }
+      // 서버 /clipboard(AI 재수집, 30초~2분)는 기다리지 않고 이미 로드된 report로
+      // 고정 템플릿을 즉시 조립 — 실제 분석은 Claude가 하므로 원본 데이터만 있으면 충분.
+      const text = formatReportForClipboard(report);
       await copyToClipboard(text);
       Alert.alert(
         '복사 완료',

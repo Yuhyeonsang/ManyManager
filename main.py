@@ -456,6 +456,22 @@ class NewsItem(BaseModel):
     impact: Optional[str] = None        # 긍정/부정/중립
 
 
+class PriceInfo(BaseModel):
+    """일반 주식(비-ETF)용 시세·이동평균 스냅샷. analyzer.SemanticLayer.analyze_price()가
+    파이썬으로 계산한 값을 그대로 노출 — AI 호출 없이 즉시 계산되므로 앱/클립보드에서 빠르게 씀."""
+    current_price: Optional[float] = None
+    change_pct: Optional[float] = None
+    ma5: Optional[float] = None
+    ma20: Optional[float] = None
+    ma60: Optional[float] = None
+    ma120: Optional[float] = None
+    price_52w_high: Optional[float] = None
+    price_52w_low: Optional[float] = None
+    position_52w_pct: Optional[float] = None   # 0=52주 최저, 100=52주 최고
+    momentum_10d_pct: Optional[float] = None
+    signals: Optional[List[str]] = None        # "단기 정배열(MA5>MA20)" 등 사람이 읽을 수 있는 시그널
+
+
 class StockReport(BaseModel):
     ticker: str
     name: str
@@ -466,6 +482,7 @@ class StockReport(BaseModel):
     etf_constituent_news_items: Optional[List[NewsItem]] = None  # ETF 구성종목 뉴스 (ETF만)
     financials: Financials
     etf_info: Optional[EtfInfo] = None  # ETF면 채워짐, 일반 주식이면 None
+    price_info: Optional[PriceInfo] = None  # 비-ETF 종목의 시세/이동평균 (ETF는 etf_info 쪽에 이미 있음)
     updated_at: str
 
 
@@ -1243,6 +1260,27 @@ def _build_report_from_analysis(entry: dict, r: dict) -> "StockReport":
     etf_raw = r.get("_internals", {}).get("bundle", {}).get("etf_info")
     etf_info_model = EtfInfo(**etf_raw) if etf_raw else None
 
+    # ★ 비-ETF 종목용 시세/이동평균 (이미 analyze_one()이 계산해둔 price_an 재사용 — AI 호출 없이 즉시)
+    price_info_model = None
+    if not etf_raw:
+        price_an_pi = intr.get("price_an") or {}
+        if not price_an_pi.get("error"):
+            ma_pi = price_an_pi.get("ma_summary") or {}
+            bundle_price_pi = (bundle or {}).get("price") or {}
+            price_info_model = PriceInfo(
+                current_price=price_an_pi.get("current_price"),
+                change_pct=price_an_pi.get("change_pct"),
+                ma5=ma_pi.get("MA5"),
+                ma20=ma_pi.get("MA20"),
+                ma60=ma_pi.get("MA60"),
+                ma120=ma_pi.get("MA120"),
+                price_52w_high=bundle_price_pi.get("high_52w"),
+                price_52w_low=bundle_price_pi.get("low_52w"),
+                position_52w_pct=price_an_pi.get("position_52w_pct"),
+                momentum_10d_pct=price_an_pi.get("momentum_10d_pct"),
+                signals=price_an_pi.get("signals") or None,
+            )
+
     # ★ ETF 구성종목 뉴스 아이템 변환
     const_news_items_out: List[NewsItem] = []
     if const_picks:
@@ -1274,6 +1312,7 @@ def _build_report_from_analysis(entry: dict, r: dict) -> "StockReport":
         etf_constituent_news_items=const_news_items_out or None,
         financials=financials,
         etf_info=etf_info_model,
+        price_info=price_info_model,
         updated_at=datetime.now().isoformat(),
     )
 

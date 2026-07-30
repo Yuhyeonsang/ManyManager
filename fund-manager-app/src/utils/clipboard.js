@@ -17,14 +17,38 @@ export function formatReportForClipboard(report) {
   }
 
   const f = report.financials || {};
+  const p = report.price_info || {};
+  const hasPrice = p.current_price != null;
+
+  // 실제 분석(뉴스 해석, 투자판단)은 Claude가 하므로 여기서는 원본 데이터만
+  // 고정 포맷으로 즉시(AI 호출 없이) 조립 — 서버 /clipboard 왕복을 기다릴 필요 없음.
+  const num = (v) => (v != null ? v.toLocaleString() : '-');
+  const pct = (v) => (v != null ? `${v > 0 ? '+' : ''}${v}%` : '-');
+
   const lines = [
-    '아래는 한국 주식 종목에 대한 자동 수집 리포트입니다.',
-    '이 데이터를 바탕으로 투자자 관점에서 분석해 주세요.',
-    '(매수/관망/매도 의견, 핵심 리스크, 추가로 확인할 지표)',
+    '당신은 20년 경력의 친절한 주식 투자 선생님입니다.',
+    '아래 종목 리포트(시세·이동평균·재무·뉴스·등급)를 근거로 초보 투자자도 이해할 수 있게 깊이 있고 구체적으로 분석해주세요.',
+    '',
+    '[필수 규칙]',
+    '- 어려운 금융 용어는 쉬운 말 + 일상 비유로 풀어서 설명할 것.',
+    '- 모든 숫자에 "좋다/보통/나쁘다" 판단과 이유를 붙일 것.',
+    '- 리포트에 없는 정보는 추측하지 말고 "데이터 없음"으로 표시할 것.',
+    '- 뉴스는 헤드라인만 보지 말고 실제 기사 내용을 찾아 링크와 함께 설명할 것.',
     '',
     `■ 종목명: ${report.name} (${report.ticker})`,
     `■ AI 자동 등급: ${report.grade}  (점수 ${report.score ?? '-'}/100)`,
     `■ 데이터 기준 시각: ${report.updated_at ?? '알 수 없음'}`,
+    '',
+    '── 시세 & 이동평균 ──',
+    ...(hasPrice ? [
+      `현재가: ${num(p.current_price)} (${pct(p.change_pct)})`,
+      `52주 위치: ${p.position_52w_pct != null ? p.position_52w_pct + '%' : '-'} (0%=최저, 100%=최고)`,
+      (p.price_52w_high != null || p.price_52w_low != null)
+        ? `52주 최고/최저: ${num(p.price_52w_high)} / ${num(p.price_52w_low)}` : null,
+      `이동평균: MA5 ${num(p.ma5)} · MA20 ${num(p.ma20)} · MA60 ${num(p.ma60)} · MA120 ${num(p.ma120)}`,
+      p.momentum_10d_pct != null ? `10일 모멘텀: ${pct(p.momentum_10d_pct)}` : null,
+      ...(p.signals?.length ? p.signals.map(s => `시그널: ${s}`) : []),
+    ].filter(Boolean) : ['데이터 없음']),
     '',
     '── 주요 재무 지표 ──',
     `PER: ${f.per ?? '-'}`,
@@ -34,13 +58,24 @@ export function formatReportForClipboard(report) {
     `영업이익률: ${f.operating_margin ?? '-'}%`,
     `부채비율: ${f.debt_ratio ?? '-'}%`,
     '',
-    '── AI 뉴스 요약 ──',
-    report.news_summary ?? '(요약 없음)',
+    '── 뉴스 ──',
+    ...(report.news_items?.length
+      ? report.news_items.flatMap(n => [
+          `• [${n.impact ?? '중립'}] ${n.title}`,
+          n.link ? `  링크: ${n.link}` : null,
+        ].filter(Boolean))
+      : [report.news_summary?.trim() || '(뉴스 없음)']),
     '',
-    '위 정보를 바탕으로:',
-    '1) 단기(1개월) / 중기(6개월) 관점의 의견을 각각 알려주세요.',
-    '2) 위 데이터에서 가장 위험해 보이는 신호 3가지를 짚어주세요.',
-    '3) 투자 판단을 위해 추가로 확인하면 좋을 지표/뉴스를 알려주세요.',
+    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',
+    '위 데이터를 바탕으로 아래 순서대로 작성해주세요:',
+    '',
+    '【1】 📰 뉴스 분석 — 각 기사 실제 내용 요약 + 호재/악재/중립 판정 + 단기(1~2주)/중기(1~3개월) 영향',
+    '【2】 📈 기술적 분석 — 현재가 vs MA5/20/60/120 관계로 정배열/역배열(상승/하락추세) 판단, 52주 위치로 고점/저점 근처인지 판단',
+    '【3】 📊 재무제표 쉬운 해설 — PER/PBR/ROE/영업이익률/매출성장률/부채비율 각각 "무슨 뜻 → 이 종목 수치 → 좋은지 나쁜지" 3단계로',
+    '【4】 🎯 기간별 투자의견 — 단기(1개월)/중기(3~6개월)/장기(1년+) 각각 매수·관망·매도 + 근거',
+    '【5】 ⚠️ 핵심 리스크 Top 3',
+    '【6】 🔍 추가로 확인하면 좋을 지표/뉴스',
+    '【7】 ⚡ 최종 한 줄 결론',
   ];
 
   return lines.join('\n');
@@ -100,12 +135,18 @@ function formatETFForClipboard(report, etf) {
     '',
     '[4] ETF 자체 뉴스',
     ...(report.news_items?.length
-      ? report.news_items.map(n => `  • [${n.impact ?? '중립'}] ${n.title}`)
+      ? report.news_items.flatMap(n => [
+          `  • [${n.impact ?? '중립'}] ${n.title}`,
+          n.link ? `    링크: ${n.link}` : null,
+        ].filter(Boolean))
       : [report.news_summary ?? '(뉴스 없음)']),
     '',
     ...(report.etf_constituent_news_items?.length ? [
       '[4-1] 구성종목 주요 뉴스',
-      ...report.etf_constituent_news_items.map(n => `  • [${n.impact ?? '중립'}] ${n.title}`),
+      ...report.etf_constituent_news_items.flatMap(n => [
+        `  • [${n.impact ?? '중립'}] ${n.title}`,
+        n.link ? `    링크: ${n.link}` : null,
+      ].filter(Boolean)),
       '',
     ] : []),
     `════════════════════════════════════════`,
