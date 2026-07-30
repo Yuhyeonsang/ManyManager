@@ -640,8 +640,42 @@ class StockDataCollector:
 
             ni_prev = result.get("net_income", {}).get("previous")
             rev_prev = result.get("revenue", {}).get("previous")
+
+            # ★ 금융지주/보험/은행 계열은 "매출액/영업수익" 계정 자체가 없이 이자손익·
+            # 수수료손익처럼 이미 순액(net)으로만 표시되는 경우가 있음 (2026-07 메리츠
+            # 금융지주 검증: CIS에 '영업수익'/'매출액' 없음, 대신 '이자수익'·'수수료수익'·
+            # '보험수익'·'보험금융수익'·'배당수익' 같은 총액(gross) 항목만 존재).
+            # 이런 경우 이 총액 항목들을 합산해 "총수익" 성장률 근사치를 계산 — 외부
+            # 데이터업체(와이즈리포트 등)가 산정하는 매출성장률과 방향이 일치함.
+            # 단, 영업이익(영업이익=이미 순액 항목들의 합)과 이 총액 매출을 나누면
+            # 회계상 정의가 안 맞는 영업이익률이 나오므로, 이 대체 매출은 성장률
+            # 계산에만 쓰고 operating_margin_pct(위 ratios)에는 절대 쓰지 않음.
+            rev_growth_pct = None
+            if rev and rev_prev:
+                rev_growth_pct = round((rev - rev_prev) / rev_prev * 100, 2)
+            elif not rev:
+                _gross_keys = {"이자수익", "수수료수익", "보험수익", "보험금융수익", "배당수익", "기타수익"}
+                _gc = _gp = 0
+                _found = False
+                for item in data.get("list", []):
+                    if _norm_account(item.get("account_nm", "").strip()) in _gross_keys:
+                        c = to_num(item.get("thstrm_amount"))
+                        p = to_num(item.get("frmtrm_amount"))
+                        if c is not None:
+                            _gc += c
+                            _found = True
+                        if p is not None:
+                            _gp += p
+                if _found and _gp:
+                    rev_growth_pct = round((_gc - _gp) / _gp * 100, 2)
+                    log.info(
+                        f"금융지주 총수익 추정 성장률 사용 ({stock_code}): "
+                        f"당기={_gc:,} 전기={_gp:,} → {rev_growth_pct}% "
+                        f"(이자+수수료+보험+보험금융+배당수익 합산, 영업이익률에는 미반영)"
+                    )
+
             growth = {
-                "revenue_yoy_pct": round((rev - rev_prev) / rev_prev * 100, 2) if rev and rev_prev else None,
+                "revenue_yoy_pct": rev_growth_pct,
                 "net_income_yoy_pct": round((ni - ni_prev) / ni_prev * 100, 2) if ni and ni_prev else None,
             }
 
