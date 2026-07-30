@@ -335,7 +335,11 @@ class StockDataCollector:
     def get_price_data(
         self,
         ticker: str,
-        period: str = "6mo",
+        period: str = "1y",  # ★ 6mo(~126거래일)였던 걸 1y(~252거래일)로 수정.
+        # 52주 고저(high_52w/low_52w)가 close.tail(252)로 계산되는데 6mo로는
+        # 절반(126일)치밖에 안 가져와서 "52주"가 실제로는 "6개월" 범위였음.
+        # (2026-07 검증: Micron 52주위치 46.8%(앱, 6mo 기준) vs 55.2%(실제 52주
+        # 103.38~1255 기준) — 8%p 오차. MA120도 6mo로는 버퍼 없이 딱 걸치는 수준.
         ma_windows: List[int] = [5, 20, 60, 120],
     ) -> Dict:
         try:
@@ -1616,6 +1620,61 @@ class StockDataCollector:
             log.debug(f"US annual financials 실패 ({ticker}): {e}")
         return result
 
+    def _get_us_ttm_financials(self, ticker: str) -> Optional[Dict]:
+        """최근 4개 분기 합산(TTM) 영업이익률 + 최신 분기 재무상태표 부채비율.
+        _get_us_annual_financials()는 회계연도 '연간' 컬럼(최대 11개월 전 마감)을 쓰는데,
+        메모리 반도체처럼 분기마다 마진이 급변하는 업종은 연간 수치가 현재 수익성을
+        몇 배씩 과소/과대평가할 수 있음(예: 2026-07 Micron 사례 — 연간 영업이익률 26%대
+        vs 최근 분기 67%대). TTM(최근 4분기 합산)으로 계절성은 완화하면서 최신성은 유지."""
+        result: Dict = {}
+        try:
+            tk = yf.Ticker(ticker)
+
+            # 손익: 최근 4개 분기 합산
+            try:
+                q_inc = tk.quarterly_financials  # columns=최근 분기부터 내림차순
+                if q_inc is not None and not q_inc.empty:
+                    def _sum4(keys):
+                        for k in keys:
+                            if k in q_inc.index:
+                                s = q_inc.loc[k].dropna()
+                                if len(s) >= 4:
+                                    return float(s.iloc[:4].sum())
+                        return None
+                    ttm_rev = _sum4(["Total Revenue", "Revenue", "Operating Revenue"])
+                    ttm_op = _sum4(["Operating Income", "EBIT", "Operating Income Or Loss"])
+                    if ttm_rev and ttm_op is not None and ttm_rev != 0:
+                        result["operating_margin_pct"] = round(ttm_op / ttm_rev * 100, 2)
+            except Exception as e:
+                log.debug(f"US TTM 손익 실패 ({ticker}): {e}")
+
+            # 부채비율: 최신 "분기" 재무상태표 (연간 재무상태표도 사실 시점값이라
+            # 회계연도 말 스냅샷일 뿐 — 분기 재무상태표가 항상 더 최신 시점)
+            try:
+                q_bal = tk.quarterly_balance_sheet
+                if q_bal is not None and not q_bal.empty and q_bal.shape[1] >= 1:
+                    def _bval(*keys):
+                        for k in keys:
+                            if k in q_bal.index:
+                                v = q_bal.loc[k].iloc[0]
+                                try:
+                                    f = float(v)
+                                    if f == f:
+                                        return f
+                                except Exception:
+                                    pass
+                        return None
+                    total_assets = _bval("Total Assets")
+                    equity = _bval("Stockholders Equity", "Total Stockholders Equity", "Common Stock Equity")
+                    if total_assets and equity and equity != 0:
+                        result["debt_to_equity_pct"] = round((total_assets - equity) / equity * 100, 2)
+            except Exception as e:
+                log.debug(f"US 분기 재무상태표 실패 ({ticker}): {e}")
+        except Exception as e:
+            log.debug(f"US TTM financials 실패 ({ticker}): {e}")
+
+        return result or None
+
     def get_us_financials(self, ticker: str) -> Dict:
         """US 종목 재무제표 (yfinance 연간) → DART와 동일한 indicators/ratios 구조로 반환.
         analyze_financials 가 그대로 소비 가능."""
@@ -1933,23 +1992,38 @@ class StockDataCollector:
                     mm["debt_to_equity_source"] = "dart_q1"
                     mm["debt_to_equity_basis"]  = "분기말"
 
-        # ★ US 종목: yfinance 연간 재무제표로 정확한 지표 덮어쓰기
+        # ★ US 종목: yfinance 재무제표로 정확한 지표 덮어쓰기
         # revenueGrowth(분기YoY)/operatingMargins(분기)/debtToEquity(금융부채만) 오류 수정
+        # 매출성장률은 연간 YoY(계절성 완화 목적으로 유지), 영업이익률·부채비율은
+        # TTM/최신분기 우선 — 연간(최대 11개월 전 마감) 그대로 쓰면 마진 급변 업종(예:
+        # 메모리 반도체 슈퍼사이클)에서 실제 수익성을 몇 배씩 틀리게 보여줄 수 있음
+        # (2026-07 Micron 실사례: 연간 26%대 vs 최근 분기 67%대 영업이익률).
         if not stock_code and isinstance(mm, dict):
             us_fin = self._get_us_annual_financials(ticker)
-            if us_fin:
-                if us_fin.get("operating_margin_pct") is not None:
-                    mm["operating_margin_pct"]    = us_fin["operating_margin_pct"]
-                    mm["operating_margin_source"] = "yf_annual"
-                    mm["operating_margin_basis"]  = "연간"
-                if us_fin.get("revenue_growth_pct") is not None:
-                    mm["revenue_growth_pct"]    = us_fin["revenue_growth_pct"]
-                    mm["revenue_growth_source"] = "yf_annual"
-                    mm["revenue_growth_basis"]  = "YoY"
-                if us_fin.get("debt_to_equity_pct") is not None:
-                    mm["debt_to_equity_pct"]    = us_fin["debt_to_equity_pct"]
-                    mm["debt_to_equity_source"] = "yf_annual"
-                    mm["debt_to_equity_basis"]  = "분기말"
+            if us_fin and us_fin.get("revenue_growth_pct") is not None:
+                mm["revenue_growth_pct"]    = us_fin["revenue_growth_pct"]
+                mm["revenue_growth_source"] = "yf_annual"
+                mm["revenue_growth_basis"]  = "연간 YoY"
+
+            us_ttm = self._get_us_ttm_financials(ticker)
+            if us_ttm and us_ttm.get("operating_margin_pct") is not None:
+                mm["operating_margin_pct"]    = us_ttm["operating_margin_pct"]
+                mm["operating_margin_source"] = "yf_ttm"
+                mm["operating_margin_basis"]  = "TTM"
+            elif us_fin and us_fin.get("operating_margin_pct") is not None:
+                # TTM(분기 4개) 데이터를 못 구하면 연간으로 폴백 (없는 것보단 나음)
+                mm["operating_margin_pct"]    = us_fin["operating_margin_pct"]
+                mm["operating_margin_source"] = "yf_annual"
+                mm["operating_margin_basis"]  = "연간"
+
+            if us_ttm and us_ttm.get("debt_to_equity_pct") is not None:
+                mm["debt_to_equity_pct"]    = us_ttm["debt_to_equity_pct"]
+                mm["debt_to_equity_source"] = "yf_quarterly"
+                mm["debt_to_equity_basis"]  = "분기말"
+            elif us_fin and us_fin.get("debt_to_equity_pct") is not None:
+                mm["debt_to_equity_pct"]    = us_fin["debt_to_equity_pct"]
+                mm["debt_to_equity_source"] = "yf_annual"
+                mm["debt_to_equity_basis"]  = "분기말(연간보고서 시점)"
 
         return {
             "collected_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
