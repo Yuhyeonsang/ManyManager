@@ -609,10 +609,14 @@ class StockDataCollector:
 
             if not result.get("revenue") or not result.get("operating_income"):
                 _missing = [k for k in ("revenue", "operating_income") if not result.get(k)]
-                _all_names = [item.get("account_nm", "").strip() for item in data.get("list", [])]
+                _all_items = data.get("list", [])
+                _sj_divs = sorted(set(item.get("sj_div") for item in _all_items))
+                # sj_div(재무제표 구분: BS=재무상태표, IS/CIS=손익/포괄손익계산서)까지 같이
+                # 남겨서 "IS/CIS 자체가 응답에 없는 것"과 "이름만 다른 것"을 구분할 수 있게.
+                _all_names = [(item.get("sj_div"), item.get("account_nm", "").strip()) for item in _all_items]
                 log.warning(
                     f"DART 재무 매칭 실패 ({stock_code}, {year}): {_missing} 못 찾음. "
-                    f"실제 account_nm 목록: {_all_names[:40]}"
+                    f"전체 {len(_all_items)}건, sj_div 종류={_sj_divs}. account_nm 목록: {_all_names}"
                 )
 
             rev = result.get("revenue", {}).get("current")
